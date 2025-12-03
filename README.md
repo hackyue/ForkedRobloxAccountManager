@@ -28,7 +28,7 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 - **Persistent Settings**: Automatically saves Place IDs, Private Server codes, game list, and preferences
 
 ## 🛠️ Installation
-
+Batch file setup lowk doesn't work that well, dont use it
 
 **Full source code access and customization**
 
