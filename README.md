@@ -10,7 +10,7 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 ⭐ If you like this project, please consider starring the repository! ⭐<br>
 
 <img width="446" height="528" alt="image" src="https://i.ibb.co/c4T89HR/Screenshot-2025-12-02-224949.png" />
-<img width="298" height="347" alt="image" src="https://github.com/user-attachments/assets/686747b4-1caf-47db-a1f6-8f06469c65d2" />
+<img width="298" height="347" alt="image" src="https://i.ibb.co/1Y8WxtTt/Screenshot-2025-12-02-225144.png" />
 
 
 ## ✨ Features
