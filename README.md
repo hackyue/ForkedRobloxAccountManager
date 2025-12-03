@@ -34,27 +34,32 @@ Batch file setup lowk doesn't work that well, dont use it
 
 **Requirements:**
 - **Python 3.7+**
-- **Google Chrome browser**
-- **Windows** (currently optimized for Windows)
+- **Pip**
+- **git**
+- **Linux** 
 
 ### Setup
 
 1. **Clone the repository**
    ```bash
    git clone https://github.com/hackyue/RobloxAccountManager
-   cd RobloxAccountManagerManager
+   cd RobloxAccountManager
    ```
 
-2. **Install dependencies**
+2. **Virtual Environment**
    ```bash
-   py -m pip install -r requirements.txt
+   python3 -m venv venv source venv/bin/activate
    ```
 
-3. **Run the application**
+3. **Install Dependencies**
    ```bash
-   py main.py
+   pip install -r requirements.txt
    ```
-   
+
+4. **Run**
+   ```bash
+   python3 main.py
+   ```
 ## 📋 Requirements
 
 The following Python packages are required:
