@@ -41,8 +41,8 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/evanovar/RobloxAccountManagerConsole
-   cd RobloxAccountManagerConsole
+   git clone https://github.com/hackyue/RobloxAccountManager
+   cd RobloxAccountManagerManager
    ```
 
 2. **Install dependencies**
