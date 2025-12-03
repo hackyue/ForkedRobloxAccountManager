@@ -29,22 +29,6 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 
 ## 🛠️ Installation
 
-### Method 1: Direct EXE (Recommended for Users)
-
-**Quick & Easy - No Python Required!**
-
-1. Go to [Releases](https://github.com/evanovar/RobloxAccountManagerConsole/releases)
-2. Download `RobloxAccountManager.exe` from the latest release
-3. Put it in a folder
-4. Double-click to run - that's it!
-
-**Requirements:**
-- **Google Chrome browser**
-- **Windows** (currently optimized for Windows)
-
-> ⚠️ Windows Defender may flag the EXE as untrusted since it's not signed. Click "More info" → "Run anyway" to proceed.
-
-### Method 2: Clone Repository (For Developers, or for people that dont trust the EXE)
 
 **Full source code access and customization**
 
