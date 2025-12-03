@@ -61,13 +61,13 @@ class RobloxAccountManager:
                 if self.encryptor and isinstance(data, dict) and data.get('encrypted'):
                     try:
                         decrypted_data = self.encryptor.decrypt_data(data['data'])
-                        # Migrate old accounts to include 'note' field
+
                         self._migrate_accounts(decrypted_data)
                         return decrypted_data
                     except Exception as e:
                         raise ValueError(f"Decryption failed. Wrong password or corrupted data.")
                 
-                # Migrate old accounts to include 'note' field
+
                 if isinstance(data, dict):
                     self._migrate_accounts(data)
                 return data if isinstance(data, dict) else {}
@@ -97,7 +97,35 @@ class RobloxAccountManager:
                 json.dump(encrypted_data, f, indent=2, ensure_ascii=False)
             else:
                 json.dump(self.accounts, f, indent=2, ensure_ascii=False)
-    
+
+    def reorder_accounts(self, ordered_usernames):
+        """Reorder accounts to match the provided username list and persist the change."""
+        if ordered_usernames is None:
+            return
+
+        existing_accounts = dict(self.accounts)
+        if not existing_accounts:
+            return
+
+        normalized_order = []
+        seen = set()
+        for username in ordered_usernames:
+            if username in existing_accounts and username not in seen:
+                normalized_order.append(username)
+                seen.add(username)
+
+        for username in existing_accounts:
+            if username not in seen:
+                normalized_order.append(username)
+                seen.add(username)
+
+        current_order = list(self.accounts.keys())
+        if normalized_order == current_order:
+            return
+
+        self.accounts = {username: existing_accounts[username] for username in normalized_order}
+        self.save_accounts()
+
     def create_temp_profile(self):
         """Create a temporary Chrome profile directory"""
         self.temp_profile_dir = tempfile.mkdtemp(prefix="roblox_login_")
@@ -187,9 +215,26 @@ class RobloxAccountManager:
             detected: false,
             method: null,
             debug: [],
+            interval: null,
+            observer: null,
+            eventHandlers: [],
             cleanup: function() {
-                if (this.interval) clearInterval(this.interval);
-                if (this.observer) this.observer.disconnect();
+                if (this.interval) {
+                    clearInterval(this.interval);
+                    this.interval = null;
+                }
+                if (this.observer) {
+                    this.observer.disconnect();
+                    this.observer = null;
+                }
+                if (Array.isArray(this.eventHandlers)) {
+                    this.eventHandlers.forEach(function(item) {
+                        if (item && item.event && item.handler) {
+                            window.removeEventListener(item.event, item.handler);
+                        }
+                    });
+                    this.eventHandlers = [];
+                }
             }
         };
         
@@ -211,7 +256,7 @@ class RobloxAccountManager:
                 url.includes('/profile') || url.includes('/groups') ||
                 url.includes('/develop') || url.includes('/create') ||
                 url.includes('/transactions') || url.includes('/my/avatar') ||
-                url.includes('roblox.com/users/') && !url.includes('/login')) {
+                (url.includes('roblox.com/users/') && !url.includes('/login'))) {
                 
                 window.ultraFastDetection.detected = true;
                 window.ultraFastDetection.method = 'url_only';
@@ -224,11 +269,16 @@ class RobloxAccountManager:
             return false;
         }
         
+        function registerCleanupEvent(eventName, handler) {
+            window.addEventListener(eventName, handler);
+            window.ultraFastDetection.eventHandlers.push({ event: eventName, handler: handler });
+        }
+        
         instantDetect();
         
         window.ultraFastDetection.interval = setInterval(() => {
             if (instantDetect()) {
-                clearInterval(window.ultraFastDetection.interval);
+                window.ultraFastDetection.cleanup();
             }
         }, 25);
         
@@ -238,15 +288,14 @@ class RobloxAccountManager:
                 lastHref = location.href;
                 window.ultraFastDetection.debug.push('URL changed to: ' + location.href);
                 if (instantDetect()) {
-                    clearInterval(window.ultraFastDetection.interval);
-                    window.ultraFastDetection.observer.disconnect();
+                    window.ultraFastDetection.cleanup();
                 }
             }
         });
         window.ultraFastDetection.observer.observe(document, {subtree: true, childList: true});
         
         ['beforeunload', 'unload', 'pagehide'].forEach(event => {
-            window.addEventListener(event, () => {
+            registerCleanupEvent(event, () => {
                 window.ultraFastDetection.cleanup();
             });
         });
@@ -260,6 +309,15 @@ class RobloxAccountManager:
         
         start_time = time.time()
         last_debug_time = 0
+
+        def cleanup_detection():
+            try:
+                driver.execute_script(
+                    "if (window.ultraFastDetection && typeof window.ultraFastDetection.cleanup === 'function') "
+                    "{ window.ultraFastDetection.cleanup(); }"
+                )
+            except Exception:
+                pass
         
         while time.time() - start_time < timeout:
             try:
@@ -268,10 +326,7 @@ class RobloxAccountManager:
                 if result and result.get('detected'):
                     method = result.get('method', 'url_only')
                     print(f"[SUCCESS] LOGIN DETECTED! Method: {method} - Closing browser instantly...")
-                    try:
-                        driver.execute_script("window.ultraFastDetection.cleanup();")
-                    except:
-                        pass
+                    cleanup_detection()
                     return True
                 
                 current_time = time.time()
@@ -292,6 +347,7 @@ class RobloxAccountManager:
                             '/profile' in current_url or '/groups' in current_url or
                             '/develop' in current_url or '/create' in current_url) and '/login' not in current_url and '/createaccount' not in current_url.lower():
                             print("[SUCCESS] LOGIN DETECTED via manual URL check!")
+                            cleanup_detection()
                             return True
                                 
                     except Exception as e:
@@ -300,17 +356,11 @@ class RobloxAccountManager:
                 time.sleep(0.025)
                 
             except WebDriverException:
-                try:
-                    driver.execute_script("if(window.ultraFastDetection) window.ultraFastDetection.cleanup();")
-                except:
-                    pass
+                cleanup_detection()
                 return False
         
         print("[WARNING] Login timeout. Please try again.")
-        try:
-            driver.execute_script("if(window.ultraFastDetection) window.ultraFastDetection.cleanup();")
-        except:
-            pass
+        cleanup_detection()
         return False
     
     def extract_user_info(self, driver):
@@ -603,8 +653,6 @@ class RobloxAccountManager:
             
             driver.get("https://www.roblox.com/home")
             
-            driver.execute_cdp_cmd('Page.setWebLifecycleState', {'state': 'active'})
-            
             print(f"[SUCCESS] Chrome launched with {username} logged in!")
             return True
             
@@ -612,21 +660,40 @@ class RobloxAccountManager:
             if 'original_stderr' in locals():
                 sys.stderr = original_stderr
             print(f"[ERROR] Failed to launch Chrome: {e}")
-            try:
-                if 'driver' in locals():
-                    driver.quit()
-            except:
-                pass
             return False
-    
-    def launch_roblox(self, username, game_id, private_server_id=""):
-        """Launch Roblox game with specified account"""
+
+    def launch_home_app(self, username, enable_debug=False):
+        """Launch the native Roblox Home experience for the account"""
         if username not in self.accounts:
             print(f"[ERROR] Account '{username}' not found")
             return False
+
+        return self.launch_roblox(username, "", "", enable_debug=enable_debug)
+
+    def launch_roblox(self, username, game_id, private_server_id="", version=None, enable_debug=False):
+        """
+        Launch Roblox game with specified account and version
         
+        Args:
+            username: Roblox username
+            game_id: ID of the game to launch
+            private_server_id: Optional private server ID
+            version: Optional path to Roblox version (if None, use default/latest)
+        """
+        if username not in self.accounts:
+            print(f"[ERROR] Account '{username}' not found")
+            return False
+            
         cookie = self.accounts[username]['cookie']
-        return RobloxAPI.launch_roblox(username, cookie, game_id, private_server_id)
+        
+        return RobloxAPI.launch_roblox(
+            username,
+            cookie,
+            game_id,
+            private_server_id,
+            version,
+            enable_debug=enable_debug
+        )
     
     def set_account_note(self, username, note):
         """Set or update note for an account"""

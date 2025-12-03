@@ -4,17 +4,418 @@ Contains the main AccountManagerUI class
 """
 
 import os
-import json
+import re
 import sys
+import io
+import json
+import atexit
+import platform
+from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox
 import requests
 import threading
 import msvcrt
 import ctypes
+import subprocess
 import webbrowser
-from io import StringIO
-from datetime import datetime
+
+from classes.roblox_api import RobloxAPI
+
+
+THEMES = {
+    "Synapse Neon": {
+        "root_bg": "#05050b",
+        "frame_bg": "#0f0f1c",
+        "panel_bg": "#13132b",
+        "panel_alt": "#1c1c3a",
+        "text": "#f6f7fb",
+        "text_muted": "#b7b9d6",
+        "accent": "#8d5cf7",
+        "accent_alt": "#18e0ff",
+        "entry_bg": "#1b1b33",
+        "entry_fg": "#f6f7fb",
+        "border": "#5f2eea",
+        "hover_bg": "#1f1f39",
+        "list_bg": "#161631",
+        "list_select": "#18e0ff",
+        "font": "Consolas",
+        "font_size": 10
+    },
+    "ScriptWare Minimal": {
+        "root_bg": "#111217",
+        "frame_bg": "#16171d",
+        "panel_bg": "#1d1f26",
+        "panel_alt": "#22242c",
+        "text": "#f0f2f7",
+        "text_muted": "#c8ccd8",
+        "accent": "#6ab0ff",
+        "accent_alt": "#d9dde8",
+        "entry_bg": "#1f2129",
+        "entry_fg": "#f5f7fb",
+        "border": "#2a2d36",
+        "hover_bg": "#272a34",
+        "list_bg": "#1c1e25",
+        "list_select": "#6ab0ff",
+        "font": "Consolas",
+        "font_size": 10
+    },
+    "Voxlis Vapor": {
+        "root_bg": "#042f33",
+        "frame_bg": "#0a3f4b",
+        "panel_bg": "#0e4c5c",
+        "panel_alt": "#135b6d",
+        "text": "#e7fbff",
+        "text_muted": "#b9e6f0",
+        "accent": "#4ef0ff",
+        "accent_alt": "#8efaf2",
+        "entry_bg": "#0d3d49",
+        "entry_fg": "#e2fbff",
+        "border": "#68f6ff",
+        "hover_bg": "#136374",
+        "list_bg": "#0b3b47",
+        "list_select": "#4ef0ff",
+        "font": "Montserrat",
+        "font_size": 10
+    },
+    "Potassium Ion": {
+        "root_bg": "#050406",
+        "frame_bg": "#0b0a0f",
+        "panel_bg": "#120f18",
+        "panel_alt": "#1d1723",
+        "text": "#fef9c3",
+        "text_muted": "#fcd34d",
+        "accent": "#ffd500",
+        "accent_alt": "#fffd8c",
+        "entry_bg": "#1a1421",
+        "entry_fg": "#fff9bf",
+        "border": "#ffd500",
+        "hover_bg": "#251c2d",
+        "list_bg": "#151019",
+        "list_select": "#ffd500",
+        "font": "Orbitron",
+        "font_size": 10
+    },
+    "Midnight Matrix": {
+        "root_bg": "#000000",
+        "frame_bg": "#030b0c",
+        "panel_bg": "#041416",
+        "panel_alt": "#062024",
+        "text": "#9cffc7",
+        "text_muted": "#5dd39b",
+        "accent": "#00ff7f",
+        "accent_alt": "#6bffa8",
+        "entry_bg": "#041a1c",
+        "entry_fg": "#d0ffe8",
+        "border": "#00ff7f",
+        "hover_bg": "#082d32",
+        "list_bg": "#031214",
+        "list_select": "#00ff7f",
+        "font": "IBM Plex Mono",
+        "font_size": 10
+    },
+    "Aurora Fade": {
+        "root_bg": "#2b153d",
+        "frame_bg": "#311846",
+        "panel_bg": "#381d52",
+        "panel_alt": "#432263",
+        "text": "#f9e8ff",
+        "text_muted": "#d8b4fe",
+        "accent": "#ff99d6",
+        "accent_alt": "#b8a2ff",
+        "entry_bg": "#3f225c",
+        "entry_fg": "#fff2ff",
+        "border": "#f472b6",
+        "hover_bg": "#4b2670",
+        "list_bg": "#341b4c",
+        "list_select": "#ff99d6",
+        "font": "Poppins",
+        "font_size": 10
+    },
+    "ChromePulse": {
+        "root_bg": "#1a1c20",
+        "frame_bg": "#212428",
+        "panel_bg": "#262a2f",
+        "panel_alt": "#2d3238",
+        "text": "#f2f5ff",
+        "text_muted": "#cdd5e0",
+        "accent": "#58c5ff",
+        "accent_alt": "#88d8ff",
+        "entry_bg": "#2b3036",
+        "entry_fg": "#f2f5ff",
+        "border": "#7dd3ff",
+        "hover_bg": "#343941",
+        "list_bg": "#24282e",
+        "list_select": "#58c5ff",
+        "font": "Eurostile",
+        "font_size": 10
+    },
+    "Stardust OS": {
+        "root_bg": "#05030a",
+        "frame_bg": "#0b0714",
+        "panel_bg": "#100a1c",
+        "panel_alt": "#170f29",
+        "text": "#f0e7ff",
+        "text_muted": "#cdb4ff",
+        "accent": "#b46bff",
+        "accent_alt": "#7dd3ff",
+        "entry_bg": "#120c20",
+        "entry_fg": "#f4ecff",
+        "border": "#d8b4fe",
+        "hover_bg": "#1f1435",
+        "list_bg": "#0f0a1b",
+        "list_select": "#b46bff",
+        "font": "Raleway",
+        "font_size": 10
+    }
+}
+
+
+class _ConsoleStreamProxy(io.TextIOBase):
+    def __init__(self, buffer, stream_label, target_stream):
+        self.buffer = buffer
+        self.stream_label = stream_label
+        self.target_stream = target_stream
+
+    def write(self, data):
+        if not data:
+            return 0
+        if self.target_stream:
+            self.target_stream.write(data)
+        self.buffer.append_text(data, self.stream_label)
+        return len(data)
+
+    def flush(self):
+        if self.target_stream:
+            self.target_stream.flush()
+
+
+class ConsoleOutputBuffer:
+    """Capture stdout/stderr prints with timestamps for in-app viewing."""
+
+    def __init__(self, max_entries=5000):
+        self.max_entries = max_entries
+        self.entries = []
+        self.lock = threading.Lock()
+        self.partials = {"STDOUT": "", "STDERR": ""}
+        self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
+        self.stdout_proxy = None
+        self.stderr_proxy = None
+        atexit.register(self._cleanup)
+
+    def start_capture(self):
+        if self.stdout_proxy and self.stderr_proxy:
+            return
+        self.stdout_proxy = _ConsoleStreamProxy(self, "OUT", self.original_stdout)
+        self.stderr_proxy = _ConsoleStreamProxy(self, "ERR", self.original_stderr)
+        sys.stdout = self.stdout_proxy
+        sys.stderr = self.stderr_proxy
+
+    def stop_capture(self):
+        if self.stdout_proxy:
+            sys.stdout = self.original_stdout
+            self.stdout_proxy = None
+        if self.stderr_proxy:
+            sys.stderr = self.original_stderr
+            self.stderr_proxy = None
+
+    def _cleanup(self):
+        self.stop_capture()
+        self.clear()
+
+    def append_text(self, data, label):
+        if not data:
+            return
+        key = "STDOUT" if label == "OUT" else "STDERR"
+        with self.lock:
+            buffer = self.partials[key] + data
+            lines = buffer.split("\n")
+            self.partials[key] = lines.pop() if buffer.endswith("\n") is False else ""
+            for line in lines:
+                cleaned = line.rstrip("\r")
+                if cleaned:
+                    self._append_entry(key, cleaned)
+
+    def _append_entry(self, label, line):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        entry = f"[{timestamp}] [{label}] {line}"
+        self.entries.append(entry)
+        if len(self.entries) > self.max_entries:
+            overflow = len(self.entries) - self.max_entries
+            if overflow > 0:
+                self.entries = self.entries[overflow:]
+
+    def get_entries_since(self, index):
+        with self.lock:
+            total = len(self.entries)
+            start = min(max(index, 0), total)
+            return self.entries[start:], total
+
+    def clear(self):
+        with self.lock:
+            self.entries.clear()
+            self.partials = {"STDOUT": "", "STDERR": ""}
+
+
+class ConsoleOutputWindow:
+    """Dedicated console output viewer window."""
+
+    POLL_INTERVAL_MS = 400
+
+    def __init__(self, ui, capture):
+        self.ui = ui
+        self.capture = capture
+        self.window = None
+        self.text_widget = None
+        self.after_id = None
+        self.last_index = 0
+
+    def show(self):
+        if self.window and tk.Toplevel.winfo_exists(self.window):
+            self.window.deiconify()
+            self.window.lift()
+            self.window.focus_force()
+            self.update_topmost(self.ui.settings.get("enable_topmost", False))
+            return
+
+        self.window = tk.Toplevel(self.ui.root)
+        self.window.title("Console Output")
+        self.window.geometry("700x500")
+        self.window.minsize(500, 450)
+        self.window.configure(bg=self.ui.BG_DARK)
+        self.window.resizable(True, True)
+        self.window.transient(self.ui.root)
+        self.window.protocol("WM_DELETE_WINDOW", self._handle_close)
+        self.update_topmost(self.ui.settings.get("enable_topmost", False))
+        self.ui.register_toplevel(self.window)
+
+        main_frame = ttk.Frame(self.window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        text_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        text_frame.pack(fill="both", expand=True)
+
+        self.text_widget = tk.Text(
+            text_frame,
+            bg=self.ui.BG_MID,
+            fg=self.ui.FG_TEXT,
+            insertbackground=self.ui.FG_TEXT,
+            state="disabled",
+            wrap="word",
+            relief="flat"
+        )
+        self.text_widget.pack(side="left", fill="both", expand=True)
+        self.ui.register_themable_text_widget(self.text_widget)
+
+        scrollbar = ttk.Scrollbar(text_frame, command=self.text_widget.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.text_widget.configure(yscrollcommand=scrollbar.set)
+
+        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        button_frame.pack(fill="x", pady=(10, 0))
+
+        ttk.Button(button_frame, text="Clear", style="Dark.TButton", command=self.clear).pack(side="left", padx=(0, 5))
+        ttk.Button(button_frame, text="Copy All", style="Dark.TButton", command=self.copy_all).pack(side="left", padx=5)
+
+        self.last_index = 0
+        entries, self.last_index = self.capture.get_entries_since(0)
+        self._append_entries(entries, replace=True)
+        self._schedule_poll()
+
+    def _schedule_poll(self):
+        if not self.window:
+            return
+        self.after_id = self.window.after(self.POLL_INTERVAL_MS, self._poll_updates)
+
+    def _poll_updates(self):
+        if not self.window:
+            return
+        entries, new_index = self.capture.get_entries_since(self.last_index)
+        if entries:
+            self._append_entries(entries)
+        self.last_index = new_index
+        self._schedule_poll()
+
+    def _append_entries(self, entries, replace=False):
+        if not self.text_widget or not entries and not replace:
+            if replace and self.text_widget:
+                self._set_text("")
+            return
+        text_to_add = "\n".join(entries)
+        if text_to_add:
+            text_to_add += "\n"
+        self.text_widget.configure(state="normal")
+        if replace:
+            self.text_widget.delete("1.0", tk.END)
+        if text_to_add:
+            self.text_widget.insert(tk.END, text_to_add)
+        self.text_widget.configure(state="disabled")
+        self.text_widget.see(tk.END)
+
+    def _set_text(self, value):
+        if not self.text_widget:
+            return
+        self.text_widget.configure(state="normal")
+        self.text_widget.delete("1.0", tk.END)
+        if value:
+            self.text_widget.insert(tk.END, value)
+        self.text_widget.configure(state="disabled")
+        self.text_widget.see(tk.END)
+
+    def clear(self):
+        self.capture.clear()
+        self.last_index = 0
+        self._set_text("")
+
+    def copy_all(self):
+        if not self.window or not self.text_widget:
+            return
+        try:
+            text = self.text_widget.get("1.0", "end-1c")
+            self.window.clipboard_clear()
+            self.window.clipboard_append(text)
+        except Exception:
+            pass
+
+    def _stop_poll(self):
+        if self.window and self.after_id:
+            try:
+                self.window.after_cancel(self.after_id)
+            except Exception:
+                pass
+        self.after_id = None
+
+    def _handle_close(self):
+        self._stop_poll()
+        if self.window:
+            try:
+                self.window.destroy()
+            except Exception:
+                pass
+        self.window = None
+        self.text_widget = None
+
+    def update_topmost(self, enabled):
+        if self.window:
+            self.window.attributes("-topmost", bool(enabled))
+
+    def apply_theme(self):
+        if not self.window or not self.text_widget:
+            return
+        self.window.configure(bg=self.ui.BG_DARK)
+        self.text_widget.configure(bg=self.ui.BG_MID, fg=self.ui.FG_TEXT, insertbackground=self.ui.FG_TEXT)
+
+
+_CONSOLE_OUTPUT_BUFFER = None
+
+
+def get_console_output_buffer():
+    global _CONSOLE_OUTPUT_BUFFER
+    if _CONSOLE_OUTPUT_BUFFER is None:
+        _CONSOLE_OUTPUT_BUFFER = ConsoleOutputBuffer()
+        _CONSOLE_OUTPUT_BUFFER.start_capture()
+    return _CONSOLE_OUTPUT_BUFFER
 
 
 class AccountManagerUI:
@@ -23,15 +424,11 @@ class AccountManagerUI:
         self.manager = manager
         self.APP_VERSION = "2.3.0"
         self._game_name_after_id = None
-        
-        self.console_output = []
-        self.console_window = None
-        self.console_text_widget = None
-        self.original_stdout = sys.stdout
-        self.original_stderr = sys.stderr
-        
-        sys.stdout = self
-        sys.stderr = self
+        self._game_name_label_after_id = None
+        self._game_name_request_token = 0
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+        self.status_label = None
         
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -41,10 +438,11 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("Roblox Account Manager - Made by evanovar")
-        self.root.geometry("450x520")
+        self.root.title("RAM v2.3.0 - made by evanovar - modified by nully")
+        self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
+        self.root.minsize(600, 630)  # Note to self, this shit so ass
         
         self.data_folder = "AccountManagerData"
         if not os.path.exists(self.data_folder):
@@ -54,27 +452,46 @@ class AccountManagerUI:
         self.load_settings()
         
         self.multi_roblox_handle = None
+        self.console_output = get_console_output_buffer()
+        self.console_window = ConsoleOutputWindow(self, self.console_output)
+        self.account_list_drag_data = {
+            "start_index": None,
+            "drop_index": None,
+            "start_username": None,
+            "is_dragging": False
+        }
+        self.account_drop_indicator = None
+        self.themable_text_widgets = []
+        self.themable_windows = set()
 
-        self.BG_DARK = "#2b2b2b"
-        self.BG_MID = "#3a3a3a"
-        self.BG_LIGHT = "#4b4b4b"
-        self.FG_TEXT = "white"
-        self.FG_ACCENT = "#0078D7"
+        self.theme_name = self.settings.get("selected_theme", "Synapse Neon")
+        self.menu_bar = None
+        self.actions_menu = None
+        self.installer_menu = None
+        self.menu_bar_frame = None
+        self.menu_buttons = []
+        self.version_options = {"Latest Version": ""}
+        self.apply_theme(self.theme_name, persist=False)
+        self.register_toplevel(self.root)
+        self.root.after(50, self._apply_title_bar_theme_all)
 
-        style = ttk.Style()
-        style.theme_use("clam")
+      
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
 
-        style.configure("Dark.TFrame", background=self.BG_DARK)
-        style.configure("Dark.TLabel", background=self.BG_DARK, foreground=self.FG_TEXT, font=("Segoe UI", 10))
-        style.configure("Dark.TButton", background=self.BG_MID, foreground=self.FG_TEXT, font=("Segoe UI", 9))
-        style.map("Dark.TButton", background=[("active", self.BG_LIGHT)])
-        style.configure("Dark.TEntry", fieldbackground=self.BG_MID, background=self.BG_MID, foreground=self.FG_TEXT)
+        self.build_main_menu()
 
         main_frame = ttk.Frame(self.root, style="Dark.TFrame")
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+        
+        
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(1, weight=2)  
 
         left_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left_frame.grid_rowconfigure(1, weight=1)  
 
         header_frame = ttk.Frame(left_frame, style="Dark.TFrame")
         header_frame.pack(fill="x", anchor="w")
@@ -95,17 +512,17 @@ class AccountManagerUI:
             encryption_status = "[NOT ENCRYPTED]"
             encryption_color = "#FFB6C1"
             
-        status_label = tk.Label(
+        self.status_label = tk.Label(
             header_frame,
             text=encryption_status,
             bg=self.BG_DARK,
             fg=encryption_color,
             font=("Segoe UI", 8, "bold")
         )
-        status_label.pack(side="right", padx=(5, 0))
+        self.status_label.pack(side="right", padx=(5, 0))
 
         list_frame = ttk.Frame(left_frame, style="Dark.TFrame")
-        list_frame.pack(fill="both", expand=True)
+        list_frame.pack(fill="both", expand=True, pady=(5, 0))
 
         selectmode = tk.EXTENDED if self.settings.get("enable_multi_select", False) else tk.SINGLE
         
@@ -120,22 +537,20 @@ class AccountManagerUI:
             width=20,
             selectmode=selectmode,
         )
-        self.account_list.pack(side="left", fill="both", expand=True)
+        self.account_list.pack(side="left", fill="both", expand=True, pady=2)
+        self.account_list.bind("<ButtonPress-1>", self.on_account_drag_start)
+        self.account_list.bind("<B1-Motion>", self.on_account_drag_motion)
+        self.account_list.bind("<ButtonRelease-1>", self.on_account_drag_stop)
+
+        self.account_drop_indicator = tk.Frame(self.account_list, height=2, bg=self.FG_ACCENT)
 
         scrollbar = ttk.Scrollbar(list_frame, command=self.account_list.yview)
         scrollbar.pack(side="right", fill="y")
         self.account_list.config(yscrollcommand=scrollbar.set)
-        
-        # Drag and drop state
-        self.drag_data = {"item": None, "index": None}
-        
-        # Bind drag and drop events
-        self.account_list.bind("<Button-1>", self.on_drag_start)
-        self.account_list.bind("<B1-Motion>", self.on_drag_motion)
-        self.account_list.bind("<ButtonRelease-1>", self.on_drag_release)
 
         right_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        right_frame.pack(side="right", fill="y")
+        right_frame.grid(row=0, column=1, sticky="nsew")
+        right_frame.grid_rowconfigure(3, weight=1)  
         
         self.game_name_label = ttk.Label(right_frame, text="", style="Dark.TLabel", font=("Segoe UI", 9))
         self.game_name_label.pack(anchor="w", pady=(0, 5))
@@ -151,6 +566,23 @@ class AccountManagerUI:
         self.private_server_entry.pack(fill="x", pady=(0, 5))
         self.private_server_entry.insert(0, self.settings.get("last_private_server", ""))
         self.private_server_entry.bind("<KeyRelease>", self.on_private_server_change)
+
+
+        ttk.Label(right_frame, text="Roblox Version (Optional)", style="Dark.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(5, 0))
+        self.version_var = tk.StringVar()
+        self.version_dropdown = ttk.Combobox(
+            right_frame,
+            textvariable=self.version_var,
+            state="readonly",
+            style="Dark.TCombobox"
+        )
+        self.version_dropdown.pack(fill="x", pady=(0, 10))
+        
+
+        self.load_roblox_versions()
+        
+
+        self.version_var.set("Latest Version")
 
         ttk.Button(right_frame, text="Join Place ID", style="Dark.TButton", command=self.launch_game).pack(fill="x", pady=(0, 10))
         
@@ -181,29 +613,30 @@ class AccountManagerUI:
         ttk.Label(right_frame, text="Quick Actions", style="Dark.TLabel").pack(anchor="w", pady=(10, 5))
 
         action_frame = ttk.Frame(right_frame, style="Dark.TFrame")
-        action_frame.pack(fill="x")
+        action_frame.pack(fill="x", pady=(5, 0))
 
         ttk.Button(action_frame, text="Validate Account", style="Dark.TButton", command=self.validate_account).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Edit Note", style="Dark.TButton", command=self.edit_account_note).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
 
         bottom_frame = ttk.Frame(self.root, style="Dark.TFrame")
-        bottom_frame.pack(fill="x", padx=10, pady=(0, 10))
+        bottom_frame.pack(fill="x", padx=10, pady=(5, 10), anchor='s')
 
         self.add_account_split_btn = ttk.Button(
             bottom_frame,
-            text="Add Account  ▼",
+            text="Add Account",
             style="Dark.TButton",
         )
-        self.add_account_split_btn.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        self.add_account_split_btn.pack(side="left", fill="both", expand=True, padx=(0, 2))
         self.add_account_split_btn.bind("<Button-1>", self.on_add_account_split_click)
         
         self.add_account_dropdown = None
         self.add_account_dropdown_visible = False
         
-        ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.remove_account).pack(side="left", fill="x", expand=True, padx=2)
-        ttk.Button(bottom_frame, text="Launch Roblox Home", style="Dark.TButton", command=self.launch_home).pack(side="left", fill="x", expand=True, padx=2)
-        ttk.Button(bottom_frame, text="Settings", style="Dark.TButton", command=self.open_settings).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.remove_account).pack(side="left", fill="both", expand=True, padx=2)
+        ttk.Button(bottom_frame, text="Launch Browser", style="Dark.TButton", command=self.launch_home).pack(side="left", fill="both", expand=True, padx=2)
+        ttk.Button(bottom_frame, text="Launch Roblox App", style="Dark.TButton", command=self.launch_home_app).pack(side="left", fill="both", expand=True, padx=2)
+        ttk.Button(bottom_frame, text="Settings", style="Dark.TButton", command=self.open_settings).pack(side="left", fill="both", expand=True, padx=(2, 0))
         
         self.root.bind("<Button-1>", self.hide_dropdown_on_click_outside)
         self.root.bind("<Configure>", self.on_root_configure)
@@ -211,9 +644,6 @@ class AccountManagerUI:
         self.refresh_accounts()
         self.refresh_game_list()
         self.update_game_name()
-        
-        # Check for updates in background
-        threading.Thread(target=self.check_for_updates, daemon=True).start()
 
     def load_settings(self):
         """Load UI settings from file"""
@@ -230,7 +660,10 @@ class AccountManagerUI:
                     "enable_multi_roblox": False,
                     "confirm_before_launch": False,
                     "max_recent_games": 10,
-                    "enable_multi_select": False
+                    "enable_multi_select": False,
+                    "enable_debug_logging": False,
+                    "selected_theme": "Synapse Neon",
+                    "disable_success_popups": False
                 }
         except:
             self.settings = {
@@ -241,8 +674,27 @@ class AccountManagerUI:
                 "enable_multi_roblox": False,
                 "confirm_before_launch": False,
                 "max_recent_games": 10,
-                "enable_multi_select": False
+                "enable_multi_select": False,
+                "enable_debug_logging": False,
+                "selected_theme": "Synapse Neon",
+                "disable_success_popups": False
             }
+        
+        defaults = {
+            "last_place_id": "",
+            "last_private_server": "",
+            "game_list": [],
+            "enable_topmost": False,
+            "enable_multi_roblox": False,
+            "confirm_before_launch": False,
+            "max_recent_games": 10,
+            "enable_multi_select": False,
+            "enable_debug_logging": False,
+            "selected_theme": "Synapse Neon",
+            "disable_success_popups": False
+        }
+        for key, value in defaults.items():
+            self.settings.setdefault(key, value)
         
         if self.settings.get("enable_topmost", False):
             self.root.attributes("-topmost", True)
@@ -250,46 +702,449 @@ class AccountManagerUI:
         if self.settings.get("enable_multi_roblox", False):
             self.root.after(100, self.initialize_multi_roblox)
 
-    def check_for_updates(self):
-        """Check for updates from GitHub releases"""
-        try:
-            print("[Update Checker] Checking for updates...")
-            response = requests.get(
-                "https://api.github.com/repos/evanovar/RobloxAccountManager/releases/latest",
-                timeout=5
-            )
-            
-            if response.status_code == 200:
-                latest_release = response.json()
-                latest_version = latest_release.get("tag_name", "").lstrip("v")
-                
-                current_parts = tuple(map(int, self.APP_VERSION.split(".")))
-                latest_parts = tuple(map(int, latest_version.split(".")))
-                
-                if latest_parts > current_parts:
-                    print(f"[Update Checker] New version available: {latest_version}")
-                    self.root.after(0, lambda: self.show_update_notification(latest_version))
-                else:
-                    print(f"[Update Checker] You are on the latest version ({self.APP_VERSION})")
-            else:
-                print(f"[Update Checker] Failed to check for updates (Status: {response.status_code})")
-                
-        except Exception as e:
-            print(f"[Update Checker] Error checking for updates: {str(e)}")
+    def show_success_message(self, message, title="Success"):
+        """Show a success message if popups are enabled."""
+        if not self.settings.get("disable_success_popups", False):
+            messagebox.showinfo(title, message)
 
-    def show_update_notification(self, latest_version):
-        """Show update notification dialog"""
-        result = messagebox.askyesno(
-            "Update Available",
-            f"A new version is available!\n\n"
-            f"Current version: {self.APP_VERSION}\n"
-            f"Latest version: {latest_version}\n\n"
-            f"Would you like to download the latest version?",
-            icon="info"
+    def apply_theme(self, theme_name, persist=True):
+        """Apply the selected theme to the UI"""
+        theme = THEMES.get(theme_name)
+        if theme is None:
+            
+            fallback_name = next(iter(THEMES.keys()))
+            theme = THEMES[fallback_name]
+            theme_name = fallback_name
+
+        self.theme_name = theme_name
+        self.BG_ROOT = theme["root_bg"]
+        self.BG_DARK = theme["panel_bg"]
+        self.BG_LIGHT = theme["panel_alt"]
+        self.BG_MID = theme["panel_alt"]
+        self.FG_TEXT = theme["text"]
+        self.FG_MUTED = theme["text_muted"]
+        self.FG_ACCENT = theme["accent"]
+        self.FG_ACCENT_ALT = theme["accent_alt"]
+        self.ENTRY_BG = theme["entry_bg"]
+        self.ENTRY_FG = theme["entry_fg"]
+        self.BORDER_COLOR = theme["border"]
+        self.HOVER_BG = theme["hover_bg"]
+        self.LIST_BG = theme["list_bg"]
+        self.LIST_SELECT = theme["list_select"]
+        self.FONT = (theme["font"], theme["font_size"])
+
+
+        self.root.configure(bg=self.BG_ROOT)
+
+
+        self.style.configure("Dark.TFrame", background=self.BG_DARK)
+        self.style.configure("Dark.TLabel", background=self.BG_DARK, foreground=self.FG_TEXT, font=self.FONT)
+        self.style.configure(
+            "Dark.TButton",
+            background=self.BG_LIGHT,
+            foreground=self.FG_TEXT,
+            font=self.FONT,
+            padding=6
         )
-        
-        if result:
-            webbrowser.open("https://github.com/evanovar/RobloxAccountManager/releases/latest")
+        self.style.map("Dark.TButton", background=[("active", self.HOVER_BG)])
+        self.style.configure(
+            "Dark.TEntry",
+            fieldbackground=self.ENTRY_BG,
+            background=self.ENTRY_BG,
+            foreground=self.ENTRY_FG
+        )
+        self.style.configure(
+            "Dark.TCombobox",
+            fieldbackground=self.ENTRY_BG,
+            background=self.ENTRY_BG,
+            foreground=self.ENTRY_FG
+        )
+        self.style.map(
+            "Dark.TCombobox",
+            fieldbackground=[("readonly", self.ENTRY_BG)],
+            foreground=[("readonly", self.ENTRY_FG)]
+        )
+
+
+        if getattr(self, "status_label", None):
+            self.status_label.configure(bg=self.BG_DARK)
+
+        if getattr(self, "account_list", None):
+            self.account_list.configure(
+                bg=self.LIST_BG,
+                fg=self.FG_TEXT,
+                selectbackground=self.FG_ACCENT,
+                highlightbackground=self.BORDER_COLOR,
+                highlightcolor=self.BORDER_COLOR
+            )
+        if getattr(self, "account_drop_indicator", None):
+            self.account_drop_indicator.configure(bg=self.FG_ACCENT)
+
+        if getattr(self, "game_list", None):
+            self.game_list.configure(
+                bg=self.LIST_BG,
+                fg=self.FG_TEXT,
+                selectbackground=self.FG_ACCENT,
+                highlightbackground=self.BORDER_COLOR,
+                highlightcolor=self.BORDER_COLOR
+            )
+
+        if getattr(self, "add_account_dropdown", None):
+            self.add_account_dropdown.configure(bg=self.BG_MID, highlightbackground=self.BORDER_COLOR)
+            for widget in self.add_account_dropdown.winfo_children():
+                if isinstance(widget, tk.Button):
+                    widget.configure(
+                        bg=self.BG_MID,
+                        fg=self.FG_TEXT,
+                        activebackground=self.HOVER_BG,
+                        activeforeground=self.FG_TEXT,
+                        bd=0
+                    )
+
+        self._apply_menu_palette_defaults()
+        self.apply_menu_theme()
+        if getattr(self, "console_window", None):
+            self.console_window.apply_theme()
+
+        self._apply_themable_text_widgets()
+        self._apply_title_bar_theme_all()
+
+        if persist:
+            self.settings["selected_theme"] = theme_name
+            self.save_settings()
+
+    def register_themable_text_widget(self, widget):
+        if widget not in self.themable_text_widgets:
+            self.themable_text_widgets.append(widget)
+        self._apply_text_widget_theme(widget)
+
+    def _apply_themable_text_widgets(self):
+        alive_widgets = []
+        for widget in self.themable_text_widgets:
+            try:
+                if widget.winfo_exists():
+                    self._apply_text_widget_theme(widget)
+                    alive_widgets.append(widget)
+            except Exception:
+                continue
+        self.themable_text_widgets = alive_widgets
+
+    def _apply_text_widget_theme(self, widget):
+        try:
+            widget.configure(
+                bg=self.BG_MID,
+                fg=self.FG_TEXT,
+                insertbackground=self.FG_TEXT,
+                highlightbackground=self.BORDER_COLOR,
+                highlightcolor=self.BORDER_COLOR
+            )
+        except tk.TclError:
+            try:
+                widget.configure(bg=self.BG_MID, fg=self.FG_TEXT)
+            except tk.TclError:
+                pass
+
+    def register_toplevel(self, window):
+        if window in self.themable_windows:
+            self._apply_title_bar_theme(window)
+            return
+
+        self.themable_windows.add(window)
+
+        def _cleanup(event, win=window):
+            self.themable_windows.discard(win)
+
+        try:
+            window.bind("<Destroy>", _cleanup, add="+")
+            window.bind("<Map>", self._handle_window_map, add="+")
+        except Exception:
+            pass
+
+        self._apply_title_bar_theme(window)
+
+    def _handle_window_map(self, event):
+        widget = event.widget if event else None
+        if widget is None:
+            return
+        try:
+            self._apply_title_bar_theme(widget)
+        except Exception:
+            pass
+
+    def _apply_title_bar_theme_all(self):
+        stale = []
+        for window in list(self.themable_windows):
+            try:
+                if window.winfo_exists():
+                    self._apply_title_bar_theme(window)
+                else:
+                    stale.append(window)
+            except Exception:
+                stale.append(window)
+        for win in stale:
+            self.themable_windows.discard(win)
+
+    def _apply_title_bar_theme(self, window):
+        if platform.system() != "Windows":
+            return
+
+        try:
+            hwnd = window.winfo_id()
+            parent = ctypes.windll.user32.GetParent(hwnd)
+            if parent:
+                hwnd = parent
+        except Exception:
+            return
+
+        try:
+            dwmapi = ctypes.windll.dwmapi
+        except Exception:
+            return
+
+        def _set_attr(attr, val):
+            try:
+                dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
+            except Exception:
+                pass
+
+        is_dark = self._is_dark_color(self.BG_ROOT)
+        use_dark = ctypes.c_int(1 if is_dark else 0)
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        _set_attr(DWMWA_USE_IMMERSIVE_DARK_MODE, use_dark)
+
+        caption_color = ctypes.c_int(self._hex_to_colorref(self.BG_DARK))
+        text_color = ctypes.c_int(self._hex_to_colorref(self.FG_TEXT))
+        border_color = ctypes.c_int(self._hex_to_colorref(self.BORDER_COLOR))
+
+        DWMWA_CAPTION_COLOR = 35
+        DWMWA_TEXT_COLOR = 36
+        DWMWA_BORDER_COLOR = 34
+
+        _set_attr(DWMWA_CAPTION_COLOR, caption_color)
+        _set_attr(DWMWA_TEXT_COLOR, text_color)
+        _set_attr(DWMWA_BORDER_COLOR, border_color)
+
+    @staticmethod
+    def _hex_to_colorref(hex_color):
+        if not isinstance(hex_color, str):
+            return 0
+        value = hex_color.lstrip('#')
+        if len(value) != 6:
+            return 0
+        try:
+            r = int(value[0:2], 16)
+            g = int(value[2:4], 16)
+            b = int(value[4:6], 16)
+        except ValueError:
+            return 0
+        return (b << 16) | (g << 8) | r
+
+    @staticmethod
+    def _is_dark_color(hex_color):
+        if not isinstance(hex_color, str):
+            return False
+        value = hex_color.lstrip('#')
+        if len(value) != 6:
+            return False
+        try:
+            r = int(value[0:2], 16)
+            g = int(value[2:4], 16)
+            b = int(value[4:6], 16)
+        except ValueError:
+            return False
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return luminance < 128
+
+    def apply_menu_theme(self):
+        """Apply theme colors to the menubar and dropdown menus."""
+        if getattr(self, "menu_bar_frame", None):
+            self.menu_bar_frame.configure(bg=self.BG_DARK)
+        for button in getattr(self, "menu_buttons", []):
+            try:
+                button.configure(
+                    bg=self.BG_LIGHT,
+                    fg=self.FG_TEXT,
+                    activebackground=self.HOVER_BG,
+                    activeforeground=self.FG_TEXT,
+                    relief="flat",
+                    borderwidth=0,
+                    highlightthickness=0,
+                    padx=10,
+                    pady=4
+                )
+            except tk.TclError:
+                pass
+
+        menus = [getattr(self, attr, None) for attr in ("actions_menu", "installer_menu")]
+        for menu in menus:
+            self._style_menu_recursive(menu)
+
+    def _apply_menu_palette_defaults(self):
+        try:
+            root = self.root
+            root.option_add("*Menu.background", self.BG_DARK)
+            root.option_add("*Menu.foreground", self.FG_TEXT)
+            root.option_add("*Menu.activeBackground", self.HOVER_BG)
+            root.option_add("*Menu.activeForeground", self.FG_TEXT)
+            root.option_add("*Menu.selectColor", self.FG_ACCENT)
+        except Exception:
+            pass
+
+    def _style_menu_recursive(self, menu):
+        if menu is None:
+            return
+        try:
+            menu.configure(
+                bg=self.BG_DARK,
+                fg=self.FG_TEXT,
+                activebackground=self.HOVER_BG,
+                activeforeground=self.FG_TEXT,
+                borderwidth=0,
+                relief="flat",
+                tearoff=False
+            )
+        except tk.TclError:
+            return
+
+        end_index = menu.index("end")
+        if end_index is None:
+            return
+        for index in range(end_index + 1):
+            try:
+                submenu_name = menu.entrycget(index, "menu")
+            except tk.TclError:
+                continue
+            if submenu_name:
+                try:
+                    submenu = menu.nametowidget(submenu_name)
+                except Exception:
+                    submenu = None
+                self._style_menu_recursive(submenu)
+
+    def initialize_multi_roblox(self):
+        """Initialize Multi Roblox on startup if enabled in settings"""
+        if self.settings.get("enable_multi_roblox", False):
+            success = self.enable_multi_roblox()
+            if not success:
+                self.settings["enable_multi_roblox"] = False
+                self.save_settings()
+
+    def build_main_menu(self):
+        """Create the main menu bar and attach quick actions."""
+        if getattr(self, "menu_bar_frame", None):
+            self.menu_bar_frame.destroy()
+
+        self.menu_bar_frame = tk.Frame(self.root, bg=self.BG_DARK, highlightthickness=0)
+        self.menu_bar_frame.pack(fill="x", padx=10, pady=(10, 4))
+        self.menu_buttons = []
+
+        import_btn = tk.Button(
+            self.menu_bar_frame,
+            text="Import Cookie",
+            command=self.import_cookie,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0
+        )
+        import_btn.pack(side="left", padx=(0, 8))
+        self.menu_buttons.append(import_btn)
+
+        force_btn = tk.Button(
+            self.menu_bar_frame,
+            text="Force Quit Roblox",
+            command=self.force_quit_roblox,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0
+        )
+        force_btn.pack(side="left", padx=(0, 8))
+        self.menu_buttons.append(force_btn)
+
+        self.installer_menu = tk.Menu(self.root, tearoff=False)
+        installer_btn = tk.Button(
+            self.menu_bar_frame,
+            text="Roblox Installer",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            command=self.show_installer_menu
+        )
+        installer_btn.pack(side="left", padx=(0, 8))
+        installer_btn.bind("<Button-1>", self.show_installer_menu)
+        self.installer_button = installer_btn
+        self.menu_buttons.append(installer_btn)
+
+        self.refresh_installer_menu()
+        self.apply_menu_theme()
+
+    def show_installer_menu(self, event=None):
+        if not getattr(self, "installer_menu", None):
+            return
+        button = getattr(self, "installer_button", None)
+        if button is None:
+            return
+        try:
+            x = button.winfo_rootx()
+            y = button.winfo_rooty() + button.winfo_height()
+            self.installer_menu.tk_popup(x, y)
+        finally:
+            try:
+                self.installer_menu.grab_release()
+            except Exception:
+                pass
+
+    def refresh_installer_menu(self):
+        """Populate the Roblox Installer menu with up to five recent versions."""
+        if self.installer_menu is None:
+            return
+
+        self.installer_menu.delete(0, tk.END)
+        versions = self.get_available_roblox_versions(limit=5)
+
+        if not versions:
+            self.installer_menu.add_command(label="No versions found", state="disabled")
+            return
+
+        for entry in versions:
+            display_text = self.format_version_display(entry)
+            self.installer_menu.add_command(
+                label=display_text,
+                command=lambda v=entry["version"]: self.use_installer_version(v)
+            )
+
+    def use_installer_version(self, version):
+        """Handle Roblox installer selection by launching download and copying install path."""
+        roblox_versions_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
+        suggested_version_path = os.path.join(roblox_versions_path, version)
+
+        download_url = (
+            "https://rdd.weao.gg/?channel=LIVE&binaryType=WindowsPlayer"
+            f"&version={version}&includeLauncher=false"
+        )
+
+        try:
+            webbrowser.open_new_tab(download_url)
+        except Exception as exc:
+            messagebox.showerror("Roblox Installer", f"Failed to open download link: {exc}")
+            return
+
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(roblox_versions_path)
+        except Exception as exc:
+            print(f"Failed to copy path to clipboard: {exc}")
+
+        path_exists = os.path.exists(roblox_versions_path)
+        info_lines = [
+            "Extract the downloaded files into this folder.",
+            "The path has been copied to your clipboard.",
+            f"\n{roblox_versions_path}",
+            f"\nSuggested subfolder for this build: {suggested_version_path}"
+        ]
+        if not path_exists:
+            info_lines.append("\n(Note: The Roblox Versions folder does not exist yet on disk.)")
+
+        messagebox.showinfo("Roblox Installer", "\n".join(info_lines))
 
     def toggle_add_account_dropdown(self):
         """Toggle the Add Account dropdown menu"""
@@ -382,7 +1237,7 @@ class AccountManagerUI:
         """Called when the main window moves/resizes; keep dropdown attached."""
         if self.add_account_dropdown_visible and self.add_account_dropdown is not None:
             self.position_add_account_dropdown()
-    
+
     def hide_add_account_dropdown(self):
         """Hide the Add Account dropdown menu"""
         if self.add_account_dropdown is not None:
@@ -409,6 +1264,120 @@ class AccountManagerUI:
                 except:
                     self.hide_add_account_dropdown()
 
+
+    def load_roblox_versions(self):
+        """Load available Roblox versions from the standard Roblox Versions directory"""
+        try:
+            local_versions = self.get_local_roblox_versions()
+            display_values = ["Latest Version"]
+            self.version_options = {"Latest Version": None}
+
+            for entry in local_versions:
+                label = entry.get("label")
+                path = entry.get("path")
+                if not label or not path:
+                    continue
+                display_values.append(label)
+                self.version_options[label] = path
+
+            self.version_dropdown['values'] = display_values or ["Latest Version"]
+        except Exception as e:
+            print(f"Error loading Roblox versions: {e}")
+            self.version_options = {"Latest Version": None}
+            self.version_dropdown['values'] = ["Latest Version"]
+
+        self.refresh_installer_menu()
+
+    def get_local_roblox_versions(self, limit=None):
+        """Return Roblox version directories from default, Bloxstrap, and Fishstrap installs."""
+        sources = [
+            {
+                "name": "Roblox",
+                "base": os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
+            },
+            {
+                "name": "Bloxstrap",
+                "base": os.path.expandvars(r"%LOCALAPPDATA%\Bloxstrap\Versions")
+            },
+            {
+                "name": "Fishstrap",
+                "base": os.path.expandvars(r"%LOCALAPPDATA%\Fishstrap\Versions")
+            }
+        ]
+
+        versions = []
+        for source in sources:
+            base_path = source["base"]
+            if not base_path or not os.path.exists(base_path):
+                continue
+
+            try:
+                entries = [
+                    os.path.join(base_path, d)
+                    for d in os.listdir(base_path)
+                    if os.path.isdir(os.path.join(base_path, d))
+                ]
+                entries.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+
+                if limit is not None:
+                    entries = entries[:limit]
+
+                for idx, path in enumerate(entries):
+                    label = f"[{source['name']}] {os.path.basename(path)}"
+                    versions.append({
+                        "label": label,
+                        "path": path,
+                        "status": "LIVE" if idx == 0 else "PAST"
+                    })
+            except Exception as exc:
+                print(f"Error while enumerating {source['name']} versions: {exc}")
+
+        return versions
+
+    def fetch_remote_versions(self, limit=5):
+        """Fetch Roblox version history from Roblox CDN (LIVE channel)."""
+        history_url = "https://setup.rbxcdn.com/DeployHistory.txt"
+        versions = []
+
+        try:
+            response = requests.get(history_url, timeout=5)
+            response.raise_for_status()
+        except Exception as exc:
+            print(f"Failed to fetch remote Roblox versions: {exc}")
+            return versions
+
+        lines = response.text.splitlines()
+        version_pattern = re.compile(r"version-[0-9a-fA-F]+")
+
+        for line in reversed(lines):
+            line = line.strip()
+            if "WindowsPlayer" not in line:
+                continue
+            match = version_pattern.search(line)
+            if not match:
+                continue
+            version = match.group(0)
+            if any(entry["version"] == version for entry in versions):
+                continue
+            status = "LIVE" if not versions else "PAST"
+            versions.append({"version": version, "status": status})
+            if limit and len(versions) >= limit:
+                break
+
+        return versions
+
+    def get_available_roblox_versions(self, limit=None):
+        """Get Roblox versions preferring remote history, falling back to local folders."""
+        remote_versions = self.fetch_remote_versions(limit=limit)
+        if remote_versions:
+            return remote_versions
+        return self.get_local_roblox_versions(limit=limit)
+
+    def format_version_display(self, entry):
+        """Return display text for a Roblox version entry with status indicator."""
+        status = entry.get("status", "PAST").upper()
+        version = entry.get("version", "")
+        return f"[{status}] {version}"
 
     def save_settings(self):
         """Save UI settings to file"""
@@ -453,6 +1422,9 @@ class AccountManagerUI:
 
     def update_game_name(self):
         """Debounced, non-blocking update of the game name label"""
+        self._game_name_request_token += 1
+        request_token = self._game_name_request_token
+
         if self._game_name_after_id is not None:
             try:
                 self.root.after_cancel(self._game_name_after_id)
@@ -460,37 +1432,50 @@ class AccountManagerUI:
                 pass
             self._game_name_after_id = None
 
-        def schedule_fetch():
+        def schedule_fetch(token=request_token):
             place_id = self.place_entry.get().strip()
             if not place_id or not place_id.isdigit():
-                self.game_name_label.config(text="")
+                self._handle_game_name_result(token, None)
                 return
 
-            def worker(pid):
-                from classes.roblox_api import RobloxAPI
+            def worker(pid, active_token):
                 name = RobloxAPI.get_game_name(pid)
-                if name:
-                    max_name_length = 20
-                    if len(name) > max_name_length:
-                        name = name[:max_name_length-2] + ".."
-                    display_text = f"Current: {name}"
-                else:
-                    display_text = ""
-                
-                def update_label(text=display_text):
-                    try:
-                        self.game_name_label.config(text=text)
-                    except:
-                        pass
-                
-                self.root.after(0, update_label)
+                self.root.after(0, lambda: self._handle_game_name_result(active_token, name))
 
-            threading.Thread(target=worker, args=(place_id,), daemon=True).start()
+            threading.Thread(target=worker, args=(place_id, token), daemon=True).start()
 
         self._game_name_after_id = self.root.after(350, schedule_fetch)
 
+    def _handle_game_name_result(self, token, name):
+        if token != self._game_name_request_token:
+            return
+        text = f"Current: {name}" if name else ""
+        self._set_game_name_label(text)
+
+    def _set_game_name_label(self, text):
+        if self._game_name_label_after_id is not None:
+            try:
+                self.root.after_cancel(self._game_name_label_after_id)
+            except Exception:
+                pass
+            self._game_name_label_after_id = None
+
+        def update_label():
+            try:
+                self.game_name_label.config(text=text)
+            except Exception:
+                pass
+
+        self._game_name_label_after_id = self.root.after(0, update_label)
+
     def add_game_to_list(self, place_id, game_name, private_server=""):
         """Add a game to the saved list (max based on settings)"""
+        self.refresh_game_list()
+        self.update_game_name()
+        
+
+        self.load_roblox_versions()
+        
         for game in self.settings["game_list"]:
             if game["place_id"] == place_id and game.get("private_server", "") == private_server:
                 return
@@ -549,10 +1534,19 @@ class AccountManagerUI:
             self.settings["game_list"].pop(index)
             self.save_settings()
             self.refresh_game_list()
-            messagebox.showinfo("Success", "Game removed from list!")
+            self.show_success_message("Game removed from list!")
 
-    def refresh_accounts(self):
+    def _extract_username(self, display_text):
+        return display_text.split(' • ')[0]
+
+    def refresh_accounts(self, selected_usernames=None):
         """Refresh the account list"""
+        if selected_usernames is None:
+            selected_usernames = [
+                self._extract_username(self.account_list.get(idx))
+                for idx in self.account_list.curselection()
+            ]
+
         self.account_list.delete(0, tk.END)
         for username, data in self.manager.accounts.items():
             note = data.get('note', '') if isinstance(data, dict) else ''
@@ -560,53 +1554,10 @@ class AccountManagerUI:
             if note:
                 display_text += f" • {note}"
             self.account_list.insert(tk.END, display_text)
-    
-    def on_drag_start(self, event):
-        """Start dragging an account"""
-        widget = event.widget
-        index = widget.nearest(event.y)
-        if index >= 0:
-            self.drag_data["index"] = index
-            self.drag_data["item"] = widget.get(index)
-            widget.selection_clear(0, tk.END)
-            widget.selection_set(index)
-    
-    def on_drag_motion(self, event):
-        """Handle drag motion - highlight drop position"""
-        widget = event.widget
-        index = widget.nearest(event.y)
-        if index >= 0 and self.drag_data["index"] is not None:
-            widget.selection_clear(0, tk.END)
-            widget.selection_set(index)
-    
-    def on_drag_release(self, event):
-        """Release drag and reorder accounts"""
-        if self.drag_data["index"] is None:
-            return
-        
-        widget = event.widget
-        drop_index = widget.nearest(event.y)
-        drag_index = self.drag_data["index"]
-        
-        if drop_index >= 0 and drag_index != drop_index:
-            ordered_usernames = list(self.manager.accounts.keys())
-            
-            username = ordered_usernames.pop(drag_index)
-            ordered_usernames.insert(drop_index, username)
-            
-            new_accounts = {}
-            for uname in ordered_usernames:
-                new_accounts[uname] = self.manager.accounts[uname]
-            
-            self.manager.accounts = new_accounts
-            self.manager.save_accounts()
-            
-            self.refresh_accounts()
-            
-            widget.selection_clear(0, tk.END)
-            widget.selection_set(drop_index)
-        
-        self.drag_data = {"item": None, "index": None}
+            if username in selected_usernames:
+                idx = self.account_list.size() - 1
+                self.account_list.selection_set(idx)
+                self.account_list.activate(idx)
     
     def get_selected_username(self):
         """Get the currently selected username"""
@@ -616,8 +1567,7 @@ class AccountManagerUI:
             return None
         
         display_text = self.account_list.get(selection[0])
-        username = display_text.split(' • ')[0]
-        return username
+        return self._extract_username(display_text)
     
     def get_selected_usernames(self):
         """Get all selected usernames (for multi-select mode)"""
@@ -626,12 +1576,120 @@ class AccountManagerUI:
             messagebox.showwarning("No Selection", "Please select at least one account first.")
             return []
         
-        usernames = []
-        for index in selections:
-            display_text = self.account_list.get(index)
-            username = display_text.split(' • ')[0]
-            usernames.append(username)
-        return usernames
+        return [self._extract_username(self.account_list.get(index)) for index in selections]
+
+    def on_account_drag_start(self, event):
+        if self.account_list.size() <= 1:
+            return
+        if self._drag_modifiers_active(event):
+            self._reset_drag_data()
+            return
+        index = self.account_list.nearest(event.y)
+        if index < 0 or index >= self.account_list.size():
+            return "break"
+        self.account_list.selection_clear(0, tk.END)
+        self.account_list.selection_set(index)
+        display_text = self.account_list.get(index)
+        self.account_list_drag_data.update({
+            "start_index": index,
+            "drop_index": index,
+            "start_username": self._extract_username(display_text),
+            "is_dragging": False
+        })
+        return "break"
+
+    def on_account_drag_motion(self, event):
+        data = self.account_list_drag_data
+        if data["start_index"] is None:
+            return "break"
+        drop_index = self._get_drop_index_from_event(event.y)
+        data["drop_index"] = drop_index
+        data["is_dragging"] = True
+        self._update_drop_indicator(drop_index)
+        return "break"
+
+    def on_account_drag_stop(self, event):
+        data = self.account_list_drag_data
+        self._hide_drop_indicator()
+        if not data["is_dragging"] or data["start_index"] is None:
+            self._reset_drag_data()
+            return "break"
+
+        drop_index = data["drop_index"]
+        start_index = data["start_index"]
+        if drop_index is None or drop_index == start_index or drop_index == start_index + 1:
+            self._reset_drag_data()
+            return "break"
+
+        self._finalize_account_reorder(start_index, drop_index, data["start_username"])
+        self._reset_drag_data()
+        return "break"
+
+    @staticmethod
+    def _drag_modifiers_active(event):
+
+        modifiers_mask = 0x1 | 0x4 | 0x8
+        return bool(event.state & modifiers_mask)
+
+    def _reset_drag_data(self):
+        self.account_list_drag_data = {
+            "start_index": None,
+            "drop_index": None,
+            "start_username": None,
+            "is_dragging": False
+        }
+
+    def _get_drop_index_from_event(self, y_coord):
+        size = self.account_list.size()
+        if size == 0:
+            return None
+        nearest = self.account_list.nearest(y_coord)
+        nearest = min(max(nearest, 0), size - 1)
+        bbox = self.account_list.bbox(nearest)
+        if not bbox:
+            return None
+        _, y, _, height = bbox
+        if y_coord > y + height / 2:
+            return min(nearest + 1, size)
+        return nearest
+
+    def _update_drop_indicator(self, drop_index):
+        if self.account_drop_indicator is None or drop_index is None:
+            self._hide_drop_indicator()
+            return
+        size = self.account_list.size()
+        if size == 0:
+            self._hide_drop_indicator()
+            return
+        if drop_index >= size:
+            bbox = self.account_list.bbox(size - 1)
+            if not bbox:
+                self._hide_drop_indicator()
+                return
+            y = bbox[1] + bbox[3]
+        else:
+            bbox = self.account_list.bbox(drop_index)
+            if not bbox:
+                self._hide_drop_indicator()
+                return
+            y = bbox[1]
+        self.account_drop_indicator.place(x=0, y=y - 1, relwidth=1)
+
+    def _hide_drop_indicator(self):
+        if self.account_drop_indicator:
+            self.account_drop_indicator.place_forget()
+
+    def _finalize_account_reorder(self, start_index, drop_index, moved_username):
+        usernames = [self._extract_username(text) for text in self.account_list.get(0, tk.END)]
+        if not usernames:
+            return
+        drop_index = max(0, min(drop_index, len(usernames)))
+        entry = usernames.pop(start_index)
+        if drop_index > start_index:
+            drop_index -= 1
+        usernames.insert(drop_index, entry)
+        self.manager.reorder_accounts(usernames)
+        self.refresh_accounts(selected_usernames=[moved_username])
 
     def add_account(self):
         """
@@ -666,7 +1724,7 @@ class AccountManagerUI:
         """
         if success:
             self.refresh_accounts()
-            messagebox.showinfo("Success", "Account added successfully!")
+            self.show_success_message("Account added successfully!")
         else:
             messagebox.showerror("Error", "Failed to add account.\nPlease make sure you completed the login process.")
     
@@ -701,6 +1759,7 @@ class AccountManagerUI:
         
         import_window.transient(self.root)
         import_window.grab_set()
+        self.register_toplevel(import_window)
         
         main_frame = ttk.Frame(import_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
@@ -726,6 +1785,7 @@ class AccountManagerUI:
             wrap="word"
         )
         cookie_text.pack(side="left", fill="both", expand=True)
+        self.register_themable_text_widget(cookie_text)
         
         cookie_scrollbar = ttk.Scrollbar(cookie_frame, command=cookie_text.yview)
         cookie_scrollbar.pack(side="right", fill="y")
@@ -742,7 +1802,7 @@ class AccountManagerUI:
                 success, username = self.manager.import_cookie_account(cookie)
                 if success:
                     self.refresh_accounts()
-                    messagebox.showinfo("Success", f"Account '{username}' imported successfully!")
+                    self.show_success_message(f"Account '{username}' imported successfully!")
                     import_window.destroy()
                 else:
                     messagebox.showerror("Error", "Failed to import account. Please check the cookie.")
@@ -790,6 +1850,7 @@ class AccountManagerUI:
             amount_window.attributes("-topmost", True)
         
         amount_window.transient(self.root)
+        self.register_toplevel(amount_window)
         
         main_frame = ttk.Frame(amount_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
@@ -858,6 +1919,7 @@ class AccountManagerUI:
             website_window.attributes("-topmost", True)
         
         website_window.transient(self.root)
+        self.register_toplevel(website_window)
         
         main_frame = ttk.Frame(website_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
@@ -926,6 +1988,7 @@ class AccountManagerUI:
             js_window.attributes("-topmost", True)
         
         js_window.transient(self.root)
+        self.register_toplevel(js_window)
         
         main_frame = ttk.Frame(js_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
@@ -949,6 +2012,7 @@ class AccountManagerUI:
             wrap="word"
         )
         js_text.pack(side="left", fill="both", expand=True)
+        self.register_themable_text_widget(js_text)
         
         js_scrollbar = ttk.Scrollbar(js_frame, command=js_text.yview)
         js_scrollbar.pack(side="right", fill="y")
@@ -991,9 +2055,8 @@ class AccountManagerUI:
                 if success:
                     self.root.after(0, lambda: [
                         self.refresh_accounts(),
-                        messagebox.showinfo(
-                            "Success",
-                            f"Account(s) added successfully with Javascript execution!"
+                        self.show_success_message(
+                            "Account(s) added successfully with Javascript execution!"
                         )
                     ])
                 else:
@@ -1011,6 +2074,38 @@ class AccountManagerUI:
         thread = threading.Thread(target=launch_thread, daemon=True)
         thread.start()
 
+    def force_quit_roblox(self):
+        """Force close all Roblox instances via taskkill."""
+        confirm = messagebox.askyesno(
+            "Force Quit Roblox",
+            "This will immediately close all running RobloxPlayerBeta.exe processes. Continue?"
+        )
+        if not confirm:
+            return
+
+        try:
+            result = subprocess.run(
+                ['taskkill', '/F', '/IM', 'RobloxPlayerBeta.exe'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+        except Exception as exc:
+            messagebox.showerror("Force Quit Roblox", f"Failed to run taskkill: {exc}")
+            return
+
+        combined_output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0:
+            messagebox.showinfo("Force Quit Roblox", "All Roblox instances have been closed.")
+        elif "not found" in combined_output.lower():
+            messagebox.showinfo("Force Quit Roblox", "No Roblox instances were running.")
+        else:
+            messagebox.showerror(
+                "Force Quit Roblox",
+                f"Unable to close Roblox instances. Details:\n{combined_output.strip() or 'Unknown error.'}"
+            )
+
     def remove_account(self):
         """Remove the selected account(s)"""
         if self.settings.get("enable_multi_select", False):
@@ -1021,31 +2116,36 @@ class AccountManagerUI:
             if len(usernames) == 1:
                 confirm = messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete '{usernames[0]}'?")
             else:
-                confirm = messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete {len(usernames)} accounts?\n\n" + "\n".join(usernames))
+                confirm = messagebox.askyesno(
+                    "Confirm Delete",
+                    f"Are you sure you want to delete {len(usernames)} accounts?\n\n" + "\n".join(usernames)
+                )
             
             if confirm:
                 for username in usernames:
                     self.manager.delete_account(username)
                 self.refresh_accounts()
-                messagebox.showinfo("Success", f"{len(usernames)} account(s) deleted successfully!")
+                self.show_success_message(f"{len(usernames)} account(s) deleted successfully!")
         else:
             username = self.get_selected_username()
-            if username:
-                confirm = messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete '{username}'?")
-                if confirm:
-                    self.manager.delete_account(username)
-                    self.refresh_accounts()
-                    messagebox.showinfo("Success", f"Account '{username}' deleted successfully!")
+            if not username:
+                return
+            confirm = messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete '{username}'?")
+            if confirm:
+                self.manager.delete_account(username)
+                self.refresh_accounts()
+                self.show_success_message(f"Account '{username}' deleted successfully!")
 
     def validate_account(self):
         """Validate the selected account"""
         username = self.get_selected_username()
-        if username:
-            is_valid = self.manager.validate_account(username)
-            if is_valid:
-                messagebox.showinfo("Validation", f"Account '{username}' is valid! ✓")
-            else:
-                messagebox.showwarning("Validation", f"Account '{username}' is invalid or expired.")
+        if not username:
+            return
+        is_valid = self.manager.validate_account(username)
+        if is_valid:
+            messagebox.showinfo("Validation", f"Account '{username}' is valid!")
+        else:
+            messagebox.showwarning("Validation", f"Account '{username}' is invalid or expired.")
     
     def edit_account_note(self):
         """Edit note for the selected account(s)"""
@@ -1053,22 +2153,20 @@ class AccountManagerUI:
             usernames = self.get_selected_usernames()
             if not usernames:
                 return
-            
-            if len(usernames) == 1:
-                username = usernames[0]
-                current_note = self.manager.get_account_note(username)
-                title_text = f"Edit Note - {username}"
-            else:
-                username = None
-                current_note = ""
-                title_text = f"Edit Note - {len(usernames)} accounts"
         else:
             username = self.get_selected_username()
             if not username:
                 return
             usernames = [username]
-            current_note = self.manager.get_account_note(username)
-            title_text = f"Edit Note - {username}"
+        
+        if len(usernames) == 1:
+            current_note = self.manager.get_account_note(usernames[0])
+            title_text = f"Edit Note - {usernames[0]}"
+            label_text = f"Edit note for '{usernames[0]}'"
+        else:
+            current_note = ""
+            title_text = f"Edit Note - {len(usernames)} Accounts"
+            label_text = f"Edit note for {len(usernames)} accounts"
         
         note_window = tk.Toplevel(self.root)
         note_window.title(title_text)
@@ -1091,14 +2189,10 @@ class AccountManagerUI:
         
         note_window.transient(self.root)
         note_window.grab_set()
+        self.register_toplevel(note_window)
         
         main_frame = ttk.Frame(note_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        if len(usernames) == 1:
-            label_text = f"Edit note for '{usernames[0]}'"
-        else:
-            label_text = f"Edit note for {len(usernames)} accounts"
         
         ttk.Label(
             main_frame,
@@ -1118,6 +2212,7 @@ class AccountManagerUI:
             wrap="word"
         )
         note_text.pack(fill="both", expand=True, pady=(0, 15))
+        self.register_themable_text_widget(note_text)
         note_text.insert("1.0", current_note)
         note_text.focus_set()
         
@@ -1127,9 +2222,9 @@ class AccountManagerUI:
                 self.manager.set_account_note(uname, new_note)
             self.refresh_accounts()
             if len(usernames) == 1:
-                messagebox.showinfo("Success", f"Note updated for '{usernames[0]}'!")
+                self.show_success_message(f"Note updated for '{usernames[0]}'!")
             else:
-                messagebox.showinfo("Success", f"Note updated for {len(usernames)} accounts!")
+                self.show_success_message(f"Note updated for {len(usernames)} accounts!")
             note_window.destroy()
         
         button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
@@ -1149,8 +2244,71 @@ class AccountManagerUI:
             command=note_window.destroy
         ).pack(side="left", fill="x", expand=True, padx=(5, 0))
 
+        version_label = ttk.Label(
+            main_frame,
+            text=f"Version: {self.APP_VERSION}",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9)
+        )
+        version_label.pack(anchor="e", pady=(6, 0))
+
+        ttk.Button(
+            main_frame,
+            text="Console Output",
+            style="Dark.TButton",
+            command=self.open_console_output
+        ).pack(fill="x", pady=(8, 0))
+
+    def open_console_output(self):
+        """Open or focus the console output window."""
+        if self.console_window:
+            self.console_window.show()
+
     def launch_home(self):
-        """Launch Roblox application to home page with the selected account(s) logged in (non-blocking)"""
+        """Launch Chrome to Roblox home with the selected account(s) logged in (non-blocking)"""
+        if not self.is_chrome_installed():
+            messagebox.showwarning(
+                "Google Chrome Required",
+                "Launching browser requires Google Chrome to be installed.\n"
+                "Please install Google Chrome and try again."
+            )
+            return
+
+        if self.settings.get("enable_multi_select", False):
+            usernames = self.get_selected_usernames()
+            if not usernames:
+                return
+            if len(usernames) >= 3:
+                confirm = messagebox.askyesno(
+                    "Confirm Launch",
+                    f"Are you sure you want to launch {len(usernames)} browser windows?\n\nThis will open multiple Chrome instances."
+                )
+                if not confirm:
+                    return
+        else:
+            username = self.get_selected_username()
+            if not username:
+                return
+            usernames = [username]
+
+        def worker(selected_usernames):
+            success_count = 0
+            for uname in selected_usernames:
+                try:
+                    if self.manager.launch_home(uname):
+                        success_count += 1
+                except Exception as e:
+                    print(f"Failed to launch browser for {uname}: {e}")
+            if success_count > 0:
+                self.root.after(0, lambda: self.show_success_message(f"Launched {success_count} browser(s)!"))
+            else:
+                self.root.after(0, lambda: messagebox.showerror("Error", "Failed to launch any browsers."))
+
+        threading.Thread(target=worker, args=(usernames,), daemon=True).start()
+
+    def launch_home_app(self):
+        """Launch the Roblox client to the home page for the selected account(s) (non-blocking)"""
+
         if self.settings.get("enable_multi_select", False):
             usernames = self.get_selected_usernames()
             if not usernames:
@@ -1168,30 +2326,32 @@ class AccountManagerUI:
                 return
             usernames = [username]
 
+        debug_enabled = self.settings.get("enable_debug_logging", False)
+
         def worker(selected_usernames):
             success_count = 0
             for uname in selected_usernames:
                 try:
-                    if self.manager.launch_roblox(uname, "", ""):
+                    if self.manager.launch_home_app(uname, enable_debug=debug_enabled):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch Roblox home for {uname}: {e}")
-            
-            def on_done():
+
+            def notify():
                 if success_count > 0:
                     if len(selected_usernames) == 1:
-                        messagebox.showinfo("Success", "Roblox is launching to home! Check your desktop.")
+                        self.show_success_message("Roblox is launching to home! Check your desktop.")
                     else:
-                        messagebox.showinfo("Success", f"Roblox is launching to home for {success_count} account(s)! Check your desktop.")
+                        self.show_success_message(f"Roblox is launching to home for {success_count} account(s)! Check your desktop.")
                 else:
                     messagebox.showerror("Error", "Failed to launch Roblox.")
-            
-            self.root.after(0, on_done)
+
+            self.root.after(0, notify)
 
         threading.Thread(target=worker, args=(usernames,), daemon=True).start()
 
     def launch_game(self):
-        """Launch Roblox game with the selected account(s) (non-blocking)"""
+        """Launch Roblox game with the selected account(s)"""
         if self.settings.get("enable_multi_select", False):
             usernames = self.get_selected_usernames()
             if not usernames:
@@ -1203,74 +2363,68 @@ class AccountManagerUI:
             usernames = [username]
 
         game_id = self.place_entry.get().strip()
-        if not game_id:
-            messagebox.showwarning("Missing Info", "Please enter a Place ID.")
-            return
-        if not game_id.isdigit():
-            messagebox.showerror("Invalid Input", "Place ID must be a valid number.")
-            return
         private_server = self.private_server_entry.get().strip()
+        
 
-        if self.settings.get("confirm_before_launch", False):
-            from classes.roblox_api import RobloxAPI
-            game_name = RobloxAPI.get_game_name(game_id)
-            if not game_name:
-                game_name = f"Place {game_id}"
-            if len(usernames) == 1:
-                confirm = messagebox.askyesno("Confirm Launch", f"Are you sure you want to join {game_name}?")
-            else:
-                confirm = messagebox.askyesno("Confirm Launch", f"Are you sure you want to join {game_name} with {len(usernames)} accounts?")
+        selected_version_label = self.version_var.get()
+        version_path = None
+        version_path = self.version_options.get(selected_version_label)
+
+        if not game_id:
+            messagebox.showwarning("Missing Information", "Please enter a Place ID.")
+            return
+
+        if self.settings.get("confirm_before_launch", True) and len(usernames) > 1:
+            confirm = messagebox.askyesno(
+                "Confirm Launch",
+                f"Are you sure you want to launch {len(usernames)} accounts?"
+            )
             if not confirm:
                 return
 
-        def worker(selected_usernames, pid, psid):
+        debug_enabled = self.settings.get("enable_debug_logging", False)
+
+        def worker(selected_usernames, pid, psid, ver, debug_flag):
             success_count = 0
             for uname in selected_usernames:
                 try:
-                    if self.manager.launch_roblox(uname, pid, psid):
+                    if self.manager.launch_roblox(uname, pid, psid, ver, enable_debug=debug_flag):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch game for {uname}: {e}")
 
             def on_done():
                 if success_count > 0:
-                    from classes.roblox_api import RobloxAPI
                     gname = RobloxAPI.get_game_name(pid)
                     if gname:
                         self.add_game_to_list(pid, gname, psid)
                     else:
                         self.add_game_to_list(pid, f"Place {pid}", psid)
                     if len(selected_usernames) == 1:
-                        messagebox.showinfo("Success", "Roblox is launching! Check your desktop.")
+                        self.show_success_message("Roblox is launching! Check your desktop.")
                     else:
-                        messagebox.showinfo("Success", f"Roblox is launching for {success_count} account(s)! Check your desktop.")
+                        self.show_success_message(f"Roblox is launching for {success_count} account(s)! Check your desktop.")
                 else:
                     messagebox.showerror("Error", "Failed to launch Roblox.")
 
             self.root.after(0, on_done)
 
-        threading.Thread(target=worker, args=(usernames, game_id, private_server), daemon=True).start()
+        threading.Thread(target=worker, args=(usernames, game_id, private_server, version_path, debug_enabled), daemon=True).start()
 
     def enable_multi_roblox(self):
         """Enable Multi Roblox + 773 fix"""
-        # hello programmers! I know you're reading this code, because you want to know how did I implement this feature in Python. (and most importantly, the 773 fix)
-        # because of that, I'll leave some comments here to help you understand.
+
         import subprocess
         import win32event
         import win32api
         
-        if self.multi_roblox_handle is not None:
-            self.disable_multi_roblox()
-        
-        # first, we check if roblox is running, this is very important.
-        # if roblox is running, we cannot enable multi roblox, because the mutex is already created by the running instance.
-        # so we ask the user for permission to close all roblox processes.
+
         try:
             result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq RobloxPlayerBeta.exe'], 
-                                  capture_output=True, text=True, encoding='utf-8', errors='replace') # checks running processes
+                                  capture_output=True, text=True, encoding='utf-8', errors='replace') 
             
             if result.stdout and 'RobloxPlayerBeta.exe' in result.stdout:
-                response = messagebox.askquestion( # ask user for permission
+                response = messagebox.askquestion( 
                     "Roblox Already Running",
                     "A Roblox instance is already running.\n\n"
                     "To use Multi Roblox, you need to close all Roblox instances first.\n\n"
@@ -1280,24 +2434,14 @@ class AccountManagerUI:
                 
                 if response == 'yes':
                     subprocess.run(['taskkill', '/F', '/IM', 'RobloxPlayerBeta.exe'], 
-                                 capture_output=True, text=True, encoding='utf-8', errors='replace') # closes roblox
-                    messagebox.showinfo("Success", "All Roblox instances have been closed.")
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace') 
+                    self.show_success_message("All Roblox instances have been closed.")
                 else:
                     return False
             
-            # then here's the magic:
-            # to enable multi roblox, we create the mutex before roblox creates it.
-            # this means, when roblox starts, it cannot be created by roblox again.
-            # thus, allowing multiple instances to run. Simple, right? (doesn't fix 773 yet)
-            mutex = win32event.CreateMutex(None, True, "ROBLOX_singletonEvent")
-            print("[INFO] Multi Roblox activated.")
+
+            mutex = win32event.CreateMutex(None, True, "ROBLOX_singletonEvent") 
             
-            # check if mutex already existed (GetLastError returns ERROR_ALREADY_EXISTS = 183)
-            if win32api.GetLastError() == 183:
-                print("[WARNING] Mutex already exists. Taking ownership...")
-            
-            # now let's get over on the 773 fix part
-            # first, we need to find the RobloxCookies.dat file
             cookies_path = os.path.join(
                 os.getenv('LOCALAPPDATA'),
                 r'Roblox\LocalStorage\RobloxCookies.dat'
@@ -1306,9 +2450,6 @@ class AccountManagerUI:
             cookie_file = None
             if os.path.exists(cookies_path):
                 try:
-                    # to actually apply the 773 fix, we need to lock the cookies file
-                    # this prevents roblox from accessing it, which causes error 773 to not appear
-                    # and there, you have it, multi roblox + 773 fix!
                     cookie_file = open(cookies_path, 'r+b')
                     msvcrt.locking(cookie_file.fileno(), msvcrt.LK_NBLCK, os.path.getsize(cookies_path))
                     print("[INFO] Error 773 fix applied.")
@@ -1332,19 +2473,15 @@ class AccountManagerUI:
                 if self.multi_roblox_handle.get('file'):
                     try:
                         self.multi_roblox_handle['file'].close()
-                    except Exception as file_error:
-                        print(f"[ERROR] Failed to close cookie file: {file_error}")
+                    except:
+                        pass
                 
                 if self.multi_roblox_handle.get('mutex'):
                     try:
                         import win32event
-                        import win32api
-                        mutex_handle = self.multi_roblox_handle['mutex']
-                        win32event.ReleaseMutex(mutex_handle)
-                        win32api.CloseHandle(mutex_handle)
-                        print("[INFO] Multi Roblox mutex released and closed.")
-                    except Exception as mutex_error:
-                        print(f"[ERROR] Failed to release mutex: {mutex_error}")
+                        win32event.ReleaseMutex(self.multi_roblox_handle['mutex'])
+                    except:
+                        pass
                 
                 self.multi_roblox_handle = None
         except Exception as e:
@@ -1352,21 +2489,23 @@ class AccountManagerUI:
     
     def initialize_multi_roblox(self):
         """Initialize Multi Roblox on startup if enabled in settings"""
-        success = self.enable_multi_roblox()
-        if not success:
-            self.settings["enable_multi_roblox"] = False
-            self.save_settings()
+        if self.settings.get("enable_multi_roblox", False):
+            success = self.enable_multi_roblox()
+            if not success:
+                self.settings["enable_multi_roblox"] = False
+                self.save_settings()
 
     def open_settings(self):
         """Open the Settings window"""
         settings_window = tk.Toplevel(self.root)
         settings_window.title("Settings")
-        settings_window.geometry("300x300")
+        settings_window.geometry("340x360")
         settings_window.configure(bg=self.BG_DARK)
         settings_window.resizable(False, False)
         
         settings_window.transient(self.root)
-        # Removed grab_set() to allow interaction with console window
+        settings_window.grab_set()
+        self.register_toplevel(settings_window)
         
         if self.settings.get("enable_topmost", False):
             settings_window.attributes("-topmost", True)
@@ -1378,7 +2517,7 @@ class AccountManagerUI:
         main_height = self.root.winfo_height()
         
         settings_width = 300
-        settings_height = 355
+        settings_height = 320
         
         x = main_x + (main_width - settings_width) // 2
         y = main_y + (main_height - settings_height) // 2
@@ -1400,6 +2539,9 @@ class AccountManagerUI:
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
         confirm_launch_var = tk.BooleanVar(value=self.settings.get("confirm_before_launch", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
+        debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
+        disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
+        theme_var = tk.StringVar(value=self.settings.get("selected_theme", self.theme_name))
         
         checkbox_style = ttk.Style()
         checkbox_style.configure(
@@ -1407,6 +2549,11 @@ class AccountManagerUI:
             background=self.BG_DARK,
             foreground="white",
             font=("Segoe UI", 10)
+        )
+        checkbox_style.map(
+            "Dark.TCheckbutton",
+            background=[("active", self.BG_MID)],
+            foreground=[("disabled", self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888")]
         )
         
         def auto_save_setting(setting_name, var):
@@ -1416,6 +2563,7 @@ class AccountManagerUI:
                 if setting_name == "enable_topmost":
                     self.root.attributes("-topmost", var.get())
                     settings_window.attributes("-topmost", var.get())
+                    self.console_window.update_topmost(var.get())
                 
                 self.save_settings()
             return save
@@ -1478,6 +2626,41 @@ class AccountManagerUI:
         )
         multi_select_check.pack(anchor="w", pady=2)
         
+        debug_check = ttk.Checkbutton(
+            main_frame,
+            text="Enable Debug Logging",
+            variable=debug_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("enable_debug_logging", debug_var)
+        )
+        debug_check.pack(anchor="w", pady=2)
+        disable_success_check = ttk.Checkbutton(
+            main_frame,
+            text="Disable Success Popups",
+            variable=disable_success_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("disable_success_popups", disable_success_var)
+        )
+        disable_success_check.pack(anchor="w", pady=2)
+        
+        ttk.Label(main_frame, text="Appearance", style="Dark.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(10, 2))
+        theme_box = ttk.Combobox(
+            main_frame,
+            textvariable=theme_var,
+            values=list(THEMES.keys()),
+            state="readonly",
+            style="Dark.TCombobox"
+        )
+        theme_box.pack(fill="x", pady=(0, 6))
+
+        def on_theme_change(_=None):
+            selected = theme_var.get()
+            self.apply_theme(selected, persist=True)
+            settings_window.configure(bg=self.BG_DARK)
+
+        theme_box.bind("<<ComboboxSelected>>", on_theme_change)
+        theme_box.bind("<Return>", on_theme_change)
+
         ttk.Label(main_frame, text="", style="Dark.TLabel").pack(pady=5)
         
         max_games_frame = ttk.Frame(main_frame, style="Dark.TFrame")
@@ -1493,16 +2676,13 @@ class AccountManagerUI:
         max_games_var = tk.IntVar(value=self.settings.get("max_recent_games", 10))
         
         def on_max_games_change():
-            try:
-                new_value = max_games_var.get()
-                self.settings["max_recent_games"] = new_value
+            new_value = max_games_var.get()
+            self.settings["max_recent_games"] = new_value
+            self.save_settings()
+            if len(self.settings["game_list"]) > new_value:
+                self.settings["game_list"] = self.settings["game_list"][:new_value]
                 self.save_settings()
-                if len(self.settings["game_list"]) > new_value:
-                    self.settings["game_list"] = self.settings["game_list"][:new_value]
-                    self.save_settings()
-                    self.refresh_game_list()
-            except:
-                pass
+                self.refresh_game_list()
         
         max_games_spinner = tk.Spinbox(
             max_games_frame,
@@ -1511,33 +2691,25 @@ class AccountManagerUI:
             textvariable=max_games_var,
             width=8,
             bg=self.BG_MID,
-            fg="white",
+            fg=self.FG_TEXT,
             buttonbackground=self.BG_LIGHT,
+            highlightthickness=1,
+            highlightbackground=self.BORDER_COLOR,
+            relief="flat",
             font=("Segoe UI", 9),
             command=on_max_games_change
         )
         max_games_spinner.pack(side="right")
         
-        max_games_spinner.bind("<KeyRelease>", lambda e: on_max_games_change())
-        max_games_spinner.bind("<FocusOut>", lambda e: on_max_games_change())
-        
         ttk.Label(main_frame, text="", style="Dark.TLabel").pack(pady=3)
-        
-        console_button = ttk.Button(
-            main_frame,
-            text="Console Output",
-            style="Dark.TButton",
-            command=self.open_console_window
-        )
-        console_button.pack(fill="x", pady=(0, 5))
-        
+
         close_button = ttk.Button(
             main_frame,
             text="Close",
             style="Dark.TButton",
             command=settings_window.destroy
         )
-        close_button.pack(fill="x", pady=(3, 0)) 
+        close_button.pack(fill="x", pady=(3, 0))
 
         version_label = ttk.Label(
             main_frame,
@@ -1546,131 +2718,15 @@ class AccountManagerUI:
             font=("Segoe UI", 9)
         )
         version_label.pack(anchor="e", pady=(6, 0))
-    
-    def write(self, text):
-        """Redirect stdout/stderr writes to console"""
-        if text.strip():
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self.log_to_console(f"[{timestamp}] {text}\n")
-        if self.original_stdout:
-            self.original_stdout.write(text)
-    
-    def flush(self):
-        """Flush stdout"""
-        if self.original_stdout:
-            self.original_stdout.flush()
-    
-    def log_to_console(self, message):
-        """Log message to console output buffer"""
-        self.console_output.append(message)
-        
-        if self.console_text_widget:
-            try:
-                self.console_text_widget.config(state="normal")
-                self.console_text_widget.insert(tk.END, message)
-                self.console_text_widget.see(tk.END)
-                self.console_text_widget.config(state="disabled")
-            except:
-                pass
-    
-    def open_console_window(self):
-        """Open the Console Output window"""
-        if self.console_window and tk.Toplevel.winfo_exists(self.console_window):
-            self.console_window.focus()
-            return
-        
-        self.console_window = tk.Toplevel(self.root)
-        self.console_window.title("Console Output")
-        self.console_window.geometry("700x500")
-        self.console_window.configure(bg=self.BG_DARK)
-        self.console_window.minsize(500, 450)
-        
-        if self.settings.get("enable_topmost", False):
-            self.console_window.attributes("-topmost", True)
-        
-        self.root.update_idletasks()
-        main_x = self.root.winfo_x()
-        main_y = self.root.winfo_y()
-        main_width = self.root.winfo_width()
-        main_height = self.root.winfo_height()
-        
-        x = main_x + (main_width - 700) // 2
-        y = main_y + (main_height - 500) // 2
-        self.console_window.geometry(f"700x500+{x}+{y}")
-        
-        main_frame = ttk.Frame(self.console_window, style="Dark.TFrame")
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        title_label = ttk.Label(
+
+        ttk.Button(
             main_frame,
             text="Console Output",
-            style="Dark.TLabel",
-            font=("Segoe UI", 12, "bold")
-        )
-        title_label.pack(anchor="w", pady=(0, 10))
-        
-        text_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        text_frame.pack(fill="both", expand=True)
-        
-        self.console_text_widget = tk.Text(
-            text_frame,
-            bg=self.BG_MID,
-            fg=self.FG_TEXT,
-            font=("Consolas", 9),
-            wrap="word",
-            state="disabled"
-        )
-        self.console_text_widget.pack(side="left", fill="both", expand=True)
-        
-        scrollbar = ttk.Scrollbar(text_frame, command=self.console_text_widget.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.console_text_widget.config(yscrollcommand=scrollbar.set)
-        
-        self.console_text_widget.config(state="normal")
-        for message in self.console_output:
-            self.console_text_widget.insert(tk.END, message)
-        self.console_text_widget.config(state="disabled")
-        
-        self.console_text_widget.see(tk.END)
-        
-        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        button_frame.pack(fill="x", pady=(10, 0))
-        
-        def clear_console():
-            self.console_output.clear()
-            self.console_text_widget.config(state="normal") 
-            self.console_text_widget.delete(1.0, tk.END)
-            self.console_text_widget.config(state="disabled") 
-        
-        def copy_all():
-            self.root.clipboard_clear()
-            self.root.clipboard_append(self.console_text_widget.get(1.0, tk.END))
-            messagebox.showinfo("Copied", "Console output copied to clipboard!")
-        
-        ttk.Button(
-            button_frame,
-            text="Clear",
             style="Dark.TButton",
-            command=clear_console
-        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
-        
-        ttk.Button(
-            button_frame,
-            text="Copy All",
-            style="Dark.TButton",
-            command=copy_all
-        ).pack(side="left", fill="x", expand=True, padx=5)
-        
-        ttk.Button(
-            button_frame,
-            text="Close",
-            style="Dark.TButton",
-            command=self.console_window.destroy
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-        
-        def on_close():
-            self.console_text_widget = None
-            self.console_window.destroy()
-            self.console_window = None
-        
-        self.console_window.protocol("WM_DELETE_WINDOW", on_close)
+            command=self.open_console_output
+        ).pack(fill="x", pady=(8, 0))
+
+    def open_console_output(self):
+        """Open or focus the console output window."""
+        if self.console_window:
+            self.console_window.show()
