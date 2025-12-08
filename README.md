@@ -1,7 +1,7 @@
 [![Version](https://img.shields.io/github/v/release/evanovar/RobloxAccountManager)](https://github.com/evanovar/RobloxAccountManager/releases/latest)
 ![License](https://img.shields.io/github/license/evanovar/RobloxAccountManager)
-[![Discord](https://img.shields.io/discord/1436930121897476140?label=Discord)](https://discord.gg/TYnJXyEhgY)<br>
-[![Download](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/evanovar/RobloxAccountManager/releases/latest/download/RobloxAccountManager.exe)
+[![Original Discord](https://img.shields.io/discord/1436930121897476140?label=Discord)](https://discord.gg/TYnJXyEhgY)<br>
+[![Download Original](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/evanovar/RobloxAccountManager/releases/latest/download/RobloxAccountManager.exe)
 
 # 🚀 Roblox Account Manager
 
@@ -21,6 +21,8 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 
 ### 🖥️ Interface Features
 - **Account Management**: List of all your accounts with encryption status
+- **Roblox Installer**: List 5 previous versions of roblox available for download
+- **Auto Arrange Clients**: Automatically fits as many roblox clients onto one monitor
 - **Multi Roblox Support**: Run multiple Roblox instances on the same device
 - **Import Cookie Feature**: Add accounts quickly using `.ROBLOSECURITY` cookie
 - **Game List**: Save up to 50 recently played games with Place IDs (configurable)
