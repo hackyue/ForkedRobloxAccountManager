@@ -438,7 +438,7 @@ class AccountManagerUI:
     def __init__(self, root, manager):
         self.root = root
         self.manager = manager
-        self.APP_VERSION = "2.3.0"
+        self.APP_VERSION = "2.3.4"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -454,7 +454,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("RAM v2.3.0 - made by evanovar - modified by nully")
+        self.root.title("RAM v2.3.4 - made by evanovar - modified by nully")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
