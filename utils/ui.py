@@ -8,6 +8,8 @@ import re
 import sys
 import io
 import json
+import math
+import csv
 import atexit
 import platform
 from datetime import datetime
@@ -17,8 +19,17 @@ import requests
 import threading
 import msvcrt
 import ctypes
+from ctypes import wintypes
 import subprocess
 import webbrowser
+
+if platform.system() == "Windows":
+    import win32api
+    import win32con
+    import win32gui
+    import win32process
+else:
+    win32api = win32con = win32gui = win32process = None
 
 from classes.roblox_api import RobloxAPI
 
@@ -419,6 +430,11 @@ def get_console_output_buffer():
 
 
 class AccountManagerUI:
+    ROBLOX_CLIENT_EXECUTABLES = {
+        "robloxplayerbeta.exe",
+        "robloxplayerlauncher.exe",
+    }
+
     def __init__(self, root, manager):
         self.root = root
         self.manager = manager
@@ -618,6 +634,7 @@ class AccountManagerUI:
         ttk.Button(action_frame, text="Validate Account", style="Dark.TButton", command=self.validate_account).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Edit Note", style="Dark.TButton", command=self.edit_account_note).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
+        ttk.Button(action_frame, text="Auto-Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
 
         bottom_frame = ttk.Frame(self.root, style="Dark.TFrame")
         bottom_frame.pack(fill="x", padx=10, pady=(5, 10), anchor='s')
@@ -2105,6 +2122,141 @@ class AccountManagerUI:
                 "Force Quit Roblox",
                 f"Unable to close Roblox instances. Details:\n{combined_output.strip() or 'Unknown error.'}"
             )
+
+    def auto_arrange_clients(self):
+        """Automatically tile active Roblox client windows on the primary monitor."""
+        if platform.system() != "Windows" or not win32gui:
+            messagebox.showerror("Auto-Arrange Clients", "This feature is only available on Windows.") # it only supports windows :sob:
+            return
+
+        try:
+            roblox_windows = self._get_roblox_client_windows()
+        except Exception as exc:
+            messagebox.showerror("Auto-Arrange Clients", f"Failed to detect Roblox clients:\n{exc}")
+            return
+
+        if not roblox_windows:
+            messagebox.showinfo("Auto-Arrange Clients", "No active Roblox client windows were detected.")
+            return
+
+        try:
+            self._arrange_windows_on_primary_monitor(roblox_windows)
+        except Exception as exc:
+            messagebox.showerror("Auto-Arrange Clients", f"Failed to arrange Roblox clients:\n{exc}")
+            return
+
+        self.show_success_message(
+            f"Auto-arranged {len(roblox_windows)} Roblox client(s)!",
+            title="Auto-Arrange Clients"
+        )
+
+    def _get_roblox_client_windows(self):
+        """Return a list of HWNDs for visible Roblox client windows."""
+        windows = []
+        if not win32gui:
+            return windows
+
+        seen = set()
+
+        def enum_handler(hwnd, _):
+            if hwnd in seen:
+                return True
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+
+            if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                return True
+
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            except Exception:
+                return True
+
+            exe_path = self._get_process_executable(pid)
+            exe_name = os.path.basename(exe_path).lower() if exe_path else ""
+
+            if not exe_name:
+                return True
+
+            if exe_name in self.ROBLOX_CLIENT_EXECUTABLES:
+                windows.append(hwnd)
+                seen.add(hwnd)
+            return True
+
+        win32gui.EnumWindows(enum_handler, None)
+        return windows
+
+    def _get_process_executable(self, pid):
+        """Best-effort attempt to resolve the executable path for a process ID."""
+        if not win32api or not win32process:
+            return None
+
+        PROCESS_QUERY_INFORMATION = 0x0400
+        PROCESS_VM_READ = 0x0010
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        access_flags = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+        handle = None
+
+        try:
+            try:
+                handle = win32api.OpenProcess(access_flags, False, pid)
+            except Exception:
+                handle = win32api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+
+            if not handle:
+                return None
+            return win32process.GetModuleFileNameEx(handle, 0)
+        except Exception:
+            return None
+        finally:
+            if handle:
+                try:
+                    win32api.CloseHandle(handle)
+                except Exception:
+                    pass
+
+    def _arrange_windows_on_primary_monitor(self, hwnds):
+        """Arrange the provided HWNDs in a grid that fits the primary monitor's work area."""
+        if not win32api or not win32gui:
+            return
+
+        monitor = win32api.MonitorFromPoint((0, 0), win32con.MONITOR_DEFAULTTOPRIMARY)
+        monitor_info = win32api.GetMonitorInfo(monitor)
+        work_area = monitor_info.get("Work", monitor_info["Monitor"])
+        work_left, work_top, work_right, work_bottom = work_area
+        available_width = max(1, work_right - work_left)
+        available_height = max(1, work_bottom - work_top)
+
+        window_count = len(hwnds)
+        if window_count == 0:
+            return
+
+        aspect_ratio = available_width / available_height if available_height else 1
+        columns = max(1, math.ceil(math.sqrt(window_count * aspect_ratio)))
+        rows = max(1, math.ceil(window_count / columns))
+
+        base_width = max(1, available_width // columns)
+        base_height = max(1, available_height // rows)
+
+        for index, hwnd in enumerate(hwnds):
+            row = index // columns
+            col = index % columns
+            is_last_col = (col == columns - 1)
+            is_last_row = (row == rows - 1)
+
+            width = base_width if not is_last_col else available_width - base_width * (columns - 1)
+            height = base_height if not is_last_row else available_height - base_height * (rows - 1)
+            width = max(100, width)
+            height = max(100, height)
+
+            x = work_left + col * base_width
+            y = work_top + row * base_height
+
+            try:
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.MoveWindow(hwnd, x, y, width, height, True)
+            except Exception:
+                continue
 
     def remove_account(self):
         """Remove the selected account(s)"""
