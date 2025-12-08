@@ -23,6 +23,7 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 - **Account Management**: List of all your accounts with encryption status
 - **Roblox Installer**: List 5 previous versions of roblox available for download
 - **Auto Arrange Clients**: Automatically fits as many roblox clients onto one monitor
+- **Roblox Version Selector**: Use roblox versions from Bloxstrap and Fishstrap
 - **Multi Roblox Support**: Run multiple Roblox instances on the same device
 - **Import Cookie Feature**: Add accounts quickly using `.ROBLOSECURITY` cookie
 - **Game List**: Save up to 50 recently played games with Place IDs (configurable)
