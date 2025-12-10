@@ -31,7 +31,20 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 - **Persistent Settings**: Automatically saves Place IDs, Private Server codes, game list, and preferences
 
 ## 🛠️ Installation
-Batch file setup lowk doesn't work that well, dont use it
+### Method 1: Direct EXE (Recommended for Users)
+
+**Quick & Easy - No Python Required!**
+
+1. Go to [Releases](https://github.com/hackyue/RobloxAccountManager/releases)
+2. Download `main.exe` from the latest release
+3. Put it in a folder
+4. Double-click to run - that's it! yippie
+
+**Requirements:**
+- **Google Chrome browser**
+- **Windows** (currently optimized for Windows)
+
+> ⚠️ Windows Defender may flag the EXE as untrusted since it's not signed. Click "More info" → "Run anyway" to proceed.
 
 **Full source code access and customization**
 
@@ -40,7 +53,7 @@ Batch file setup lowk doesn't work that well, dont use it
 - **Google Chrome browser**
 - **Windows** (currently optimized for Windows)
 
-### Setup
+### Method 2 (devs)
 
 1. **Clone the repository**
    ```bash
