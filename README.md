@@ -115,6 +115,9 @@ A: Multi Roblox allows you to run multiple Roblox instances simultaneously on th
 **Q: Where are my data files stored?**  
 A: All configuration and account data are stored in the `AccountManagerData` folder in the same directory as the program.
 
+**Q: Why does my version folder get deleted after launch?**  
+A: idfk
+
 ### Encryption Questions
 
 **Q: I forgot my password! How do I recover my accounts?**  
