@@ -14,7 +14,7 @@ import atexit
 import platform
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import requests
 import threading
 import msvcrt
@@ -438,7 +438,7 @@ class AccountManagerUI:
     def __init__(self, root, manager):
         self.root = root
         self.manager = manager
-        self.APP_VERSION = "2.3.4"
+        self.APP_VERSION = "2.3.5"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -454,11 +454,11 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("RAM v2.3.4 - made by evanovar - modified by nully")
+        self.root.title("RAM v2.3.5 - made by evanovar - modified by nully")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
-        self.root.minsize(600, 630)  # Note to self, this shit so ass
+        self.root.minsize(600, 700)  # Note to self, this shit so ass
         
         self.data_folder = "AccountManagerData"
         if not os.path.exists(self.data_folder):
@@ -487,6 +487,8 @@ class AccountManagerUI:
         self.menu_bar_frame = None
         self.menu_buttons = []
         self.version_options = {"Latest Version": ""}
+        self.custom_launcher_version_label = None
+
         self.apply_theme(self.theme_name, persist=False)
         self.register_toplevel(self.root)
         self.root.after(50, self._apply_title_bar_theme_all)
@@ -680,7 +682,10 @@ class AccountManagerUI:
                     "enable_multi_select": False,
                     "enable_debug_logging": False,
                     "selected_theme": "Synapse Neon",
-                    "disable_success_popups": False
+                    "disable_success_popups": False,
+                    "enable_custom_launcher": False,
+                    "custom_launcher_path": "",
+                    "custom_launcher_requires_player": False
                 }
         except:
             self.settings = {
@@ -694,7 +699,10 @@ class AccountManagerUI:
                 "enable_multi_select": False,
                 "enable_debug_logging": False,
                 "selected_theme": "Synapse Neon",
-                "disable_success_popups": False
+                "disable_success_popups": False,
+                "enable_custom_launcher": False,
+                "custom_launcher_path": "",
+                "custom_launcher_requires_player": False
             }
         
         defaults = {
@@ -708,7 +716,10 @@ class AccountManagerUI:
             "enable_multi_select": False,
             "enable_debug_logging": False,
             "selected_theme": "Synapse Neon",
-            "disable_success_popups": False
+            "disable_success_popups": False,
+            "enable_custom_launcher": False,
+            "custom_launcher_path": "",
+            "custom_launcher_requires_player": False
         }
         for key, value in defaults.items():
             self.settings.setdefault(key, value)
@@ -718,6 +729,73 @@ class AccountManagerUI:
         
         if self.settings.get("enable_multi_roblox", False):
             self.root.after(100, self.initialize_multi_roblox)
+
+    def _resolve_custom_launcher_override(self):
+        """
+        Determine if a custom launcher override is enabled and valid.
+        Returns a tuple of (launcher_info_dict or None, error_message or None).
+        """
+        if not self.settings.get("enable_custom_launcher", False):
+            return None, None
+
+        launcher_path = (self.settings.get("custom_launcher_path") or "").strip()
+        if not launcher_path:
+            return None, "Custom launcher is enabled but no executable path is configured."
+
+        if not os.path.isfile(launcher_path):
+            return None, f"Custom launcher executable not found:\n{launcher_path}"
+
+        launcher_info = {
+            "path": launcher_path,
+            "requires_player_flag": bool(self.settings.get("custom_launcher_requires_player", False)),
+            "name": os.path.basename(launcher_path)
+        }
+        return launcher_info, None
+
+    def _refresh_custom_launcher_version_entry(self, prefer_select=False, show_error=False):
+        """
+        Ensure the version dropdown reflects the current custom launcher selection.
+        """
+        if not hasattr(self, "version_dropdown") or not self.version_dropdown:
+            return
+
+        current_values = list(self.version_dropdown['values']) if self.version_dropdown['values'] else []
+        previous_label = self.custom_launcher_version_label
+        if previous_label:
+            self.version_options.pop(previous_label, None)
+            if previous_label in current_values:
+                current_values.remove(previous_label)
+
+        launcher_info, error = self._resolve_custom_launcher_override()
+        new_label = None
+
+        if launcher_info and not error:
+            exe_name = launcher_info.get("name") or "Custom Launcher"
+            new_label = f"[Custom Launcher] {exe_name}"
+            self.version_options[new_label] = launcher_info["path"]
+            if new_label not in current_values:
+                current_values.append(new_label)
+        elif show_error and error:
+            messagebox.showerror("Custom Launcher", error)
+
+        if not current_values:
+            current_values = ["Latest Version"]
+            self.version_options.setdefault("Latest Version", None)
+
+        self.version_dropdown['values'] = current_values
+
+        if new_label:
+            self.custom_launcher_version_label = new_label
+            if prefer_select or self.version_var.get() not in current_values:
+                self.version_var.set(new_label)
+        else:
+            if previous_label and self.version_var.get() == previous_label:
+                fallback = "Latest Version" if "Latest Version" in current_values else current_values[0]
+                self.version_var.set(fallback)
+            elif self.version_var.get() not in current_values:
+                fallback = "Latest Version" if "Latest Version" in current_values else current_values[0]
+                self.version_var.set(fallback)
+            self.custom_launcher_version_label = None
 
     def show_success_message(self, message, title="Success"):
         """Show a success message if popups are enabled."""
@@ -940,6 +1018,18 @@ class AccountManagerUI:
         _set_attr(DWMWA_CAPTION_COLOR, caption_color)
         _set_attr(DWMWA_TEXT_COLOR, text_color)
         _set_attr(DWMWA_BORDER_COLOR, border_color)
+
+    def _center_window(self, window, width, height):
+        """Center the given window on screen with specified dimensions."""
+        try:
+            window.update_idletasks()
+            screen_width = window.winfo_screenwidth()
+            screen_height = window.winfo_screenheight()
+            x = max((screen_width - width) // 2, 0)
+            y = max((screen_height - height) // 2, 0)
+            window.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            window.geometry(f"{width}x{height}")
 
     @staticmethod
     def _hex_to_colorref(hex_color):
@@ -1202,7 +1292,7 @@ class AccountManagerUI:
             relief="flat",
             bg=self.BG_MID,
             fg=self.FG_TEXT,
-            activebackground=self.BG_LIGHT,
+            activebackground=self.HOVER_BG,
             activeforeground=self.FG_TEXT,
             font=("Segoe UI", 9),
             bd=0,
@@ -1218,7 +1308,7 @@ class AccountManagerUI:
             relief="flat",
             bg=self.BG_MID,
             fg=self.FG_TEXT,
-            activebackground=self.BG_LIGHT,
+            activebackground=self.HOVER_BG,
             activeforeground=self.FG_TEXT,
             font=("Segoe UI", 9),
             bd=0,
@@ -2066,6 +2156,9 @@ class AccountManagerUI:
         Launch account addition with Javascript execution
         """
         def launch_thread():
+            """
+            Thread function to add account without blocking UI
+            """
             try:
                 success = self.manager.add_account(amount, website, javascript)
                 
@@ -2650,8 +2743,8 @@ class AccountManagerUI:
     def open_settings(self):
         """Open the Settings window"""
         settings_window = tk.Toplevel(self.root)
+        settings_window.withdraw()
         settings_window.title("Settings")
-        settings_window.geometry("340x360")
         settings_window.configure(bg=self.BG_DARK)
         settings_window.resizable(False, False)
         
@@ -2662,30 +2755,8 @@ class AccountManagerUI:
         if self.settings.get("enable_topmost", False):
             settings_window.attributes("-topmost", True)
         
-        self.root.update_idletasks()
-        main_x = self.root.winfo_x()
-        main_y = self.root.winfo_y()
-        main_width = self.root.winfo_width()
-        main_height = self.root.winfo_height()
-        
-        settings_width = 300
-        settings_height = 320
-        
-        x = main_x + (main_width - settings_width) // 2
-        y = main_y + (main_height - settings_height) // 2
-        
-        settings_window.geometry(f"{settings_width}x{settings_height}+{x}+{y}")
-        
         main_frame = ttk.Frame(settings_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=15)
-        
-        title_label = ttk.Label(
-            main_frame, 
-            text="Settings", 
-            style="Dark.TLabel", 
-            font=("Segoe UI", 14, "bold")
-        )
-        title_label.pack(anchor="w", pady=(0, 10))
         
         topmost_var = tk.BooleanVar(value=self.settings.get("enable_topmost", False))
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
@@ -2694,6 +2765,9 @@ class AccountManagerUI:
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
         theme_var = tk.StringVar(value=self.settings.get("selected_theme", self.theme_name))
+        custom_launcher_var = tk.BooleanVar(value=self.settings.get("enable_custom_launcher", False))
+        custom_launcher_path_var = tk.StringVar(value=self.settings.get("custom_launcher_path", ""))
+        custom_launcher_player_var = tk.BooleanVar(value=self.settings.get("custom_launcher_requires_player", False))
         
         checkbox_style = ttk.Style()
         checkbox_style.configure(
@@ -2711,12 +2785,10 @@ class AccountManagerUI:
         def auto_save_setting(setting_name, var):
             def save():
                 self.settings[setting_name] = var.get()
-                
                 if setting_name == "enable_topmost":
                     self.root.attributes("-topmost", var.get())
                     settings_window.attributes("-topmost", var.get())
                     self.console_window.update_topmost(var.get())
-                
                 self.save_settings()
             return save
         
@@ -2731,7 +2803,6 @@ class AccountManagerUI:
             else:
                 self.disable_multi_roblox()
                 self.settings["enable_multi_roblox"] = False
-            
             self.save_settings()
         
         def on_multi_select_toggle():
@@ -2742,141 +2813,236 @@ class AccountManagerUI:
                 self.account_list.config(selectmode=tk.SINGLE)
             self.save_settings()
         
-        topmost_check = ttk.Checkbutton(
-            main_frame,
+        tab_var = tk.StringVar(value="ram")
+        tab_buttons = {}
+        
+        tab_bar = tk.Frame(main_frame, bg=self.BG_DARK)
+        tab_bar.pack(fill="x", pady=(0, 8))
+        
+        def set_active_tab(tab_name):
+            tab_var.set(tab_name)
+            if tab_name == "ram":
+                ram_tab.tkraise()
+            else:
+                roblox_tab.tkraise()
+            for name, btn in tab_buttons.items():
+                if name == tab_name:
+                    btn.configure(
+                        bg=self.BG_LIGHT,
+                        fg=self.FG_TEXT,
+                        activebackground=self.BG_LIGHT,
+                        activeforeground=self.FG_TEXT
+                    )
+                else:
+                    btn.configure(
+                        bg=self.BG_MID,
+                        fg=self.FG_MUTED,
+                        activebackground=self.BG_MID,
+                        activeforeground=self.FG_TEXT
+                    )
+
+        def create_tab_button(label, tab_name):
+            btn = tk.Button(
+                tab_bar,
+                text=label,
+                relief="flat",
+                borderwidth=0,
+                padx=14,
+                pady=3,
+                font=("Segoe UI", 10, "bold"),
+                cursor="hand2",
+                bg=self.BG_MID,
+                fg=self.FG_MUTED,
+                activebackground=self.BG_MID,
+                activeforeground=self.FG_TEXT
+            )
+            btn.pack(side="left", padx=(0, 8))
+            btn.configure(command=lambda n=tab_name: set_active_tab(n))
+            tab_buttons[tab_name] = btn
+        
+        create_tab_button("RAM Settings", "ram")
+        create_tab_button("Roblox Client", "roblox")
+        
+        content_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        content_frame.pack(fill="both", expand=True)
+        content_frame.grid_rowconfigure(0, weight=1)
+        content_frame.grid_columnconfigure(0, weight=1)
+        
+        ram_tab = ttk.Frame(content_frame, style="Dark.TFrame")
+        ram_tab.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(
+            ram_tab,
+            text="Interface & Notifications",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+        
+        ttk.Checkbutton(
+            ram_tab,
             text="Enable Topmost",
             variable=topmost_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("enable_topmost", topmost_var)
-        )
-        topmost_check.pack(anchor="w", pady=2)
+        ).pack(anchor="w", pady=2)
         
-        multi_roblox_check = ttk.Checkbutton(
-            main_frame,
-            text="Enable Multi Roblox + 773 fix",
-            variable=multi_roblox_var,
-            style="Dark.TCheckbutton",
-            command=on_multi_roblox_toggle
-        )
-        multi_roblox_check.pack(anchor="w", pady=2)
-        
-        confirm_check = ttk.Checkbutton(
-            main_frame,
-            text="Confirm Before Launch",
-            variable=confirm_launch_var,
-            style="Dark.TCheckbutton",
-            command=auto_save_setting("confirm_before_launch", confirm_launch_var)
-        )
-        confirm_check.pack(anchor="w", pady=2)
-        
-        multi_select_check = ttk.Checkbutton(
-            main_frame,
+        ttk.Checkbutton(
+            ram_tab,
             text="Multi Select (Ctrl + Click)",
             variable=multi_select_var,
             style="Dark.TCheckbutton",
             command=on_multi_select_toggle
-        )
-        multi_select_check.pack(anchor="w", pady=2)
+        ).pack(anchor="w", pady=2)
         
-        debug_check = ttk.Checkbutton(
-            main_frame,
+        ttk.Checkbutton(
+            ram_tab,
             text="Enable Debug Logging",
             variable=debug_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("enable_debug_logging", debug_var)
-        )
-        debug_check.pack(anchor="w", pady=2)
-        disable_success_check = ttk.Checkbutton(
-            main_frame,
-            text="Disable Success Popups",
-            variable=disable_success_var,
-            style="Dark.TCheckbutton",
-            command=auto_save_setting("disable_success_popups", disable_success_var)
-        )
-        disable_success_check.pack(anchor="w", pady=2)
-        
-        ttk.Label(main_frame, text="Appearance", style="Dark.TLabel", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(10, 2))
-        theme_box = ttk.Combobox(
-            main_frame,
-            textvariable=theme_var,
-            values=list(THEMES.keys()),
-            state="readonly",
-            style="Dark.TCombobox"
-        )
-        theme_box.pack(fill="x", pady=(0, 6))
+        ).pack(anchor="w", pady=2)
 
-        def on_theme_change(_=None):
-            selected = theme_var.get()
-            self.apply_theme(selected, persist=True)
-            settings_window.configure(bg=self.BG_DARK)
+        roblox_tab = ttk.Frame(content_frame, style="Dark.TFrame")
+        roblox_tab.grid(row=0, column=0, sticky="nsew")
 
-        theme_box.bind("<<ComboboxSelected>>", on_theme_change)
-        theme_box.bind("<Return>", on_theme_change)
-
-        ttk.Label(main_frame, text="", style="Dark.TLabel").pack(pady=5)
-        
-        max_games_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        max_games_frame.pack(fill="x", pady=2)
-        
         ttk.Label(
-            max_games_frame, 
-            text="Max Recent Games:", 
+            roblox_tab,
+            text="Roblox Client",
             style="Dark.TLabel",
-            font=("Segoe UI", 10)
-        ).pack(side="left")
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        ttk.Checkbutton(
+            roblox_tab,
+            text="Confirm Before Launch",
+            variable=confirm_launch_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("confirm_before_launch", confirm_launch_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            roblox_tab,
+            text="Enable Multi Roblox",
+            variable=multi_roblox_var,
+            style="Dark.TCheckbutton",
+            command=on_multi_roblox_toggle
+        ).pack(anchor="w", pady=2)
         
-        max_games_var = tk.IntVar(value=self.settings.get("max_recent_games", 10))
+        ttk.Label(roblox_tab, text="", style="Dark.TLabel").pack(pady=5)
         
-        def on_max_games_change():
-            new_value = max_games_var.get()
-            self.settings["max_recent_games"] = new_value
+        custom_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
+        custom_frame.pack(fill="x", pady=(0, 6))
+
+        ttk.Label(
+            custom_frame,
+            text="Custom Launcher",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w")
+
+        def update_custom_launcher_controls():
+            enabled = bool(custom_launcher_var.get())
+            state = tk.NORMAL if enabled else tk.DISABLED
+            path_entry.configure(state=state)
+            browse_btn.configure(state=state)
+            if enabled:
+                custom_flag_chk.state(["!disabled"])
+            else:
+                custom_flag_chk.state(["disabled"])
+
+        def on_custom_launcher_toggle():
+            enabled = custom_launcher_var.get()
+            self.settings["enable_custom_launcher"] = enabled
             self.save_settings()
-            if len(self.settings["game_list"]) > new_value:
-                self.settings["game_list"] = self.settings["game_list"][:new_value]
+            update_custom_launcher_controls()
+            self._refresh_custom_launcher_version_entry(prefer_select=enabled, show_error=enabled)
+
+        ttk.Checkbutton(
+            custom_frame,
+            text="Enable Custom Launcher",
+            variable=custom_launcher_var,
+            style="Dark.TCheckbutton",
+            command=on_custom_launcher_toggle
+        ).pack(anchor="w", pady=(4, 2))
+
+        path_container = ttk.Frame(custom_frame, style="Dark.TFrame")
+        path_container.pack(fill="x", pady=(2, 2))
+
+        ttk.Label(
+            path_container,
+            text="Executable Path:",
+            style="Dark.TLabel"
+        ).pack(anchor="w")
+
+        path_entry_frame = ttk.Frame(path_container, style="Dark.TFrame")
+        path_entry_frame.pack(fill="x", pady=(2, 0))
+
+        path_entry = ttk.Entry(
+            path_entry_frame,
+            textvariable=custom_launcher_path_var,
+            style="Dark.TEntry"
+        )
+        path_entry.pack(side="left", fill="x", expand=True)
+
+        def browse_custom_launcher():
+            initial_dir = os.path.dirname(custom_launcher_path_var.get()) if custom_launcher_path_var.get() else os.getenv("ProgramFiles", "")
+            file_path = filedialog.askopenfilename(
+                title="Select Custom Launcher",
+                initialdir=initial_dir or None,
+                filetypes=[("Executables", "*.exe"), ("All Files", "*.*")]
+            )
+            if file_path:
+                custom_launcher_path_var.set(file_path)
+                self.settings["custom_launcher_path"] = file_path
                 self.save_settings()
-                self.refresh_game_list()
-        
-        max_games_spinner = tk.Spinbox(
-            max_games_frame,
-            from_=5,
-            to=50,
-            textvariable=max_games_var,
-            width=8,
-            bg=self.BG_MID,
-            fg=self.FG_TEXT,
-            buttonbackground=self.BG_LIGHT,
-            highlightthickness=1,
-            highlightbackground=self.BORDER_COLOR,
-            relief="flat",
-            font=("Segoe UI", 9),
-            command=on_max_games_change
-        )
-        max_games_spinner.pack(side="right")
-        
-        ttk.Label(main_frame, text="", style="Dark.TLabel").pack(pady=3)
+                self._refresh_custom_launcher_version_entry(prefer_select=True, show_error=True)
 
-        close_button = ttk.Button(
-            main_frame,
-            text="Close",
+        browse_btn = ttk.Button(
+            path_entry_frame,
+            text="Browse",
             style="Dark.TButton",
-            command=settings_window.destroy
+            command=browse_custom_launcher,
+            width=10
         )
-        close_button.pack(fill="x", pady=(3, 0))
+        browse_btn.pack(side="left", padx=(8, 0))
 
-        version_label = ttk.Label(
-            main_frame,
-            text=f"Version: {self.APP_VERSION}",
-            style="Dark.TLabel",
-            font=("Segoe UI", 9)
+        custom_flag_chk = ttk.Checkbutton(
+            custom_frame,
+            text="Launcher needs -player argument",
+            variable=custom_launcher_player_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("custom_launcher_requires_player", custom_launcher_player_var)
         )
-        version_label.pack(anchor="e", pady=(6, 0))
+        custom_flag_chk.pack(anchor="w", pady=(2, 4))
+
+
+        update_custom_launcher_controls()
+
+        settings_window.update_idletasks()
+        padding_w = 40
+        padding_h = 40
+        min_w = 420
+        min_h = 460
+        req_w = settings_window.winfo_reqwidth() + padding_w
+        req_h = settings_window.winfo_reqheight() + padding_h
+        final_w = max(req_w, min_w)
+        final_h = max(req_h, min_h)
+        self._center_window(settings_window, final_w, final_h)
+        settings_window.deiconify()
 
         ttk.Button(
             main_frame,
             text="Console Output",
             style="Dark.TButton",
             command=self.open_console_output
-        ).pack(fill="x", pady=(8, 0))
+        ).pack(fill="x", pady=(6, 4))
+
+        ttk.Button(
+            main_frame,
+            text="Close",
+            style="Dark.TButton",
+            command=settings_window.destroy
+        ).pack(fill="x", pady=(0, 0))
 
     def open_console_output(self):
         """Open or focus the console output window."""
