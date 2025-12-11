@@ -682,10 +682,7 @@ class AccountManagerUI:
                     "enable_multi_select": False,
                     "enable_debug_logging": False,
                     "selected_theme": "Synapse Neon",
-                    "disable_success_popups": False,
-                    "enable_custom_launcher": False,
-                    "custom_launcher_path": "",
-                    "custom_launcher_requires_player": False
+                    "disable_success_popups": False
                 }
         except:
             self.settings = {
@@ -699,10 +696,7 @@ class AccountManagerUI:
                 "enable_multi_select": False,
                 "enable_debug_logging": False,
                 "selected_theme": "Synapse Neon",
-                "disable_success_popups": False,
-                "enable_custom_launcher": False,
-                "custom_launcher_path": "",
-                "custom_launcher_requires_player": False
+                "disable_success_popups": False
             }
         
         defaults = {
@@ -716,10 +710,7 @@ class AccountManagerUI:
             "enable_multi_select": False,
             "enable_debug_logging": False,
             "selected_theme": "Synapse Neon",
-            "disable_success_popups": False,
-            "enable_custom_launcher": False,
-            "custom_launcher_path": "",
-            "custom_launcher_requires_player": False
+            "disable_success_popups": False
         }
         for key, value in defaults.items():
             self.settings.setdefault(key, value)
