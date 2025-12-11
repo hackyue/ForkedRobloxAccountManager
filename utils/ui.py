@@ -486,10 +486,9 @@ class AccountManagerUI:
         self.installer_menu = None
         self.menu_bar_frame = None
         self.menu_buttons = []
-        self.version_options = {"Latest Version": ""}
-        self.custom_launcher_version_label = None
+        self.version_options = {"Latest Version": None}
 
-        self.apply_theme(self.theme_name, persist=False)
+        self.apply_theme(self.theme_name, persist=True)
         self.register_toplevel(self.root)
         self.root.after(50, self._apply_title_bar_theme_all)
 
