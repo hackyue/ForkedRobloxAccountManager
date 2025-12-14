@@ -31,6 +31,12 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 - **Private Server Support**: Save and launch private servers with [P] indicator
 - **Persistent Settings**: Automatically saves Place IDs, Private Server codes, game list, and preferences
 
+### 🚀 Bootsrapper Support
+- **Roblox**: https://www.roblox.com/home
+- **Bloxstrap**: https://bloxstraplabs.com/
+- **Fishtrap**: https://www.fishstrap.app/
+- **Voidtrap**: https://voidstrapweb.netlify.app/ (Recommended, Made for VoidStrap)
+
 ## 🛠️ Installation
 ### Method 1: Direct EXE (Recommended for Users)
 

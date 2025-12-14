@@ -19,7 +19,7 @@ import platform
 import time
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 import threading
 import msvcrt
 import ctypes
@@ -726,6 +726,7 @@ class AccountManagerUI:
             "disable_success_popups": False,
             "auto_arrange_scope": "both",
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
+            "custom_version_sources": [],
         }
 
         try:
@@ -1678,7 +1679,7 @@ class AccountManagerUI:
 
 
     def load_roblox_versions(self):
-        """Load available Roblox versions from the standard Roblox Versions directory"""
+        """Load available Roblox versions from standard and custom folders."""
         try:
             local_versions = self.get_local_roblox_versions()
             display_values = ["Latest Version"]
@@ -1692,34 +1693,48 @@ class AccountManagerUI:
                 display_values.append(label)
                 self.version_options[label] = path
 
-            self.version_dropdown['values'] = display_values or ["Latest Version"]
+            self.version_dropdown["values"] = display_values or ["Latest Version"]
         except Exception as e:
             print(f"Error loading Roblox versions: {e}")
             self.version_options = {"Latest Version": None}
-            self.version_dropdown['values'] = ["Latest Version"]
+            self.version_dropdown["values"] = ["Latest Version"]
 
         self.refresh_installer_menu()
 
+    def _collect_version_sources(self):
+        """Return a deduplicated list of version sources (standard + custom)."""
+        sources = []
+        seen = set()
+
+        def add_source(name, base_path):
+            if not base_path:
+                return
+            expanded = os.path.expandvars(base_path)
+            if not expanded:
+                return
+            normalized = os.path.normcase(os.path.normpath(expanded))
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            sources.append({"name": name, "base": expanded})
+
+        add_source("Roblox", r"%LOCALAPPDATA%\Roblox\Versions")
+        add_source("Bloxstrap", r"%LOCALAPPDATA%\Bloxstrap\Versions")
+        add_source("Fishstrap", r"%LOCALAPPDATA%\Fishstrap\Versions")
+        add_source("Voidstrap", r"%LOCALAPPDATA%\Voidstrap\RblxVersions")
+
+        custom_sources = self.settings.get("custom_version_sources", []) if hasattr(self, "settings") else []
+        for entry in custom_sources:
+            base = entry.get("base")
+            if not base:
+                continue
+            add_source(entry.get("name") or "Custom", base)
+
+        return sources
+
     def get_local_roblox_versions(self, limit=None):
-        """Return Roblox version directories from default, Bloxstrap, and Fishstrap installs."""
-        sources = [
-            {
-                "name": "Roblox",
-                "base": os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
-            },
-            {
-                "name": "Bloxstrap",
-                "base": os.path.expandvars(r"%LOCALAPPDATA%\Bloxstrap\Versions")
-            },
-            {
-                "name": "Fishstrap",
-                "base": os.path.expandvars(r"%LOCALAPPDATA%\Fishstrap\Versions")
-            },
-            {
-                "name": "Voidstrap",
-                "base": os.path.expandvars(r"%LOCALAPPDATA%\Voidstrap\RblxVersions")
-            }
-        ]
+        """Return Roblox version directories from known sources."""
+        sources = self._collect_version_sources()
 
         versions = []
         for source in sources:
@@ -3299,7 +3314,7 @@ class AccountManagerUI:
             btn.configure(command=lambda n=tab_name: set_active_tab(n))
             tab_buttons[tab_name] = btn
         
-        create_tab_button("RAM Settings", "ram")
+        create_tab_button("FRAM Settings", "ram")
         create_tab_button("Roblox Client", "roblox")
         
         content_frame = ttk.Frame(main_frame, style="Dark.TFrame")
@@ -3416,6 +3431,112 @@ class AccountManagerUI:
                 style="Dark.TLabel",
                 wraplength=320
             ).pack(anchor="w", pady=(0, 4))
+
+        ttk.Label(
+            ram_tab,
+            text="Custom Version Folders",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(12, 2))
+
+        
+
+        custom_versions_frame = ttk.Frame(ram_tab, style="Dark.TFrame")
+        custom_versions_frame.pack(fill="both", expand=True, pady=(0, 6))
+        custom_versions_frame.columnconfigure(0, weight=1)
+
+        listbox_frame = ttk.Frame(custom_versions_frame, style="Dark.TFrame")
+        listbox_frame.grid(row=0, column=0, sticky="nsew")
+        listbox_frame.columnconfigure(0, weight=1)
+
+        custom_sources_list = tk.Listbox(
+            listbox_frame,
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            selectbackground=self.FG_ACCENT,
+            highlightthickness=0,
+            border=0,
+            height=6
+        )
+        custom_sources_list.grid(row=0, column=0, sticky="nsew")
+
+        custom_scroll = ttk.Scrollbar(listbox_frame, command=custom_sources_list.yview)
+        custom_scroll.grid(row=0, column=1, sticky="ns")
+        custom_sources_list.config(yscrollcommand=custom_scroll.set)
+
+        button_row = ttk.Frame(custom_versions_frame, style="Dark.TFrame")
+        button_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        button_row.columnconfigure(0, weight=1)
+        button_row.columnconfigure(1, weight=1)
+
+        def refresh_custom_sources_list():
+            custom_sources_list.delete(0, tk.END)
+            for entry in self.settings.get("custom_version_sources", []):
+                name = entry.get("name") or "Custom"
+                base = entry.get("base") or ""
+                custom_sources_list.insert(tk.END, f"{name} — {base}")
+
+        def add_custom_version_folder():
+            path = filedialog.askdirectory(
+                parent=settings_window,
+                title="Select Versions Folder"
+            )
+            if not path:
+                return
+            path = os.path.normpath(path)
+            if not os.path.isdir(path):
+                messagebox.showerror("Custom Versions", "Selected path is not a folder.")
+                return
+            name_default = os.path.basename(path.rstrip(r"\\/")) or "Custom"
+            name = simpledialog.askstring(
+                "Custom Versions",
+                "Display name for this folder:",
+                parent=settings_window,
+                initialvalue=name_default
+            )
+            if name is None:
+                return
+            name = name.strip() or name_default
+            sources = self.settings.get("custom_version_sources", [])
+            normalized_existing = {os.path.normcase(os.path.normpath(entry.get("base", ""))) for entry in sources}
+            normalized_path = os.path.normcase(path)
+            if normalized_path in normalized_existing:
+                messagebox.showinfo("Custom Versions", "That folder is already listed.")
+                return
+            sources.append({"name": name, "base": path})
+            self.settings["custom_version_sources"] = sources
+            self.save_settings()
+            refresh_custom_sources_list()
+            self.load_roblox_versions()
+
+        def remove_custom_version_folder():
+            selection = custom_sources_list.curselection()
+            if not selection:
+                return
+            index = selection[0]
+            sources = self.settings.get("custom_version_sources", [])
+            if 0 <= index < len(sources):
+                del sources[index]
+                self.settings["custom_version_sources"] = sources
+                self.save_settings()
+                refresh_custom_sources_list()
+                self.load_roblox_versions()
+
+        ttk.Button(
+            button_row,
+            text="Add Folder",
+            style="Dark.TButton",
+            command=add_custom_version_folder
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        ttk.Button(
+            button_row,
+            text="Remove Selected",
+            style="Dark.TButton",
+            command=remove_custom_version_folder
+        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        refresh_custom_sources_list()
 
         roblox_tab = ttk.Frame(content_frame, style="Dark.TFrame")
         roblox_tab.grid(row=0, column=0, sticky="nsew")
