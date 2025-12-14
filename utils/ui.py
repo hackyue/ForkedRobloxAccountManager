@@ -7,11 +7,13 @@ import os
 import re
 import sys
 import io
+
 import json
 import math
 import csv
 import atexit
 import platform
+import time
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -32,6 +34,19 @@ else:
     win32api = win32con = win32gui = win32process = None
 
 from classes.roblox_api import RobloxAPI
+
+
+MIN_LAUNCH_DELAY_SECONDS = 0.0
+MAX_LAUNCH_DELAY_SECONDS = 60.0
+
+
+def clamp_multi_launch_delay(value):
+    """Clamp arbitrary input to the allowed multi-launch delay range."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = MIN_LAUNCH_DELAY_SECONDS
+    return max(MIN_LAUNCH_DELAY_SECONDS, min(MAX_LAUNCH_DELAY_SECONDS, numeric))
 
 
 THEMES = {
@@ -442,6 +457,8 @@ class AccountManagerUI:
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
+        self._last_game_name_query_value = None
+
         self.style = ttk.Style()
         self.style.theme_use("clam")
         self.status_label = None
@@ -454,7 +471,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("RAM v2.3.5 - made by evanovar - modified by nully")
+        self.root.title("FRAM v2.3.5 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -628,7 +645,7 @@ class AccountManagerUI:
         ttk.Button(right_frame, text="Delete Selected", style="Dark.TButton", command=self.delete_game_from_list).pack(fill="x", pady=(5, 0))
 
         ttk.Label(right_frame, text="Quick Actions", style="Dark.TLabel").pack(anchor="w", pady=(10, 5))
-
+        
         action_frame = ttk.Frame(right_frame, style="Dark.TFrame")
         action_frame.pack(fill="x", pady=(5, 0))
 
@@ -637,6 +654,9 @@ class AccountManagerUI:
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Auto-Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
 
+        self.add_account_dropdown = None
+        self.add_account_dropdown_visible = False
+        
         bottom_frame = ttk.Frame(self.root, style="Dark.TFrame")
         bottom_frame.pack(fill="x", padx=10, pady=(5, 10), anchor='s')
 
@@ -646,58 +666,30 @@ class AccountManagerUI:
             style="Dark.TButton",
         )
         self.add_account_split_btn.pack(side="left", fill="both", expand=True, padx=(0, 2))
-        self.add_account_split_btn.bind("<Button-1>", self.on_add_account_split_click)
-        
-        self.add_account_dropdown = None
-        self.add_account_dropdown_visible = False
-        
-        ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.remove_account).pack(side="left", fill="both", expand=True, padx=2)
-        ttk.Button(bottom_frame, text="Launch Browser", style="Dark.TButton", command=self.launch_home).pack(side="left", fill="both", expand=True, padx=2)
-        ttk.Button(bottom_frame, text="Launch Roblox App", style="Dark.TButton", command=self.launch_home_app).pack(side="left", fill="both", expand=True, padx=2)
-        ttk.Button(bottom_frame, text="Settings", style="Dark.TButton", command=self.open_settings).pack(side="left", fill="both", expand=True, padx=(2, 0))
-        
+
+        ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.delete_account).pack(
+            side="left", fill="both", expand=True, padx=2
+        )
+
+        ttk.Button(bottom_frame, text="Launch Browser", style="Dark.TButton", command=self.launch_home).pack(
+            side="left", fill="both", expand=True, padx=2
+        )
+        ttk.Button(bottom_frame, text="Launch Roblox App", style="Dark.TButton", command=self.launch_home_app).pack(
+            side="left", fill="both", expand=True, padx=2
+        )
+        ttk.Button(bottom_frame, text="Settings", style="Dark.TButton", command=self.open_settings).pack(
+            side="left", fill="both", expand=True, padx=(2, 0)
+        )
+
         self.root.bind("<Button-1>", self.hide_dropdown_on_click_outside)
         self.root.bind("<Configure>", self.on_root_configure)
-
         self.refresh_accounts()
         self.refresh_game_list()
         self.update_game_name()
 
+
     def load_settings(self):
         """Load UI settings from file"""
-        try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r') as f:
-                    self.settings = json.load(f)
-            else:
-                self.settings = {
-                    "last_place_id": "",
-                    "last_private_server": "",
-                    "game_list": [],
-                    "enable_topmost": False,
-                    "enable_multi_roblox": False,
-                    "confirm_before_launch": False,
-                    "max_recent_games": 10,
-                    "enable_multi_select": False,
-                    "enable_debug_logging": False,
-                    "selected_theme": "Synapse Neon",
-                    "disable_success_popups": False
-                }
-        except:
-            self.settings = {
-                "last_place_id": "",
-                "last_private_server": "",
-                "game_list": [],
-                "enable_topmost": False,
-                "enable_multi_roblox": False,
-                "confirm_before_launch": False,
-                "max_recent_games": 10,
-                "enable_multi_select": False,
-                "enable_debug_logging": False,
-                "selected_theme": "Synapse Neon",
-                "disable_success_popups": False
-            }
-        
         defaults = {
             "last_place_id": "",
             "last_private_server": "",
@@ -709,17 +701,61 @@ class AccountManagerUI:
             "enable_multi_select": False,
             "enable_debug_logging": False,
             "selected_theme": "Synapse Neon",
-            "disable_success_popups": False
+            "disable_success_popups": False,
+            "auto_arrange_scope": "both",
+            "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
         }
+
+        try:
+            with open(self.settings_file, "r", encoding="utf-8") as settings_fp:
+                self.settings = json.load(settings_fp)
+        except Exception:
+            self.settings = defaults.copy()
+
         for key, value in defaults.items():
             self.settings.setdefault(key, value)
-        
-        if self.settings.get("enable_topmost", False):
-            self.root.attributes("-topmost", True)
-        
+
+        self.settings["multi_launch_delay"] = clamp_multi_launch_delay(
+            self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS)
+        )
+
+        self._ensure_auto_arrange_scope_valid()
         if self.settings.get("enable_multi_roblox", False):
             self.root.after(100, self.initialize_multi_roblox)
 
+    def _ensure_auto_arrange_scope_valid(self):
+        """Keep auto-arrange scope sane, especially when only one monitor is available."""
+        allowed_scopes = {"primary", "secondary", "both"}
+        scope = self.settings.get("auto_arrange_scope", "both")
+        if scope not in allowed_scopes:
+            scope = "both"
+
+        if not self._has_multiple_monitors():
+            scope = "primary"
+
+        self.settings["auto_arrange_scope"] = scope
+
+    def _has_multiple_monitors(self):
+        """Return True if more than one monitor is available."""
+        if not win32api:
+            return False
+
+        try:
+            monitors = win32api.EnumDisplayMonitors(None, None)
+            return len(monitors) > 1
+        except Exception:
+            return False
+
+    def _format_delay_value(self, value):
+        """Return a user-friendly string for the launch delay value."""
+        clamped_value = clamp_multi_launch_delay(value)
+        if math.isclose(clamped_value, round(clamped_value)):
+            return str(int(round(clamped_value)))
+        return f"{clamped_value:.1f}".rstrip("0").rstrip(".")
+
+    def _get_multi_launch_delay(self):
+        """Return the current launch delay, clamped to the supported range."""
+        return clamp_multi_launch_delay(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS))
 
     def show_success_message(self, message, title="Success"):
         """Show a success message if popups are enabled."""
@@ -727,10 +763,9 @@ class AccountManagerUI:
             messagebox.showinfo(title, message)
 
     def apply_theme(self, theme_name, persist=True):
-        """Apply the selected theme to the UI"""
+        """Apply the selected theme to the UI."""
         theme = THEMES.get(theme_name)
         if theme is None:
-            
             fallback_name = next(iter(THEMES.keys()))
             theme = THEMES[fallback_name]
             theme_name = fallback_name
@@ -752,9 +787,7 @@ class AccountManagerUI:
         self.LIST_SELECT = theme["list_select"]
         self.FONT = (theme["font"], theme["font_size"])
 
-
         self.root.configure(bg=self.BG_ROOT)
-
 
         self.style.configure("Dark.TFrame", background=self.BG_DARK)
         self.style.configure("Dark.TLabel", background=self.BG_DARK, foreground=self.FG_TEXT, font=self.FONT)
@@ -783,7 +816,17 @@ class AccountManagerUI:
             fieldbackground=[("readonly", self.ENTRY_BG)],
             foreground=[("readonly", self.ENTRY_FG)]
         )
-
+        self.style.configure(
+            "Dark.TSpinbox",
+            fieldbackground=self.ENTRY_BG,
+            background=self.ENTRY_BG,
+            foreground=self.ENTRY_FG
+        )
+        self.style.map(
+            "Dark.TSpinbox",
+            fieldbackground=[("readonly", self.ENTRY_BG)],
+            foreground=[("readonly", self.ENTRY_FG)]
+        )
 
         if getattr(self, "status_label", None):
             self.status_label.configure(bg=self.BG_DARK)
@@ -1453,6 +1496,11 @@ class AccountManagerUI:
 
     def update_game_name(self):
         """Debounced, non-blocking update of the game name label"""
+        place_id = self.place_entry.get().strip()
+        if place_id == self._last_game_name_query_value:
+            return
+
+        self._last_game_name_query_value = place_id
         self._game_name_request_token += 1
         request_token = self._game_name_request_token
 
@@ -1463,17 +1511,16 @@ class AccountManagerUI:
                 pass
             self._game_name_after_id = None
 
-        def schedule_fetch(token=request_token):
-            place_id = self.place_entry.get().strip()
-            if not place_id or not place_id.isdigit():
+        def schedule_fetch(token=request_token, pid=place_id):
+            if not pid or not pid.isdigit():
                 self._handle_game_name_result(token, None)
                 return
 
-            def worker(pid, active_token):
-                name = RobloxAPI.get_game_name(pid)
+            def worker(pid_value, active_token):
+                name = RobloxAPI.get_game_name(pid_value)
                 self.root.after(0, lambda: self._handle_game_name_result(active_token, name))
 
-            threading.Thread(target=worker, args=(place_id, token), daemon=True).start()
+            threading.Thread(target=worker, args=(pid, token), daemon=True).start()
 
         self._game_name_after_id = self.root.after(350, schedule_fetch)
 
@@ -2232,14 +2279,71 @@ class AccountManagerUI:
                 except Exception:
                     pass
 
+    def _get_monitor_work_areas(self):
+        """Return a list of monitor work areas (primary first)."""
+        if not win32api:
+            return []
+
+        try:
+            monitors = win32api.EnumDisplayMonitors(None, None)
+        except Exception:
+            return []
+
+        if not monitors:
+            return []
+
+        work_areas = []
+        for handle, _, _ in monitors:
+            try:
+                info = win32api.GetMonitorInfo(handle)
+            except Exception:
+                continue
+
+            work = info.get("Work") or info.get("WorkArea") or info.get("Monitor")
+            if not work:
+                continue
+
+            is_primary = bool(info.get("Flags", 0) & getattr(win32con, "MONITORINFOF_PRIMARY", 0))
+            work_areas.append((is_primary, (work[0], work[1], work[2], work[3])))
+
+        # Primary monitor first, then sort others left-to-right / top-to-bottom for stability.
+        work_areas.sort(key=lambda item: (not item[0], item[1][0], item[1][1]))
+        return [area for _, area in work_areas]
+
     def _arrange_windows_on_primary_monitor(self, hwnds):
-        """Arrange the provided HWNDs in a grid that fits the primary monitor's work area."""
+        """Arrange Roblox clients across all monitors, keeping each window inside its monitor."""
         if not win32api or not win32gui:
             return
 
-        monitor = win32api.MonitorFromPoint((0, 0), win32con.MONITOR_DEFAULTTOPRIMARY)
-        monitor_info = win32api.GetMonitorInfo(monitor)
-        work_area = monitor_info.get("Work", monitor_info["Monitor"])
+        monitor_work_areas = self._get_monitor_work_areas()
+        if not monitor_work_areas:
+            return
+
+        scope = self.settings.get("auto_arrange_scope", "both")
+        monitor_work_areas = self._filter_monitor_areas_by_scope(monitor_work_areas, scope)
+        if not monitor_work_areas:
+            return
+
+        hwnds = list(hwnds)
+        total = len(hwnds)
+        if total == 0:
+            return
+
+        start = 0
+        for idx, work_area in enumerate(monitor_work_areas):
+            remaining_monitors = len(monitor_work_areas) - idx
+            remaining_windows = total - start
+            if remaining_windows <= 0:
+                break
+
+            windows_for_monitor = max(1, math.ceil(remaining_windows / remaining_monitors))
+            subset = hwnds[start:start + windows_for_monitor]
+            if subset:
+                self._arrange_windows_within_area(subset, work_area)
+            start += windows_for_monitor
+
+    def _arrange_windows_within_area(self, hwnds, work_area):
+        """Tile the given HWNDs inside a single monitor work area."""
         work_left, work_top, work_right, work_bottom = work_area
         available_width = max(1, work_right - work_left)
         available_height = max(1, work_bottom - work_top)
@@ -2250,38 +2354,61 @@ class AccountManagerUI:
 
         aspect_ratio = available_width / available_height if available_height else 1
         columns = max(1, math.ceil(math.sqrt(window_count * aspect_ratio)))
+        columns = min(columns, window_count)
         rows = max(1, math.ceil(window_count / columns))
 
-        base_width = max(1, available_width // columns)
-        base_height = max(1, available_height // rows)
+        column_edges = [
+            work_left + round(i * available_width / columns)
+            for i in range(columns + 1)
+        ]
+        column_edges[-1] = work_right
+        row_edges = [
+            work_top + round(i * available_height / rows)
+            for i in range(rows + 1)
+        ]
+        row_edges[-1] = work_bottom
 
         for index, hwnd in enumerate(hwnds):
             row = index // columns
             col = index % columns
-            is_last_col = (col == columns - 1)
-            is_last_row = (row == rows - 1)
+            if row >= rows:
+                row = rows - 1
 
-            width = base_width if not is_last_col else available_width - base_width * (columns - 1)
-            height = base_height if not is_last_row else available_height - base_height * (rows - 1)
-            width = max(100, width)
-            height = max(100, height)
+            left = column_edges[col]
+            right = column_edges[col + 1]
+            top = row_edges[row]
+            bottom = row_edges[min(row + 1, len(row_edges) - 1)]
 
-            x = work_left + col * base_width
-            y = work_top + row * base_height
+            width = max(1, right - left)
+            height = max(1, bottom - top)
 
             try:
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                win32gui.MoveWindow(hwnd, x, y, width, height, True)
+                win32gui.MoveWindow(hwnd, left, top, width, height, True)
             except Exception:
                 continue
 
-    def remove_account(self):
-        """Remove the selected account(s)"""
+    def _filter_monitor_areas_by_scope(self, work_areas, scope):
+        """Filter monitor work areas according to the chosen auto-arrange scope."""
+        if not work_areas:
+            return []
+
+        if scope == "primary":
+            return work_areas[:1]
+
+        if scope == "secondary":
+            return work_areas[1:2] if len(work_areas) > 1 else []
+
+        if scope == "both":
+            return work_areas
+
+        return work_areas
+
+    def delete_account(self):
         if self.settings.get("enable_multi_select", False):
             usernames = self.get_selected_usernames()
             if not usernames:
                 return
-            
             if len(usernames) == 1:
                 confirm = messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete '{usernames[0]}'?")
             else:
@@ -2289,7 +2416,7 @@ class AccountManagerUI:
                     "Confirm Delete",
                     f"Are you sure you want to delete {len(usernames)} accounts?\n\n" + "\n".join(usernames)
                 )
-            
+
             if confirm:
                 for username in usernames:
                     self.manager.delete_account(username)
@@ -2460,20 +2587,25 @@ class AccountManagerUI:
                 return
             usernames = [username]
 
-        def worker(selected_usernames):
+        launch_delay = self._get_multi_launch_delay()
+
+        def worker(selected_usernames, delay_seconds):
             success_count = 0
-            for uname in selected_usernames:
+            for idx, uname in enumerate(selected_usernames):
                 try:
                     if self.manager.launch_home(uname):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch browser for {uname}: {e}")
+                if delay_seconds > 0 and idx < len(selected_usernames) - 1:
+                    time.sleep(delay_seconds)
             if success_count > 0:
                 self.root.after(0, lambda: self.show_success_message(f"Launched {success_count} browser(s)!"))
             else:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Failed to launch any browsers."))
 
-        threading.Thread(target=worker, args=(usernames,), daemon=True).start()
+        threading.Thread(target=worker, args=(usernames, launch_delay), daemon=True).start()
+
 
     def launch_home_app(self):
         """Launch the Roblox client to the home page for the selected account(s) (non-blocking)"""
@@ -2497,14 +2629,18 @@ class AccountManagerUI:
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
 
-        def worker(selected_usernames):
+        launch_delay = self._get_multi_launch_delay()
+
+        def worker(selected_usernames, delay_seconds):
             success_count = 0
-            for uname in selected_usernames:
+            for idx, uname in enumerate(selected_usernames):
                 try:
                     if self.manager.launch_home_app(uname, enable_debug=debug_enabled):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch Roblox home for {uname}: {e}")
+                if delay_seconds > 0 and idx < len(selected_usernames) - 1:
+                    time.sleep(delay_seconds)
 
             def notify():
                 if success_count > 0:
@@ -2517,7 +2653,7 @@ class AccountManagerUI:
 
             self.root.after(0, notify)
 
-        threading.Thread(target=worker, args=(usernames,), daemon=True).start()
+        threading.Thread(target=worker, args=(usernames, launch_delay), daemon=True).start()
 
     def launch_game(self):
         """Launch Roblox game with the selected account(s)"""
@@ -2553,14 +2689,18 @@ class AccountManagerUI:
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
 
-        def worker(selected_usernames, pid, psid, ver, debug_flag):
+        launch_delay = self._get_multi_launch_delay()
+
+        def worker(selected_usernames, pid, psid, ver, debug_flag, delay_seconds):
             success_count = 0
-            for uname in selected_usernames:
+            for idx, uname in enumerate(selected_usernames):
                 try:
                     if self.manager.launch_roblox(uname, pid, psid, ver, enable_debug=debug_flag):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch game for {uname}: {e}")
+                if delay_seconds > 0 and idx < len(selected_usernames) - 1:
+                    time.sleep(delay_seconds)
 
             def on_done():
                 if success_count > 0:
@@ -2578,7 +2718,11 @@ class AccountManagerUI:
 
             self.root.after(0, on_done)
 
-        threading.Thread(target=worker, args=(usernames, game_id, private_server, version_path, debug_enabled), daemon=True).start()
+        threading.Thread(
+            target=worker,
+            args=(usernames, game_id, private_server, version_path, debug_enabled, launch_delay),
+            daemon=True
+        ).start()
 
     def enable_multi_roblox(self):
         """Enable Multi Roblox + 773 fix"""
@@ -2692,6 +2836,7 @@ class AccountManagerUI:
         custom_launcher_var = tk.BooleanVar(value=self.settings.get("enable_custom_launcher", False))
         custom_launcher_path_var = tk.StringVar(value=self.settings.get("custom_launcher_path", ""))
         custom_launcher_player_var = tk.BooleanVar(value=self.settings.get("custom_launcher_requires_player", False))
+        auto_arrange_scope_var = tk.StringVar(value=self.settings.get("auto_arrange_scope", "both"))
         
         checkbox_style = ttk.Style()
         checkbox_style.configure(
@@ -2825,6 +2970,82 @@ class AccountManagerUI:
             style="Dark.TCheckbutton",
             command=auto_save_setting("enable_debug_logging", debug_var)
         ).pack(anchor="w", pady=2)
+        ttk.Checkbutton(
+            ram_tab,
+            text="Disable Success Popups",
+            variable=disable_success_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("disable_success_popups", disable_success_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Label(
+            ram_tab,
+            text="Theme",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(10, 2))
+
+        theme_combo = ttk.Combobox(
+            ram_tab,
+            values=list(THEMES.keys()),
+            textvariable=theme_var,
+            state="readonly",
+            style="Dark.TCombobox"
+        )
+        theme_combo.pack(fill="x", pady=(0, 4))
+        theme_combo.set(theme_var.get())
+
+        def on_theme_change(_=None):
+            selected_theme = theme_combo.get()
+            if not selected_theme:
+                return
+            theme_var.set(selected_theme)
+            self.apply_theme(selected_theme)
+
+        theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
+
+        ttk.Label(
+            ram_tab,
+            text="Auto-Arrange applies to",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(10, 2))
+
+        if self._has_multiple_monitors():
+            scope_display_map = {
+                "primary": "Primary monitor only",
+                "secondary": "Secondary monitor only",
+                "both": "All monitors"
+            }
+            scope_inverse_map = {label: value for value, label in scope_display_map.items()}
+            selected_label = scope_display_map.get(auto_arrange_scope_var.get(), scope_display_map["both"])
+
+            scope_combo = ttk.Combobox(
+                ram_tab,
+                values=list(scope_display_map.values()),
+                state="readonly",
+                style="Dark.TCombobox"
+            )
+            scope_combo.pack(fill="x", pady=(0, 4))
+            scope_combo.set(selected_label)
+
+            def on_scope_change(_=None):
+                label = scope_combo.get()
+                value = scope_inverse_map.get(label, "both")
+                auto_arrange_scope_var.set(value)
+                self.settings["auto_arrange_scope"] = value
+                self.save_settings()
+
+            scope_combo.bind("<<ComboboxSelected>>", on_scope_change)
+        else:
+            self.settings["auto_arrange_scope"] = "primary"
+            auto_arrange_scope_var.set("primary")
+            ttk.Label(
+                ram_tab,
+                text="Only one monitor detected. Auto-arrange will use the available screen.",
+                style="Dark.TLabel",
+                wraplength=320
+            ).pack(anchor="w", pady=(0, 4))
 
         roblox_tab = ttk.Frame(content_frame, style="Dark.TFrame")
         roblox_tab.grid(row=0, column=0, sticky="nsew")
@@ -2859,88 +3080,46 @@ class AccountManagerUI:
 
         ttk.Label(
             custom_frame,
-            text="Custom Launcher",
+            text="Launch Delay (seconds)",
             style="Dark.TLabel",
             font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(0, 2))
 
-        def update_custom_launcher_controls():
-            enabled = bool(custom_launcher_var.get())
-            state = tk.NORMAL if enabled else tk.DISABLED
-            path_entry.configure(state=state)
-            browse_btn.configure(state=state)
-            if enabled:
-                custom_flag_chk.state(["!disabled"])
-            else:
-                custom_flag_chk.state(["disabled"])
+        delay_var = tk.DoubleVar(value=self._get_multi_launch_delay())
 
-        def on_custom_launcher_toggle():
-            enabled = custom_launcher_var.get()
-            self.settings["enable_custom_launcher"] = enabled
-            self.save_settings()
-            update_custom_launcher_controls()
-            self._refresh_custom_launcher_version_entry(prefer_select=enabled, show_error=enabled)
-
-        ttk.Checkbutton(
-            custom_frame,
-            text="Enable Custom Launcher",
-            variable=custom_launcher_var,
-            style="Dark.TCheckbutton",
-            command=on_custom_launcher_toggle
-        ).pack(anchor="w", pady=(4, 2))
-
-        path_container = ttk.Frame(custom_frame, style="Dark.TFrame")
-        path_container.pack(fill="x", pady=(2, 2))
-
-        ttk.Label(
-            path_container,
-            text="Executable Path:",
-            style="Dark.TLabel"
-        ).pack(anchor="w")
-
-        path_entry_frame = ttk.Frame(path_container, style="Dark.TFrame")
-        path_entry_frame.pack(fill="x", pady=(2, 0))
-
-        path_entry = ttk.Entry(
-            path_entry_frame,
-            textvariable=custom_launcher_path_var,
-            style="Dark.TEntry"
-        )
-        path_entry.pack(side="left", fill="x", expand=True)
-
-        def browse_custom_launcher():
-            initial_dir = os.path.dirname(custom_launcher_path_var.get()) if custom_launcher_path_var.get() else os.getenv("ProgramFiles", "")
-            file_path = filedialog.askopenfilename(
-                title="Select Custom Launcher",
-                initialdir=initial_dir or None,
-                filetypes=[("Executables", "*.exe"), ("All Files", "*.*")]
-            )
-            if file_path:
-                custom_launcher_path_var.set(file_path)
-                self.settings["custom_launcher_path"] = file_path
+        def on_delay_var_change(*_):
+            try:
+                value = float(delay_var.get())
+            except (tk.TclError, ValueError):
+                return
+            clamped = clamp_multi_launch_delay(value)
+            if not math.isclose(value, clamped):
+                delay_var.set(clamped)
+                return
+            if not math.isclose(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS), clamped):
+                self.settings["multi_launch_delay"] = clamped
                 self.save_settings()
-                self._refresh_custom_launcher_version_entry(prefer_select=True, show_error=True)
 
-        browse_btn = ttk.Button(
-            path_entry_frame,
-            text="Browse",
-            style="Dark.TButton",
-            command=browse_custom_launcher,
-            width=10
-        )
-        browse_btn.pack(side="left", padx=(8, 0))
+        vcmd = (self.root.register(lambda text: text == "" or re.match(r"^\d*\.?\d*$", text) is not None), "%P")
 
-        custom_flag_chk = ttk.Checkbutton(
+        delay_spin = ttk.Spinbox(
             custom_frame,
-            text="Launcher needs -player argument",
-            variable=custom_launcher_player_var,
-            style="Dark.TCheckbutton",
-            command=auto_save_setting("custom_launcher_requires_player", custom_launcher_player_var)
+            from_=MIN_LAUNCH_DELAY_SECONDS,
+            to=MAX_LAUNCH_DELAY_SECONDS,
+            increment=0.5,
+            textvariable=delay_var,
+            format="%.1f",
+            width=8,
+            validate="key",
+            validatecommand=vcmd,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_delay_var_change
         )
-        custom_flag_chk.pack(anchor="w", pady=(2, 4))
-
-
-        update_custom_launcher_controls()
+        delay_spin.pack(anchor="w")
+        delay_spin.bind("<FocusOut>", lambda _: on_delay_var_change())
+        delay_spin.bind("<Return>", lambda _: on_delay_var_change())
+        delay_var.trace_add("write", on_delay_var_change)
 
         settings_window.update_idletasks()
         padding_w = 40

@@ -1,12 +1,13 @@
-[![Version](https://img.shields.io/github/v/release/evanovar/RobloxAccountManager)](https://github.com/evanovar/RobloxAccountManager/releases/latest)
+[![Version](https://img.shields.io/github/v/release/evanovar/RobloxAccountManager)](https://github.com/hackyue/RobloxAccountManager/releases/latest)
 ![License](https://img.shields.io/github/license/evanovar/RobloxAccountManager)
-[![Original Discord](https://img.shields.io/discord/1436930121897476140?label=Discord)](https://discord.gg/TYnJXyEhgY)<br>
+[![Original Discord](https://img.shields.io/discord/1436930121897476140?label=Discord)](https://discord.gg/SpMTxg8YjJ)<br>
 [![Download Original](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/evanovar/RobloxAccountManager/releases/latest/download/RobloxAccountManager.exe)
+[![Download Fork](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/hackyue/RobloxAccountManager/releases/latest/download/main.exe)
 
 # 🚀 Roblox Account Manager
 
 A powerful tool for managing multiple Roblox accounts with secure cookie extraction and modern UI interface. <br>
-Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) <br>
+Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <br>
 ⭐ If you like this project, please consider starring the repository! ⭐<br>
 
 <img width="446" height="528" alt="image" src="https://i.ibb.co/c4T89HR/Screenshot-2025-12-02-224949.png" />
@@ -16,7 +17,7 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 ## ✨ Features
 
 ### 🎨 Modern UI Interface
-- **Dark Theme**: Sleek, modern interface easy on the eyes
+- **Pre Made Themes**: Sleek, modern interface easy on the eyes
 - **Visual Account Management**: See all your accounts at a glance
 
 ### 🖥️ Interface Features
@@ -42,18 +43,22 @@ Created by evanovar · Contact: [Discord Server](https://discord.gg/TYnJXyEhgY) 
 
 **Requirements:**
 - **Google Chrome browser**
-- **Windows** (currently optimized for Windows)
+- **Windows**
 
 > ⚠️ Windows Defender may flag the EXE as untrusted since it's not signed. Click "More info" → "Run anyway" to proceed.
+
+
+
+
+
+### Method 2 (devs)
 
 **Full source code access and customization**
 
 **Requirements:**
 - **Python 3.7+**
 - **Google Chrome browser**
-- **Windows** (currently optimized for Windows)
-
-### Method 2 (devs)
+- **Windows**
 
 1. **Clone the repository**
    ```bash
