@@ -2,7 +2,7 @@
 ![License](https://img.shields.io/github/license/evanovar/RobloxAccountManager)
 [![Original Discord](https://img.shields.io/discord/1436930121897476140?label=Discord)](https://discord.gg/SpMTxg8YjJ)<br>
 [![Download Original](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/evanovar/RobloxAccountManager/releases/latest/download/RobloxAccountManager.exe)
-[![Download Fork](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/hackyue/RobloxAccountManager/releases/latest/download/main.exe)
+[![Download Fork](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/hackyue/RobloxAccountManager/releases/latest/download/FRAM.exe)
 
 # 🚀 Roblox Account Manager
 
