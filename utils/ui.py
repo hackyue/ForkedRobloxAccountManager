@@ -7,7 +7,10 @@ import os
 import re
 import sys
 import io
-
+import tempfile
+import zipfile
+import shutil
+import requests
 import json
 import math
 import csv
@@ -17,24 +20,41 @@ import time
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import requests
 import threading
 import msvcrt
 import ctypes
 from ctypes import wintypes
-import subprocess
-import webbrowser
 
 if platform.system() == "Windows":
     import win32api
     import win32con
     import win32gui
+    import webbrowser
     import win32process
 else:
     win32api = win32con = win32gui = win32process = None
 
 from classes.roblox_api import RobloxAPI
 
+
+ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
+ROBLOX_DEPLOY_HISTORY_URL = "https://setup.rbxcdn.com/DeployHistory.txt"
+ROBLOX_DOWNLOAD_VARIANTS = [
+    "https://setup.rbxcdn.com/{version}-WindowsPlayer.zip",
+    "https://setup.rbxcdn.com/{version}-RobloxApp.zip",
+    "https://setup.rbxcdn.com/{version}-WindowsStudio.zip",
+]
+
+ROBLOX_DOWNLOAD_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/octet-stream,application/zip;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.roblox.com/",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 MIN_LAUNCH_DELAY_SECONDS = 0.0
 MAX_LAUNCH_DELAY_SECONDS = 60.0
@@ -504,6 +524,7 @@ class AccountManagerUI:
         self.menu_bar_frame = None
         self.menu_buttons = []
         self.version_options = {"Latest Version": None}
+        self.installer_dialog_state = None
 
         self.apply_theme(self.theme_name, persist=True)
         self.register_toplevel(self.root)
@@ -666,6 +687,7 @@ class AccountManagerUI:
             style="Dark.TButton",
         )
         self.add_account_split_btn.pack(side="left", fill="both", expand=True, padx=(0, 2))
+        self.add_account_split_btn.bind("<Button-1>", self.on_add_account_split_click)
 
         ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.delete_account).pack(
             side="left", fill="both", expand=True, padx=2
@@ -1187,38 +1209,354 @@ class AccountManagerUI:
             )
 
     def use_installer_version(self, version):
-        """Handle Roblox installer selection by launching download and copying install path."""
-        roblox_versions_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
-        suggested_version_path = os.path.join(roblox_versions_path, version)
-
-        download_url = (
-            "https://rdd.weao.gg/?channel=LIVE&binaryType=WindowsPlayer"
-            f"&version={version}&includeLauncher=false"
-        )
-
-        try:
-            webbrowser.open_new_tab(download_url)
-        except Exception as exc:
-            messagebox.showerror("Roblox Installer", f"Failed to open download link: {exc}")
+        """Begin the guided installer flow for the selected Roblox version."""
+        clients = self.get_installed_clients()
+        if not clients:
+            messagebox.showwarning(
+                "Roblox Installer",
+                "No supported clients were found.\n\nInstall Roblox, Bloxstrap, or Fishstrap first."
+            )
             return
 
+        self._show_installer_dialog(version, clients)
+
+    def _show_installer_dialog(self, version, clients):
+        """Create (or refresh) the installer dialog for choosing a client and tracking progress."""
+        self._close_installer_dialog()
+
+        window = tk.Toplevel(self.root)
+        window.title("Roblox Installer")
+        window.configure(bg=self.BG_DARK)
+        window.resizable(False, False)
+        self.register_toplevel(window)
+
+        WIDTH, HEIGHT = 420, 360
+        self._center_window(window, WIDTH, HEIGHT)
+
+        main_frame = ttk.Frame(window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        ttk.Label(
+            main_frame,
+            text=f"Install {version}",
+            style="Dark.TLabel",
+            font=("Segoe UI", 12, "bold")
+        ).pack(anchor="w", pady=(0, 8))
+
+        ttk.Label(
+            main_frame,
+            text="Choose a client target:",
+            style="Dark.TLabel"
+        ).pack(anchor="w")
+
+        clients_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        clients_frame.pack(fill="x", pady=(4, 12))
+
+        selected_client = tk.StringVar(value="")
+
+        for client in clients:
+            radio = ttk.Radiobutton(
+                clients_frame,
+                text=f"{client['name']}  ({client['versions_path']})",
+                value=client["id"],
+                variable=selected_client,
+                style="Dark.TRadiobutton"
+            )
+            radio.pack(anchor="w", pady=2, fill="x")
+
+        progress_var = tk.DoubleVar(value=0.0)
+        status_var = tk.StringVar(value="Select a client to begin.")
+
+        progress_bar = ttk.Progressbar(
+            main_frame,
+            maximum=100,
+            variable=progress_var
+        )
+        progress_bar.pack(fill="x", pady=(10, 4))
+
+        status_label = ttk.Label(
+            main_frame,
+            textvariable=status_var,
+            style="Dark.TLabel",
+            wraplength=WIDTH - 60
+        )
+        status_label.pack(fill="x", pady=(0, 10))
+
+        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        button_frame.pack(fill="x")
+
+        download_btn = ttk.Button(
+            button_frame,
+            text="Download",
+            style="Dark.TButton",
+            state="disabled",
+            command=self._begin_installer_download
+        )
+        download_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+
+        close_btn = ttk.Button(
+            button_frame,
+            text="Cancel",
+            style="Dark.TButton",
+            command=self._close_installer_dialog
+        )
+        close_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+        def on_selection_change(*_):
+            if not self.installer_dialog_state:
+                return
+            if selected_client.get():
+                download_btn.configure(state="normal")
+            else:
+                download_btn.configure(state="disabled")
+
+        selected_client.trace_add("write", on_selection_change)
+
+        window.protocol("WM_DELETE_WINDOW", self._handle_installer_close_request)
+
+        self.installer_dialog_state = {
+            "window": window,
+            "version": version,
+            "clients": clients,
+            "selected_client": selected_client,
+            "progress_var": progress_var,
+            "status_var": status_var,
+            "progress_bar": progress_bar,
+            "download_button": download_btn,
+            "close_button": close_btn,
+            "download_thread": None,
+        }
+
+    def _handle_installer_close_request(self):
+        """Prevent closing while download is running."""
+        state = self.installer_dialog_state
+        if not state:
+            return
+        thread = state.get("download_thread")
+        if thread and thread.is_alive():
+            messagebox.showwarning(
+                "Roblox Installer",
+                "Please wait for the download to finish before closing."
+            )
+            return
+        self._close_installer_dialog()
+
+    def _close_installer_dialog(self):
+        """Destroy the installer dialog window and reset state."""
+        state = self.installer_dialog_state
+        if not state:
+            return
+        window = state.get("window")
+        if window and window.winfo_exists():
+            window.destroy()
+        self.installer_dialog_state = None
+
+    def _get_selected_installer_client(self):
+        """Return the client entry currently selected in the installer dialog."""
+        state = self.installer_dialog_state
+        if not state:
+            return None
+        selected_id = state["selected_client"].get()
+        for client in state["clients"]:
+            if client["id"] == selected_id:
+                return client
+        return None
+
+    def _begin_installer_download(self):
+        """Kick off the download/extract workflow in a background thread."""
+        state = self.installer_dialog_state
+        if not state:
+            return
+        if state.get("download_thread"):
+            return
+
+        client = self._get_selected_installer_client()
+        if not client:
+            messagebox.showwarning("Roblox Installer", "Please select a client first.")
+            return
+
+        version = state["version"]
+        target_dir = os.path.join(client["versions_path"], version)
+
+        if os.path.exists(target_dir):
+            overwrite = messagebox.askyesno(
+                "Roblox Installer",
+                f"The folder for {version} already exists inside {client['name']}.\n\n"
+                "Do you want to delete it and replace with a fresh download?"
+            )
+            if not overwrite:
+                return
+            try:
+                shutil.rmtree(target_dir)
+            except Exception as exc:
+                messagebox.showerror("Roblox Installer", f"Failed to remove existing folder:\n{exc}")
+                return
+
+        state["download_button"].configure(state="disabled")
+        state["close_button"].configure(state="disabled")
+        state["status_var"].set("Starting download...")
+        state["progress_var"].set(0)
+
+        thread = threading.Thread(
+            target=self._installer_download_thread,
+            args=(version, client, target_dir),
+            daemon=True
+        )
+        state["download_thread"] = thread
+        thread.start()
+
+    def _installer_download_thread(self, version, client, target_dir):
+        """Background worker that downloads and extracts the requested version."""
+        temp_file = None
+        response = None
+        download_url = None
+
         try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(roblox_versions_path)
+            last_error = None
+            for template in ROBLOX_DOWNLOAD_VARIANTS:
+                url = template.format(version=version)
+                try:
+                    response = requests.get(
+                        url,
+                        stream=True,
+                        timeout=30,
+                        headers=ROBLOX_DOWNLOAD_HEADERS,
+                    )
+                    response.raise_for_status()
+                    download_url = url
+                    break
+                except requests.HTTPError as exc:
+                    last_error = exc
+                except requests.RequestException as exc:
+                    last_error = exc
+
+            if response is None:
+                error_message = (
+                    f"Failed to download {version}. "
+                    f"Last error: {last_error}" if last_error else "Download failed."
+                )
+                self._report_installer_error(error_message)
+                return
+
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            first_chunk = None
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+                temp_file = tmp.name
+                for chunk in response.iter_content(chunk_size=8192):
+                    if not chunk:
+                        continue
+                    downloaded += len(chunk)
+                    if first_chunk is None:
+                        first_chunk = chunk
+                        if not self._looks_like_zip_header(first_chunk):
+                            preview = first_chunk.decode("utf-8", errors="ignore").strip()
+                            if not preview:
+                                preview = "Download returned an unexpected file type."
+                            tmp.close()
+                            try:
+                                os.remove(temp_file)
+                            except OSError:
+                                pass
+                            self._report_installer_error(preview)
+                            return
+                    tmp.write(chunk)
+                    downloaded += len(chunk)
+                    self._report_installer_progress(downloaded, total_size)
+
+            self._report_installer_status("Download complete. Extracting files...", force_progress=100)
+
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir)
+            os.makedirs(target_dir, exist_ok=True)
+
+            with zipfile.ZipFile(temp_file, "r") as zip_ref:
+                zip_ref.extractall(target_dir)
+
+            self._report_installer_success(client, target_dir)
+
         except Exception as exc:
-            print(f"Failed to copy path to clipboard: {exc}")
+            self._report_installer_error(str(exc))
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
 
-        path_exists = os.path.exists(roblox_versions_path)
-        info_lines = [
-            "Extract the downloaded files into this folder.",
-            "The path has been copied to your clipboard.",
-            f"\n{roblox_versions_path}",
-            f"\nSuggested subfolder for this build: {suggested_version_path}"
-        ]
-        if not path_exists:
-            info_lines.append("\n(Note: The Roblox Versions folder does not exist yet on disk.)")
+    @staticmethod
+    def _looks_like_zip_header(first_bytes):
+        """Return True if the initial bytes look like a ZIP archive."""
+        if not first_bytes:
+            return False
+        signatures = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+        return any(first_bytes.startswith(sig) for sig in signatures)
 
-        messagebox.showinfo("Roblox Installer", "\n".join(info_lines))
+    def _report_installer_progress(self, downloaded, total_size):
+        """Update the progress bar based on bytes downloaded."""
+        if total_size <= 0:
+            message = f"Downloading... {downloaded / (1024 * 1024):.1f} MB"
+            percent = 0
+        else:
+            percent = min(downloaded / total_size * 100, 100)
+            message = (
+                f"Downloading... "
+                f"{downloaded / (1024 * 1024):.1f} / {total_size / (1024 * 1024):.1f} MB"
+            )
+        self._report_installer_status(message, percent)
+
+    def _report_installer_status(self, message, percent=None, force_progress=None):
+        """Post a status/progress update back to the UI thread."""
+        def update():
+            state = self.installer_dialog_state
+            if not state:
+                return
+            if percent is not None:
+                state["progress_var"].set(percent)
+            if force_progress is not None:
+                state["progress_var"].set(force_progress)
+            if message:
+                state["status_var"].set(message)
+        self.root.after(0, update)
+
+    def _report_installer_success(self, client, target_dir):
+        """Handle success: notify user, refresh versions, re-enable controls."""
+        def finalize():
+            state = self.installer_dialog_state
+            if not state:
+                return
+            state["download_thread"] = None
+            state["close_button"].configure(state="normal", text="Close")
+            state["download_button"].configure(state="normal", text="Download Again")
+            state["status_var"].set(
+                f"Download complete! Files extracted to:\n{target_dir}"
+            )
+            state["progress_var"].set(100)
+            self.show_success_message(
+                f"{client['name']} updated!",
+                title="Download Complete"
+            )
+            self.load_roblox_versions()
+        self.root.after(0, finalize)
+
+    def _report_installer_error(self, error_message):
+        """Reset controls and show an error message after a failure."""
+        def finalize():
+            state = self.installer_dialog_state
+            if not state:
+                return
+            state["download_thread"] = None
+            state["download_button"].configure(state="normal")
+            state["close_button"].configure(state="normal", text="Close")
+            state["status_var"].set(f"Error: {error_message}")
+            messagebox.showerror("Roblox Installer", f"Download failed:\n{error_message}")
+        self.root.after(0, finalize)
 
     def toggle_add_account_dropdown(self):
         """Toggle the Add Account dropdown menu"""
@@ -1376,6 +1714,10 @@ class AccountManagerUI:
             {
                 "name": "Fishstrap",
                 "base": os.path.expandvars(r"%LOCALAPPDATA%\Fishstrap\Versions")
+            },
+            {
+                "name": "Voidstrap",
+                "base": os.path.expandvars(r"%LOCALAPPDATA%\Voidstrap\RblxVersions")
             }
         ]
 
@@ -1398,9 +1740,11 @@ class AccountManagerUI:
 
                 for idx, path in enumerate(entries):
                     label = f"[{source['name']}] {os.path.basename(path)}"
+                    version_name = os.path.basename(path)
                     versions.append({
                         "label": label,
                         "path": path,
+                        "version": version_name,
                         "status": "LIVE" if idx == 0 else "PAST"
                     })
             except Exception as exc:
@@ -1446,6 +1790,32 @@ class AccountManagerUI:
         if remote_versions:
             return remote_versions
         return self.get_local_roblox_versions(limit=limit)
+
+    def get_installed_clients(self):
+        """Return installed client targets that have a Versions directory on disk."""
+        candidates = [
+            ("Roblox", os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")),
+            ("Bloxstrap", os.path.expandvars(r"%LOCALAPPDATA%\Bloxstrap\Versions")),
+            ("Fishstrap", os.path.expandvars(r"%LOCALAPPDATA%\Fishstrap\Versions")),
+            ("Voidstrap", os.path.expandvars(r"%LOCALAPPDATA%\Voidstrap\RblxVersions")),
+        ]
+
+        installed = []
+        for name, base_path in candidates:
+            if not base_path:
+                continue
+            try:
+                if os.path.isdir(base_path):
+                    installed.append({
+                        "id": f"{name.lower()}_{abs(hash(base_path))}",
+                        "name": name,
+                        "versions_path": base_path
+                    })
+            except Exception:
+                continue
+
+        installed.sort(key=lambda entry: entry["name"])
+        return installed
 
     def format_version_display(self, entry):
         """Return display text for a Roblox version entry with status indicator."""
