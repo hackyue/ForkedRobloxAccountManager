@@ -17,6 +17,8 @@ import csv
 import atexit
 import platform
 import time
+import subprocess
+
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
@@ -39,11 +41,6 @@ from classes.roblox_api import RobloxAPI
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
 ROBLOX_DEPLOY_HISTORY_URL = "https://setup.rbxcdn.com/DeployHistory.txt"
-ROBLOX_DOWNLOAD_VARIANTS = [
-    "https://setup.rbxcdn.com/{version}-WindowsPlayer.zip",
-    "https://setup.rbxcdn.com/{version}-RobloxApp.zip",
-    "https://setup.rbxcdn.com/{version}-WindowsStudio.zip",
-]
 
 ROBLOX_DOWNLOAD_HEADERS = {
     "User-Agent": (
@@ -55,6 +52,89 @@ ROBLOX_DOWNLOAD_HEADERS = {
     "Referer": "https://www.roblox.com/",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+RDD_HOST_PATH = "https://setup-aws.rbxcdn.com"
+
+RDD_BINARY_TYPES = {
+    "WindowsPlayer": {
+        "blob_dir": "/"
+    },
+    "WindowsStudio64": {
+        "blob_dir": "/"
+    },
+}
+
+RDD_EXTRACT_ROOTS = {
+    "player": {
+        "RobloxApp.zip": "",
+        "redist.zip": "",
+        "shaders.zip": "shaders/",
+        "ssl.zip": "ssl/",
+        "WebView2.zip": "",
+        "WebView2RuntimeInstaller.zip": "WebView2RuntimeInstaller/",
+        "content-avatar.zip": "content/avatar/",
+        "content-configs.zip": "content/configs/",
+        "content-fonts.zip": "content/fonts/",
+        "content-sky.zip": "content/sky/",
+        "content-sounds.zip": "content/sounds/",
+        "content-textures2.zip": "content/textures/",
+        "content-models.zip": "content/models/",
+        "content-platform-fonts.zip": "PlatformContent/pc/fonts/",
+        "content-platform-dictionaries.zip": "PlatformContent/pc/shared_compression_dictionaries/",
+        "content-terrain.zip": "PlatformContent/pc/terrain/",
+        "content-textures3.zip": "PlatformContent/pc/textures/",
+        "extracontent-luapackages.zip": "ExtraContent/LuaPackages/",
+        "extracontent-translations.zip": "ExtraContent/translations/",
+        "extracontent-models.zip": "ExtraContent/models/",
+        "extracontent-textures.zip": "ExtraContent/textures/",
+        "extracontent-places.zip": "ExtraContent/places/",
+    },
+    "studio": {
+        "RobloxStudio.zip": "",
+        "RibbonConfig.zip": "RibbonConfig/",
+        "redist.zip": "",
+        "Libraries.zip": "",
+        "LibrariesQt5.zip": "",
+        "WebView2.zip": "",
+        "WebView2RuntimeInstaller.zip": "",
+        "shaders.zip": "shaders/",
+        "ssl.zip": "ssl/",
+        "Qml.zip": "Qml/",
+        "Plugins.zip": "Plugins/",
+        "StudioFonts.zip": "StudioFonts/",
+        "BuiltInPlugins.zip": "BuiltInPlugins/",
+        "ApplicationConfig.zip": "ApplicationConfig/",
+        "BuiltInStandalonePlugins.zip": "BuiltInStandalonePlugins/",
+        "content-qt_translations.zip": "content/qt_translations/",
+        "content-sky.zip": "content/sky/",
+        "content-fonts.zip": "content/fonts/",
+        "content-avatar.zip": "content/avatar/",
+        "content-models.zip": "content/models/",
+        "content-sounds.zip": "content/sounds/",
+        "content-configs.zip": "content/configs/",
+        "content-api-docs.zip": "content/api_docs/",
+        "content-textures2.zip": "content/textures/",
+        "content-studio_svg_textures.zip": "content/studio_svg_textures/",
+        "content-platform-fonts.zip": "PlatformContent/pc/fonts/",
+        "content-platform-dictionaries.zip": "PlatformContent/pc/shared_compression_dictionaries/",
+        "content-terrain.zip": "PlatformContent/pc/terrain/",
+        "content-textures3.zip": "PlatformContent/pc/textures/",
+        "extracontent-translations.zip": "ExtraContent/translations/",
+        "extracontent-luapackages.zip": "ExtraContent/LuaPackages/",
+        "extracontent-textures.zip": "ExtraContent/textures/",
+        "extracontent-scripts.zip": "ExtraContent/scripts/",
+        "extracontent-models.zip": "ExtraContent/models/",
+        "studiocontent-models.zip": "StudioContent/models/",
+        "studiocontent-textures.zip": "StudioContent/textures/",
+    },
+}
+
+RDD_APP_SETTINGS_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<Settings>
+\t<ContentFolder>content</ContentFolder>
+\t<BaseUrl>http://www.roblox.com</BaseUrl>
+</Settings>
+"""
 
 MIN_LAUNCH_DELAY_SECONDS = 0.0
 MAX_LAUNCH_DELAY_SECONDS = 60.0
@@ -1304,7 +1384,8 @@ class AccountManagerUI:
         close_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
 
         def on_selection_change(*_):
-            if not self.installer_dialog_state:
+            state = self.installer_dialog_state
+            if not state:
                 return
             if selected_client.get():
                 download_btn.configure(state="normal")
@@ -1328,46 +1409,12 @@ class AccountManagerUI:
             "download_thread": None,
         }
 
-    def _handle_installer_close_request(self):
-        """Prevent closing while download is running."""
-        state = self.installer_dialog_state
-        if not state:
-            return
-        thread = state.get("download_thread")
-        if thread and thread.is_alive():
-            messagebox.showwarning(
-                "Roblox Installer",
-                "Please wait for the download to finish before closing."
-            )
-            return
-        self._close_installer_dialog()
-
-    def _close_installer_dialog(self):
-        """Destroy the installer dialog window and reset state."""
-        state = self.installer_dialog_state
-        if not state:
-            return
-        window = state.get("window")
-        if window and window.winfo_exists():
-            window.destroy()
-        self.installer_dialog_state = None
-
-    def _get_selected_installer_client(self):
-        """Return the client entry currently selected in the installer dialog."""
-        state = self.installer_dialog_state
-        if not state:
-            return None
-        selected_id = state["selected_client"].get()
-        for client in state["clients"]:
-            if client["id"] == selected_id:
-                return client
-        return None
-
     def _begin_installer_download(self):
         """Kick off the download/extract workflow in a background thread."""
         state = self.installer_dialog_state
         if not state:
             return
+
         if state.get("download_thread"):
             return
 
@@ -1406,167 +1453,129 @@ class AccountManagerUI:
         state["download_thread"] = thread
         thread.start()
 
+    def _get_selected_installer_client(self):
+        """Return the client entry currently selected in the installer dialog."""
+        state = self.installer_dialog_state
+        if not state:
+            return None
+        selected_id = state["selected_client"].get()
+        for client in state["clients"]:
+            if client["id"] == selected_id:
+                return client
+        return None
+
+    def _handle_installer_close_request(self):
+        """Prevent closing while download is running."""
+        state = self.installer_dialog_state
+        if not state:
+            return
+        thread = state.get("download_thread")
+        if thread and thread.is_alive():
+            messagebox.showwarning(
+                "Roblox Installer",
+                "Please wait for the download to finish before closing."
+            )
+            return
+        self._close_installer_dialog()
+
+    def _close_installer_dialog(self):
+        """Destroy the installer dialog window and reset state."""
+        state = self.installer_dialog_state
+        if not state:
+            return
+        window = state.get("window")
+        if window and window.winfo_exists():
+            window.destroy()
+        self.installer_dialog_state = None
+
     def _installer_download_thread(self, version, client, target_dir):
-        """Background worker that downloads and extracts the requested version."""
-        temp_file = None
-        response = None
-        download_url = None
+        """Background worker that downloads and assembles the requested version via RDD."""
+        channel = "LIVE"
+        binary_type = "WindowsPlayer"
+
+        normalized_version = (version or "").strip().lower()
+        if not normalized_version:
+            self._report_installer_error("No version was provided for download.")
+            return
+        if not normalized_version.startswith("version-"):
+            normalized_version = f"version-{normalized_version}"
 
         try:
-            last_error = None
-            for template in ROBLOX_DOWNLOAD_VARIANTS:
-                url = template.format(version=version)
-                try:
-                    response = requests.get(
-                        url,
-                        stream=True,
-                        timeout=30,
-                        headers=ROBLOX_DOWNLOAD_HEADERS,
-                    )
-                    response.raise_for_status()
-                    download_url = url
-                    break
-                except requests.HTTPError as exc:
-                    last_error = exc
-                except requests.RequestException as exc:
-                    last_error = exc
+            self._report_installer_status(
+                f"Fetching rbxPkgManifest for {normalized_version}@{channel}...",
+                percent=0,
+            )
+            manifest_text, version_base_path = self._rdd_fetch_manifest_text(
+                normalized_version,
+                channel=channel,
+                binary_type=binary_type,
+            )
 
-            if response is None:
-                error_message = (
-                    f"Failed to download {version}. "
-                    f"Last error: {last_error}" if last_error else "Download failed."
-                )
-                self._report_installer_error(error_message)
-                return
+            package_entries = self._rdd_parse_manifest_entries(manifest_text)
+            extract_roots, inferred_binary = self._rdd_select_extract_roots(package_entries)
+            binary_type = inferred_binary or binary_type
 
-            total_size = int(response.headers.get("Content-Length", 0))
-            downloaded = 0
-            first_chunk = None
+            self._report_installer_status(
+                f"Fetching blobs for BinaryType `{binary_type}`...",
+                percent=5,
+            )
+            package_names = [name for name in package_entries if name.lower().endswith(".zip")]
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
-                temp_file = tmp.name
-                for chunk in response.iter_content(chunk_size=8192):
-                    if not chunk:
-                        continue
-                    downloaded += len(chunk)
-                    if first_chunk is None:
-                        first_chunk = chunk
-                        if not self._looks_like_zip_header(first_chunk):
-                            preview = first_chunk.decode("utf-8", errors="ignore").strip()
-                            if not preview:
-                                preview = "Download returned an unexpected file type."
-                            tmp.close()
-                            try:
-                                os.remove(temp_file)
-                            except OSError:
-                                pass
-                            self._report_installer_error(preview)
-                            return
-                    tmp.write(chunk)
-                    downloaded += len(chunk)
-                    self._report_installer_progress(downloaded, total_size)
+            if not package_names:
+                raise RuntimeError("Manifest did not contain any downloadable packages.")
 
-            self._report_installer_status("Download complete. Extracting files...", force_progress=100)
-
-            if os.path.exists(target_dir):
-                shutil.rmtree(target_dir)
             os.makedirs(target_dir, exist_ok=True)
 
-            with zipfile.ZipFile(temp_file, "r") as zip_ref:
-                zip_ref.extractall(target_dir)
+            total_packages = len(package_names)
+            packages_completed = 0
 
+            for package_name in package_names:
+                package_url = f"{version_base_path}{package_name}"
+                temp_path = self._rdd_download_package_file(
+                    package_url,
+                    package_name,
+                    packages_completed=packages_completed,
+                    total_packages=total_packages,
+                )
+
+                try:
+                    extract_root = extract_roots.get(package_name)
+                    if extract_root is None:
+                        self._report_installer_status(
+                            f'Package "{package_name}" is unmapped, storing raw archive.',
+                            percent=self._rdd_compute_download_percent(packages_completed, 0, 0, total_packages),
+                        )
+                        self._rdd_store_unmapped_package(temp_path, target_dir, package_name)
+                    else:
+                        self._report_installer_status(
+                            f'Extracting "{package_name}"...',
+                            percent=self._rdd_compute_download_percent(packages_completed, 0, 0, total_packages),
+                        )
+                        self._rdd_extract_package(temp_path, target_dir, extract_root)
+                finally:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
+
+                packages_completed += 1
+                packages_left = total_packages - packages_completed
+                percent = (packages_completed / total_packages) * 100
+                self._report_installer_status(
+                    f'Extracted "{package_name}"! (Packages left: {packages_left})',
+                    percent=min(percent, 100),
+                )
+
+            self._report_installer_status("Writing AppSettings.xml...", percent=99)
+            self._rdd_write_appsettings(target_dir)
+
+            self._report_installer_status("Assembler finished. Finalizing...", percent=100)
             self._report_installer_success(client, target_dir)
 
         except Exception as exc:
             self._report_installer_error(str(exc))
-        finally:
-            if response is not None:
-                try:
-                    response.close()
-                except Exception:
-                    pass
-            if temp_file and os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except Exception:
-                    pass
 
-    @staticmethod
-    def _looks_like_zip_header(first_bytes):
-        """Return True if the initial bytes look like a ZIP archive."""
-        if not first_bytes:
-            return False
-        signatures = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
-        return any(first_bytes.startswith(sig) for sig in signatures)
-
-    def _report_installer_progress(self, downloaded, total_size):
-        """Update the progress bar based on bytes downloaded."""
-        if total_size <= 0:
-            message = f"Downloading... {downloaded / (1024 * 1024):.1f} MB"
-            percent = 0
-        else:
-            percent = min(downloaded / total_size * 100, 100)
-            message = (
-                f"Downloading... "
-                f"{downloaded / (1024 * 1024):.1f} / {total_size / (1024 * 1024):.1f} MB"
-            )
-        self._report_installer_status(message, percent)
-
-    def _report_installer_status(self, message, percent=None, force_progress=None):
-        """Post a status/progress update back to the UI thread."""
-        def update():
-            state = self.installer_dialog_state
-            if not state:
-                return
-            if percent is not None:
-                state["progress_var"].set(percent)
-            if force_progress is not None:
-                state["progress_var"].set(force_progress)
-            if message:
-                state["status_var"].set(message)
-        self.root.after(0, update)
-
-    def _report_installer_success(self, client, target_dir):
-        """Handle success: notify user, refresh versions, re-enable controls."""
-        def finalize():
-            state = self.installer_dialog_state
-            if not state:
-                return
-            state["download_thread"] = None
-            state["close_button"].configure(state="normal", text="Close")
-            state["download_button"].configure(state="normal", text="Download Again")
-            state["status_var"].set(
-                f"Download complete! Files extracted to:\n{target_dir}"
-            )
-            state["progress_var"].set(100)
-            self.show_success_message(
-                f"{client['name']} updated!",
-                title="Download Complete"
-            )
-            self.load_roblox_versions()
-        self.root.after(0, finalize)
-
-    def _report_installer_error(self, error_message):
-        """Reset controls and show an error message after a failure."""
-        def finalize():
-            state = self.installer_dialog_state
-            if not state:
-                return
-            state["download_thread"] = None
-            state["download_button"].configure(state="normal")
-            state["close_button"].configure(state="normal", text="Close")
-            state["status_var"].set(f"Error: {error_message}")
-            messagebox.showerror("Roblox Installer", f"Download failed:\n{error_message}")
-        self.root.after(0, finalize)
-
-    def toggle_add_account_dropdown(self):
-        """Toggle the Add Account dropdown menu"""
-        self.add_account_dropdown_visible = not self.add_account_dropdown_visible
-        if self.add_account_dropdown_visible:
-            self.show_add_account_dropdown()
-        else:
-            self.hide_add_account_dropdown()
-    
     def on_add_account_split_click(self, event):
         """Handle clicks on the unified split button: left area adds account, right area opens dropdown."""
         try:
@@ -1579,7 +1588,7 @@ class AccountManagerUI:
         else:
             self.add_account()
         return "break"
-    
+
     def show_add_account_dropdown(self):
         """Show the Add Account dropdown menu"""
         if self.add_account_dropdown is not None:
