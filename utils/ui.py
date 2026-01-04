@@ -584,6 +584,9 @@ class AccountManagerUI:
         self.settings_file = os.path.join(self.data_folder, "ui_settings.json")
         self.load_settings()
         
+        self._auto_relaunch_after_id = None
+        self._auto_relaunch_in_progress = False
+        
         self.multi_roblox_handle = None
         self.console_output = get_console_output_buffer()
         self.console_window = ConsoleOutputWindow(self, self.console_output)
@@ -769,8 +772,8 @@ class AccountManagerUI:
             bg=self.BG_MID,
             fg=self.FG_TEXT,
             selectbackground=self.FG_ACCENT,
-            highlightthickness=0,
-            border=0,
+            highlightbackground=self.BORDER_COLOR,
+            highlightcolor=self.BORDER_COLOR,
             font=("Segoe UI", 9),
             height=5,
         )
@@ -828,6 +831,7 @@ class AccountManagerUI:
         self.refresh_game_list()
         self.update_game_name()
 
+        self.root.after(500, self._auto_relaunch_maybe_start)
 
     def load_settings(self):
         """Load UI settings from file"""
@@ -847,6 +851,9 @@ class AccountManagerUI:
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_version_sources": [],
             "selected_group": "All",
+            "auto_relaunch_enabled": False,
+            "auto_relaunch_interval_minutes": 60,
+            "auto_relaunch_group": "",
         }
 
         try:
@@ -865,6 +872,14 @@ class AccountManagerUI:
         self._ensure_auto_arrange_scope_valid()
         if self.settings.get("enable_multi_roblox", False):
             self.root.after(100, self.initialize_multi_roblox)
+
+        try:
+            self.settings["auto_relaunch_interval_minutes"] = max(
+                1,
+                int(self.settings.get("auto_relaunch_interval_minutes", 60) or 60),
+            )
+        except (TypeError, ValueError):
+            self.settings["auto_relaunch_interval_minutes"] = 60
 
     def _ensure_auto_arrange_scope_valid(self):
         """Keep auto-arrange scope sane, especially when only one monitor is available."""
@@ -899,6 +914,106 @@ class AccountManagerUI:
     def _get_multi_launch_delay(self):
         """Return the current launch delay, clamped to the supported range."""
         return clamp_multi_launch_delay(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS))
+
+    def _auto_relaunch_maybe_start(self):
+        if self.settings.get("auto_relaunch_enabled", False):
+            self._auto_relaunch_start()
+
+    def _auto_relaunch_start(self):
+        self._auto_relaunch_stop()
+        if not self._auto_relaunch_config_valid():
+            return
+
+        interval_minutes = int(self.settings.get("auto_relaunch_interval_minutes", 60) or 60)
+        interval_ms = max(1, interval_minutes) * 60 * 1000
+        self._auto_relaunch_after_id = self.root.after(interval_ms, self._auto_relaunch_tick)
+
+    def _auto_relaunch_stop(self):
+        after_id = getattr(self, "_auto_relaunch_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        self._auto_relaunch_after_id = None
+
+    def _auto_relaunch_config_valid(self):
+        if not self.settings.get("auto_relaunch_enabled", False):
+            return False
+
+        group = (self.settings.get("auto_relaunch_group") or "").strip()
+        if not group or group == "All":
+            return False
+
+        if group not in set(self.manager.get_groups()):
+            return False
+
+        try:
+            interval = int(self.settings.get("auto_relaunch_interval_minutes", 60) or 60)
+        except (TypeError, ValueError):
+            return False
+        return interval >= 1
+
+    def _auto_relaunch_tick(self):
+        self._auto_relaunch_after_id = None
+
+        if self.settings.get("auto_relaunch_enabled", False):
+            interval_minutes = int(self.settings.get("auto_relaunch_interval_minutes", 60) or 60)
+            interval_ms = max(1, interval_minutes) * 60 * 1000
+            self._auto_relaunch_after_id = self.root.after(interval_ms, self._auto_relaunch_tick)
+
+        self._auto_relaunch_run_once()
+
+    def _auto_relaunch_run_once(self):
+        if not self._auto_relaunch_config_valid():
+            return
+
+        if getattr(self, "_auto_relaunch_in_progress", False):
+            return
+
+        group = (self.settings.get("auto_relaunch_group") or "").strip()
+        usernames = self.manager.get_accounts_in_group(group)
+        if not usernames:
+            return
+
+        game_id = self.place_entry.get().strip()
+        if not game_id:
+            return
+
+        self._auto_relaunch_in_progress = True
+
+        def worker(selected_group, selected_usernames):
+            try:
+                self._close_all_roblox_clients_silent()
+                time.sleep(2)
+                self.root.after(
+                    0,
+                    lambda: self._launch_game_for_usernames(
+                        selected_usernames,
+                        confirm_group=selected_group,
+                        skip_confirm=True,
+                    ),
+                )
+            finally:
+                self._auto_relaunch_in_progress = False
+
+        threading.Thread(target=worker, args=(group, list(usernames)), daemon=True).start()
+
+    def _close_all_roblox_clients_silent(self):
+        exes = set(self.ROBLOX_CLIENT_EXECUTABLES)
+        exes.update({"RobloxPlayerBeta.exe", "RobloxPlayerLauncher.exe"})
+        for exe in sorted(exes):
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", exe],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except Exception:
+                pass
 
     def show_success_message(self, message, title="Success"):
         """Show a success message if popups are enabled."""
@@ -1196,60 +1311,13 @@ class AccountManagerUI:
         for menu in menus:
             self._style_menu_recursive(menu)
 
-    def _apply_menu_palette_defaults(self):
-        try:
-            root = self.root
-            root.option_add("*Menu.background", self.BG_DARK)
-            root.option_add("*Menu.foreground", self.FG_TEXT)
-            root.option_add("*Menu.activeBackground", self.HOVER_BG)
-            root.option_add("*Menu.activeForeground", self.FG_TEXT)
-            root.option_add("*Menu.selectColor", self.FG_ACCENT)
-        except Exception:
-            pass
-
-    def _style_menu_recursive(self, menu):
-        if menu is None:
-            return
-        try:
-            menu.configure(
-                bg=self.BG_DARK,
-                fg=self.FG_TEXT,
-                activebackground=self.HOVER_BG,
-                activeforeground=self.FG_TEXT,
-                borderwidth=0,
-                relief="flat",
-                tearoff=False
-            )
-        except tk.TclError:
-            return
-
-        end_index = menu.index("end")
-        if end_index is None:
-            return
-        for index in range(end_index + 1):
-            try:
-                submenu_name = menu.entrycget(index, "menu")
-            except tk.TclError:
-                continue
-            if submenu_name:
-                try:
-                    submenu = menu.nametowidget(submenu_name)
-                except Exception:
-                    submenu = None
-                self._style_menu_recursive(submenu)
-
-    def initialize_multi_roblox(self):
-        """Initialize Multi Roblox on startup if enabled in settings"""
-        if self.settings.get("enable_multi_roblox", False):
-            success = self.enable_multi_roblox()
-            if not success:
-                self.settings["enable_multi_roblox"] = False
-                self.save_settings()
-
     def build_main_menu(self):
         """Create the main menu bar and attach quick actions."""
         if getattr(self, "menu_bar_frame", None):
-            self.menu_bar_frame.destroy()
+            try:
+                self.menu_bar_frame.destroy()
+            except Exception:
+                pass
 
         self.menu_bar_frame = tk.Frame(self.root, bg=self.BG_DARK, highlightthickness=0)
         self.menu_bar_frame.pack(fill="x", padx=10, pady=(10, 4))
@@ -1312,22 +1380,66 @@ class AccountManagerUI:
 
     def refresh_installer_menu(self):
         """Populate the Roblox Installer menu with up to five recent versions."""
-        if self.installer_menu is None:
+        if getattr(self, "installer_menu", None) is None:
             return
 
         self.installer_menu.delete(0, tk.END)
         versions = self.get_available_roblox_versions(limit=5)
-
         if not versions:
             self.installer_menu.add_command(label="No versions found", state="disabled")
             return
 
         for entry in versions:
-            display_text = self.format_version_display(entry)
+            label = self.format_version_display(entry)
+            version = entry.get("version")
+            if not version:
+                continue
             self.installer_menu.add_command(
-                label=display_text,
-                command=lambda v=entry["version"]: self.use_installer_version(v)
+                label=label,
+                command=lambda v=version: self.use_installer_version(v)
             )
+
+    def _apply_menu_palette_defaults(self):
+        try:
+            root = self.root
+            root.option_add("*Menu.background", self.BG_DARK)
+            root.option_add("*Menu.foreground", self.FG_TEXT)
+            root.option_add("*Menu.activeBackground", self.HOVER_BG)
+            root.option_add("*Menu.activeForeground", self.FG_TEXT)
+            root.option_add("*Menu.selectColor", self.FG_ACCENT)
+        except Exception:
+            pass
+
+    def _style_menu_recursive(self, menu):
+        if menu is None:
+            return
+        try:
+            menu.configure(
+                bg=self.BG_DARK,
+                fg=self.FG_TEXT,
+                activebackground=self.HOVER_BG,
+                activeforeground=self.FG_TEXT,
+                borderwidth=0,
+                relief="flat",
+                tearoff=False
+            )
+        except tk.TclError:
+            return
+
+        end_index = menu.index("end")
+        if end_index is None:
+            return
+        for index in range(end_index + 1):
+            try:
+                submenu_name = menu.entrycget(index, "menu")
+            except tk.TclError:
+                continue
+            if submenu_name:
+                try:
+                    submenu = menu.nametowidget(submenu_name)
+                except Exception:
+                    submenu = None
+                self._style_menu_recursive(submenu)
 
     def use_installer_version(self, version):
         """Begin the guided installer flow for the selected Roblox version."""
@@ -1527,94 +1639,6 @@ class AccountManagerUI:
         if window and window.winfo_exists():
             window.destroy()
         self.installer_dialog_state = None
-
-    def _installer_download_thread(self, version, client, target_dir):
-        """Background worker that downloads and assembles the requested version via RDD."""
-        channel = "LIVE"
-        binary_type = "WindowsPlayer"
-
-        normalized_version = (version or "").strip().lower()
-        if not normalized_version:
-            self._report_installer_error("No version was provided for download.")
-            return
-        if not normalized_version.startswith("version-"):
-            normalized_version = f"version-{normalized_version}"
-
-        try:
-            self._report_installer_status(
-                f"Fetching rbxPkgManifest for {normalized_version}@{channel}...",
-                percent=0,
-            )
-            manifest_text, version_base_path = self._rdd_fetch_manifest_text(
-                normalized_version,
-                channel=channel,
-                binary_type=binary_type,
-            )
-
-            package_entries = self._rdd_parse_manifest_entries(manifest_text)
-            extract_roots, inferred_binary = self._rdd_select_extract_roots(package_entries)
-            binary_type = inferred_binary or binary_type
-
-            self._report_installer_status(
-                f"Fetching blobs for BinaryType `{binary_type}`...",
-                percent=5,
-            )
-            package_names = [name for name in package_entries if name.lower().endswith(".zip")]
-
-            if not package_names:
-                raise RuntimeError("Manifest did not contain any downloadable packages.")
-
-            os.makedirs(target_dir, exist_ok=True)
-
-            total_packages = len(package_names)
-            packages_completed = 0
-
-            for package_name in package_names:
-                package_url = f"{version_base_path}{package_name}"
-                temp_path = self._rdd_download_package_file(
-                    package_url,
-                    package_name,
-                    packages_completed=packages_completed,
-                    total_packages=total_packages,
-                )
-
-                try:
-                    extract_root = extract_roots.get(package_name)
-                    if extract_root is None:
-                        self._report_installer_status(
-                            f'Package "{package_name}" is unmapped, storing raw archive.',
-                            percent=self._rdd_compute_download_percent(packages_completed, 0, 0, total_packages),
-                        )
-                        self._rdd_store_unmapped_package(temp_path, target_dir, package_name)
-                    else:
-                        self._report_installer_status(
-                            f'Extracting "{package_name}"...',
-                            percent=self._rdd_compute_download_percent(packages_completed, 0, 0, total_packages),
-                        )
-                        self._rdd_extract_package(temp_path, target_dir, extract_root)
-                finally:
-                    if os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except OSError:
-                            pass
-
-                packages_completed += 1
-                packages_left = total_packages - packages_completed
-                percent = (packages_completed / total_packages) * 100
-                self._report_installer_status(
-                    f'Extracted "{package_name}"! (Packages left: {packages_left})',
-                    percent=min(percent, 100),
-                )
-
-            self._report_installer_status("Writing AppSettings.xml...", percent=99)
-            self._rdd_write_appsettings(target_dir)
-
-            self._report_installer_status("Assembler finished. Finalizing...", percent=100)
-            self._report_installer_success(client, target_dir)
-
-        except Exception as exc:
-            self._report_installer_error(str(exc))
 
     def on_add_account_split_click(self, event):
         """Handle clicks on the unified split button: left area adds account, right area opens dropdown."""
@@ -2262,7 +2286,7 @@ class AccountManagerUI:
         """
         Called when account addition encounters an error (on main thread)
         """
-        messagebox.showerror("Error", f"Failed to add account: {error_msg}")
+        messagebox.showerror("Error", f"Failed to add account: {str(error_msg)}")
     
     def import_cookie(self):
         """
@@ -3039,7 +3063,7 @@ class AccountManagerUI:
             group_var.set(selected)
 
     def on_group_change(self, event=None):
-        selected = (self.group_var.get() or "All").strip()
+        selected = (self.group_var.get() or "All").strip() if getattr(self, "group_var", None) else "All"
         self.settings["selected_group"] = selected
         self.save_settings()
         self.refresh_accounts()
@@ -3208,7 +3232,7 @@ class AccountManagerUI:
 
         self._launch_game_for_usernames(usernames, confirm_group=group)
 
-    def _launch_game_for_usernames(self, usernames, confirm_group=None):
+    def _launch_game_for_usernames(self, usernames, confirm_group=None, skip_confirm=False):
         game_id = self.place_entry.get().strip()
         private_server = self.private_server_entry.get().strip()
 
@@ -3219,7 +3243,7 @@ class AccountManagerUI:
             messagebox.showwarning("Missing Information", "Please enter a Place ID.")
             return
 
-        if self.settings.get("confirm_before_launch", True) and len(usernames) > 1:
+        if (not skip_confirm) and self.settings.get("confirm_before_launch", True) and len(usernames) > 1:
             prompt = (
                 f"Are you sure you want to launch {len(usernames)} accounts in group '{confirm_group}'?"
                 if confirm_group else
@@ -3762,6 +3786,91 @@ class AccountManagerUI:
         delay_spin.bind("<FocusOut>", lambda _: on_delay_var_change())
         delay_spin.bind("<Return>", lambda _: on_delay_var_change())
         delay_var.trace_add("write", on_delay_var_change)
+
+        auto_relaunch_enabled_var = tk.BooleanVar(value=self.settings.get("auto_relaunch_enabled", False))
+        auto_relaunch_interval_var = tk.IntVar(value=self.settings.get("auto_relaunch_interval_minutes", 60))
+        auto_relaunch_group_var = tk.StringVar(value=self.settings.get("auto_relaunch_group", ""))
+        
+        def on_auto_relaunch_update(*_):
+            try:
+                interval = int(auto_relaunch_interval_var.get())
+            except (tk.TclError, ValueError):
+                interval = 60
+
+            interval = max(1, interval)
+            if auto_relaunch_interval_var.get() != interval:
+                auto_relaunch_interval_var.set(interval)
+
+            self.settings["auto_relaunch_enabled"] = bool(auto_relaunch_enabled_var.get())
+            self.settings["auto_relaunch_interval_minutes"] = int(interval)
+            self.settings["auto_relaunch_group"] = (auto_relaunch_group_var.get() or "").strip()
+            self.save_settings()
+
+            if self.settings.get("auto_relaunch_enabled", False):
+                self._auto_relaunch_start()
+            else:
+                self._auto_relaunch_stop()
+        
+        ttk.Label(
+            roblox_tab,
+            text="Auto Relaunch Group",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(12, 2))
+
+        ttk.Checkbutton(
+            roblox_tab,
+            text="Enable Auto Relaunch",
+            variable=auto_relaunch_enabled_var,
+            style="Dark.TCheckbutton",
+            command=on_auto_relaunch_update
+        ).pack(anchor="w", pady=2)
+
+        interval_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
+        interval_frame.pack(fill="x", pady=(4, 0))
+
+        ttk.Label(interval_frame, text="Interval (minutes)", style="Dark.TLabel").pack(side="left")
+
+        interval_spin = ttk.Spinbox(
+            interval_frame,
+            from_=1,
+            to=1440,
+            increment=1,
+            textvariable=auto_relaunch_interval_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_auto_relaunch_update
+        )
+        interval_spin.pack(side="right")
+        interval_spin.bind("<FocusOut>", lambda _: on_auto_relaunch_update())
+        interval_spin.bind("<Return>", lambda _: on_auto_relaunch_update())
+
+        groups = [""] + self.manager.get_groups()
+        if auto_relaunch_group_var.get() not in groups:
+            auto_relaunch_group_var.set("")
+
+        group_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
+        group_frame.pack(fill="x", pady=(6, 0))
+        ttk.Label(group_frame, text="Group", style="Dark.TLabel").pack(side="left")
+
+        auto_relaunch_group_combo = ttk.Combobox(
+            group_frame,
+            values=groups,
+            textvariable=auto_relaunch_group_var,
+            state="readonly",
+            style="Dark.TCombobox",
+            width=18
+        )
+        auto_relaunch_group_combo.pack(side="right", fill="x", expand=True)
+        auto_relaunch_group_combo.bind("<<ComboboxSelected>>", lambda _=None: on_auto_relaunch_update())
+
+        ttk.Button(
+            roblox_tab,
+            text="Run Auto Relaunch Now",
+            style="Dark.TButton",
+            command=self._auto_relaunch_run_once
+        ).pack(fill="x", pady=(10, 0))
 
         settings_window.update_idletasks()
         padding_w = 40
