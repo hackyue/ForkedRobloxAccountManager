@@ -84,6 +84,8 @@ class RobloxAccountManager:
             if isinstance(account_data, dict):
                 if 'note' not in account_data:
                     account_data['note'] = ''
+                if 'group' not in account_data:
+                    account_data['group'] = ''
     
     def save_accounts(self):
         """Save accounts to JSON file"""
@@ -495,7 +497,8 @@ class RobloxAccountManager:
                                 'username': username,
                                 'cookie': cookie,
                                 'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                'note': ''
+                                'note': '',
+                                'group': ''
                             }
                             self.save_accounts()
                             
@@ -564,7 +567,8 @@ class RobloxAccountManager:
                 'username': username,
                 'cookie': cookie,
                 'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'note': ''
+                'note': '',
+                'group': ''
             }
             self.save_accounts()
             
@@ -711,3 +715,45 @@ class RobloxAccountManager:
         if username in self.accounts:
             return self.accounts[username].get('note', '')
         return ''
+
+    def set_account_group(self, username, group):
+        if username not in self.accounts:
+            print(f"[ERROR] Account '{username}' not found")
+            return False
+
+        if group is None:
+            group = ''
+        group = str(group).strip()
+        self.accounts[username]['group'] = group
+        self.save_accounts()
+        return True
+
+    def get_account_group(self, username):
+        if username in self.accounts and isinstance(self.accounts[username], dict):
+            return self.accounts[username].get('group', '')
+        return ''
+
+    def get_groups(self):
+        groups = set()
+        for _, account_data in self.accounts.items():
+            if not isinstance(account_data, dict):
+                continue
+            group = (account_data.get('group') or '').strip()
+            if group:
+                groups.add(group)
+        return sorted(groups, key=lambda g: g.lower())
+
+    def get_accounts_in_group(self, group):
+        if group is None:
+            return []
+        group = str(group).strip()
+        if not group:
+            return []
+
+        usernames = []
+        for username, account_data in self.accounts.items():
+            if not isinstance(account_data, dict):
+                continue
+            if (account_data.get('group') or '').strip() == group:
+                usernames.append(username)
+        return usernames

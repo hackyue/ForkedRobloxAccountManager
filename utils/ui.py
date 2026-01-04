@@ -656,6 +656,23 @@ class AccountManagerUI:
         )
         self.status_label.pack(side="right", padx=(5, 0))
 
+        group_frame = ttk.Frame(left_frame, style="Dark.TFrame")
+        group_frame.pack(fill="x", pady=(6, 0))
+
+        ttk.Label(group_frame, text="Group", style="Dark.TLabel").pack(side="left")
+
+        self.group_var = tk.StringVar()
+        self.group_dropdown = ttk.Combobox(
+            group_frame,
+            textvariable=self.group_var,
+            state="readonly",
+            style="Dark.TCombobox",
+            width=12,
+        )
+        self.group_dropdown.pack(side="right", fill="x", expand=True)
+        self.group_dropdown.bind("<<ComboboxSelected>>", self.on_group_change)
+        self.refresh_group_dropdown_values()
+
         list_frame = ttk.Frame(left_frame, style="Dark.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(5, 0))
 
@@ -719,7 +736,28 @@ class AccountManagerUI:
 
         self.version_var.set("Latest Version")
 
-        ttk.Button(right_frame, text="Join Place ID", style="Dark.TButton", command=self.launch_game).pack(fill="x", pady=(0, 10))
+        self.join_action_frame = ttk.Frame(right_frame, style="Dark.TFrame")
+        self.join_action_frame.pack(fill="x", pady=(0, 10))
+
+        self.join_place_button = ttk.Button(
+            self.join_action_frame,
+            text="Join Place ID",
+            style="Dark.TButton",
+            command=self.launch_game,
+        )
+        self.join_place_button.pack(side="left", fill="x", expand=True)
+
+        self.run_group_button = ttk.Button(
+            self.join_action_frame,
+            text="Run Group",
+            style="Dark.TButton",
+            command=self.launch_group_game,
+        )
+        self._run_group_button_visible = False
+
+        for widget in (self.join_action_frame, self.join_place_button, self.run_group_button):
+            widget.bind("<Enter>", self._on_join_area_enter)
+            widget.bind("<Leave>", self._on_join_area_leave)
         
         ttk.Label(right_frame, text="Recent games", style="Dark.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 2))
         
@@ -752,6 +790,7 @@ class AccountManagerUI:
 
         ttk.Button(action_frame, text="Validate Account", style="Dark.TButton", command=self.validate_account).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Edit Note", style="Dark.TButton", command=self.edit_account_note).pack(fill="x", pady=2)
+        ttk.Button(action_frame, text="Set Group", style="Dark.TButton", command=self.edit_account_group).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Auto-Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
 
@@ -807,6 +846,7 @@ class AccountManagerUI:
             "auto_arrange_scope": "both",
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_version_sources": [],
+            "selected_group": "All",
         }
 
         try:
@@ -2020,9 +2060,19 @@ class AccountManagerUI:
             ]
 
         self.account_list.delete(0, tk.END)
+        active_group = self._get_active_group()
         for username, data in self.manager.accounts.items():
-            note = data.get('note', '') if isinstance(data, dict) else ''
+            if not isinstance(data, dict):
+                continue
+
+            group = (data.get('group') or '').strip()
+            if active_group and group != active_group:
+                continue
+
+            note = (data.get('note') or '').strip()
             display_text = f"{username}"
+            if group:
+                display_text += f" • [{group}]"
             if note:
                 display_text += f" • {note}"
             self.account_list.insert(tk.END, display_text)
@@ -2051,6 +2101,9 @@ class AccountManagerUI:
         return [self._extract_username(self.account_list.get(index)) for index in selections]
 
     def on_account_drag_start(self, event):
+        if self._get_active_group():
+            self._reset_drag_data()
+            return
         if self.account_list.size() <= 1:
             return
         if self._drag_modifiers_active(event):
@@ -2071,6 +2124,8 @@ class AccountManagerUI:
         return "break"
 
     def on_account_drag_motion(self, event):
+        if self._get_active_group():
+            return
         data = self.account_list_drag_data
         if data["start_index"] is None:
             return "break"
@@ -2081,6 +2136,9 @@ class AccountManagerUI:
         return "break"
 
     def on_account_drag_stop(self, event):
+        if self._get_active_group():
+            self._reset_drag_data()
+            return
         data = self.account_list_drag_data
         self._hide_drop_indicator()
         if not data["is_dragging"] or data["start_index"] is None:
@@ -2934,25 +2992,103 @@ class AccountManagerUI:
             command=note_window.destroy
         ).pack(side="left", fill="x", expand=True, padx=(5, 0))
 
-        version_label = ttk.Label(
-            main_frame,
-            text=f"Version: {self.APP_VERSION}",
-            style="Dark.TLabel",
-            font=("Segoe UI", 9)
+    def edit_account_group(self):
+        if self.settings.get("enable_multi_select", False):
+            usernames = self.get_selected_usernames()
+            if not usernames:
+                return
+        else:
+            username = self.get_selected_username()
+            if not username:
+                return
+            usernames = [username]
+
+        initial_value = ""
+        if len(usernames) == 1:
+            initial_value = self.manager.get_account_group(usernames[0])
+
+        group = simpledialog.askstring(
+            "Set Group",
+            "Enter group name (blank to clear):",
+            initialvalue=initial_value
         )
-        version_label.pack(anchor="e", pady=(6, 0))
+        if group is None:
+            return
 
-        ttk.Button(
-            main_frame,
-            text="Console Output",
-            style="Dark.TButton",
-            command=self.open_console_output
-        ).pack(fill="x", pady=(8, 0))
+        group = group.strip()
+        for uname in usernames:
+            self.manager.set_account_group(uname, group)
 
-    def open_console_output(self):
-        """Open or focus the console output window."""
-        if self.console_window:
-            self.console_window.show()
+        self.refresh_group_dropdown_values()
+        self.refresh_accounts(selected_usernames=usernames)
+
+    def refresh_group_dropdown_values(self):
+        groups = self.manager.get_groups()
+        values = ["All"] + groups
+
+        dropdown = getattr(self, "group_dropdown", None)
+        if dropdown is not None:
+            dropdown["values"] = values
+
+        selected = (self.settings.get("selected_group") or "All").strip()
+        if selected not in values:
+            selected = "All"
+
+        group_var = getattr(self, "group_var", None)
+        if group_var is not None:
+            group_var.set(selected)
+
+    def on_group_change(self, event=None):
+        selected = (self.group_var.get() or "All").strip()
+        self.settings["selected_group"] = selected
+        self.save_settings()
+        self.refresh_accounts()
+        self._hide_run_group_button()
+
+    def _get_active_group(self):
+        selected = (self.group_var.get() or "All").strip() if getattr(self, "group_var", None) else "All"
+        return "" if selected == "All" else selected
+
+    def _on_join_area_enter(self, event=None):
+        if self._get_active_group():
+            self._show_run_group_button()
+
+    def _on_join_area_leave(self, event=None):
+        self.root.after(75, self._hide_run_group_button)
+
+    def _show_run_group_button(self):
+        if getattr(self, "_run_group_button_visible", False):
+            return
+        if not self._get_active_group():
+            return
+        try:
+            self.run_group_button.pack(side="right", padx=(6, 0))
+            self._run_group_button_visible = True
+        except Exception:
+            pass
+
+    def _hide_run_group_button(self):
+        if not getattr(self, "_run_group_button_visible", False):
+            return
+        try:
+            if self._get_active_group() and self._widget_under_mouse(self.join_action_frame):
+                return
+            self.run_group_button.pack_forget()
+            self._run_group_button_visible = False
+        except Exception:
+            pass
+
+    def _widget_under_mouse(self, widget):
+        try:
+            x_root = self.root.winfo_pointerx()
+            y_root = self.root.winfo_pointery()
+            x = widget.winfo_rootx()
+            y = widget.winfo_rooty()
+            w = widget.winfo_width()
+            h = widget.winfo_height()
+            return x <= x_root <= x + w and y <= y_root <= y + h
+        except Exception:
+            return False
 
     def launch_home(self):
         """Launch Chrome to Roblox home with the selected account(s) logged in (non-blocking)"""
@@ -3000,10 +3136,8 @@ class AccountManagerUI:
 
         threading.Thread(target=worker, args=(usernames, launch_delay), daemon=True).start()
 
-
     def launch_home_app(self):
         """Launch the Roblox client to the home page for the selected account(s) (non-blocking)"""
-
         if self.settings.get("enable_multi_select", False):
             usernames = self.get_selected_usernames()
             if not usernames:
@@ -3022,7 +3156,6 @@ class AccountManagerUI:
             usernames = [username]
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
-
         launch_delay = self._get_multi_launch_delay()
 
         def worker(selected_usernames, delay_seconds):
@@ -3061,12 +3194,25 @@ class AccountManagerUI:
                 return
             usernames = [username]
 
+        self._launch_game_for_usernames(usernames)
+
+    def launch_group_game(self):
+        group = self._get_active_group()
+        if not group:
+            return
+
+        usernames = self.manager.get_accounts_in_group(group)
+        if not usernames:
+            messagebox.showwarning("Empty Group", f"No accounts found in group '{group}'.")
+            return
+
+        self._launch_game_for_usernames(usernames, confirm_group=group)
+
+    def _launch_game_for_usernames(self, usernames, confirm_group=None):
         game_id = self.place_entry.get().strip()
         private_server = self.private_server_entry.get().strip()
-        
 
         selected_version_label = self.version_var.get()
-        version_path = None
         version_path = self.version_options.get(selected_version_label)
 
         if not game_id:
@@ -3074,15 +3220,16 @@ class AccountManagerUI:
             return
 
         if self.settings.get("confirm_before_launch", True) and len(usernames) > 1:
-            confirm = messagebox.askyesno(
-                "Confirm Launch",
+            prompt = (
+                f"Are you sure you want to launch {len(usernames)} accounts in group '{confirm_group}'?"
+                if confirm_group else
                 f"Are you sure you want to launch {len(usernames)} accounts?"
             )
+            confirm = messagebox.askyesno("Confirm Launch", prompt)
             if not confirm:
                 return
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
-
         launch_delay = self._get_multi_launch_delay()
 
         def worker(selected_usernames, pid, psid, ver, debug_flag, delay_seconds):
@@ -3114,7 +3261,7 @@ class AccountManagerUI:
 
         threading.Thread(
             target=worker,
-            args=(usernames, game_id, private_server, version_path, debug_enabled, launch_delay),
+            args=(list(usernames), game_id, private_server, version_path, debug_enabled, launch_delay),
             daemon=True
         ).start()
 
@@ -3177,11 +3324,6 @@ class AccountManagerUI:
         """Disable Multi Roblox and release resources"""
         try:
             if self.multi_roblox_handle:
-                if self.multi_roblox_handle.get('file'):
-                    try:
-                        self.multi_roblox_handle['file'].close()
-                    except:
-                        pass
                 
                 if self.multi_roblox_handle.get('mutex'):
                     try:
