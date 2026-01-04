@@ -17,6 +17,8 @@ from urllib.parse import quote
 
 class RobloxAPI:
     """Handles all Roblox API interactions"""
+
+    _protocol_handler_missing_warned = False
     
     @staticmethod
     def _normalize_roblosecurity_cookie(cookie):
@@ -659,6 +661,13 @@ class RobloxAPI:
                 os.startfile(url)
                 return True
             except OSError as exc:
+                winerror = getattr(exc, "winerror", None)
+                if winerror in (-2147221003, 1155):
+                    if not RobloxAPI._protocol_handler_missing_warned:
+                        print("[WARNING] Roblox protocol handler is not registered; skipping protocol launch.")
+                        RobloxAPI._protocol_handler_missing_warned = True
+                    return False
+
                 print(f"[WARNING] os.startfile failed: {exc}. Falling back to PowerShell.")
                 command = [
                     "powershell",
@@ -673,7 +682,14 @@ class RobloxAPI:
 
         try:
             if system == "Windows":
-                subprocess.run(command, check=True)
+                subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
             else:
                 subprocess.run(command, check=True)
             return True
