@@ -11,14 +11,42 @@ import subprocess
 import requests
 from pathlib import Path
 
+from urllib.parse import quote
+
 
 
 class RobloxAPI:
     """Handles all Roblox API interactions"""
     
     @staticmethod
+    def _normalize_roblosecurity_cookie(cookie):
+        if cookie is None:
+            return ""
+
+        value = str(cookie).strip()
+
+        if (len(value) >= 2) and (value[0] == value[-1]) and value[0] in ("\"", "'"):
+            value = value[1:-1].strip()
+
+        if value.lower().startswith("cookie:"):
+            value = value.split(":", 1)[1].strip()
+
+        marker = ".ROBLOSECURITY="
+        if marker in value:
+            value = value.split(marker, 1)[1]
+
+        if ";" in value:
+            value = value.split(";", 1)[0].strip()
+
+        return value
+
+    @staticmethod
     def _create_authenticated_session(roblosecurity_cookie):
         """Return a requests session bound to the provided cookie and CSRF token."""
+        roblosecurity_cookie = RobloxAPI._normalize_roblosecurity_cookie(roblosecurity_cookie)
+        if not roblosecurity_cookie:
+            return None
+
         session = requests.Session()
         session.cookies.set(".ROBLOSECURITY", roblosecurity_cookie, domain=".roblox.com")
         session.headers.update({
@@ -38,7 +66,7 @@ class RobloxAPI:
     def _fetch_csrf_token(session):
         """Try to obtain a CSRF token using a lightweight GET, then fallback probe."""
         try:
-            response = session.get("https://www.roblox.com/home", timeout=10)
+            response = session.post("https://auth.roblox.com/v2/logout", timeout=10)
             token = response.headers.get("x-csrf-token")
             if token:
                 return token
@@ -62,6 +90,7 @@ class RobloxAPI:
     def get_username_from_api(roblosecurity_cookie):
         """Get username using Roblox API"""
         try:
+            roblosecurity_cookie = RobloxAPI._normalize_roblosecurity_cookie(roblosecurity_cookie)
             headers = {
                 'Cookie': f'.ROBLOSECURITY={roblosecurity_cookie}'
             }
@@ -131,6 +160,12 @@ class RobloxAPI:
 
         try:
             response = session.post(ticket_url, headers=ticket_headers, timeout=10)
+            if response.status_code == 403:
+                refreshed_token = response.headers.get("x-csrf-token")
+                if refreshed_token:
+                    session.headers["X-CSRF-TOKEN"] = refreshed_token
+                    response = session.post(ticket_url, headers=ticket_headers, timeout=10)
+
             if response.status_code != 200:
                 print(f"Failed to get auth ticket, status: {response.status_code}")
                 return None
@@ -318,6 +353,8 @@ class RobloxAPI:
             return False
         
         print("[SUCCESS] Got authentication ticket!")
+
+        auth_ticket_encoded = quote(auth_ticket, safe="")
         
 
         launcher_exe = None
@@ -384,7 +421,25 @@ class RobloxAPI:
                     launcher_name = "RobloxPlayerLauncher"
                     _log_debug(f"Found RobloxPlayerLauncher.exe at {launcher_exe}")
                 else:
-                    _log_debug("RobloxPlayerLauncher.exe not found, falling back to RobloxPlayerBeta.exe")
+                    try:
+                        versions_root = Path(effective_path).parent
+                        launcher_candidates = []
+                        for candidate_dir in versions_root.iterdir():
+                            if not candidate_dir.is_dir() or not candidate_dir.name.startswith("version-"):
+                                continue
+                            candidate_launcher = candidate_dir / "RobloxPlayerLauncher.exe"
+                            if candidate_launcher.exists():
+                                launcher_candidates.append(candidate_launcher)
+
+                        if launcher_candidates:
+                            best_launcher = max(launcher_candidates, key=lambda p: p.stat().st_mtime)
+                            launcher_exe = str(best_launcher)
+                            launcher_name = "RobloxPlayerLauncher"
+                            _log_debug(f"Found RobloxPlayerLauncher.exe in {best_launcher.parent.name}: {launcher_exe}")
+                        else:
+                            _log_debug("RobloxPlayerLauncher.exe not found, falling back to RobloxPlayerBeta.exe")
+                    except Exception as exc:
+                        _log_debug(f"RobloxPlayerLauncher.exe scan failed, falling back to RobloxPlayerBeta.exe: {exc}")
 
             print(f"Using Roblox version from: {effective_path}")
             _log_debug(f"Roblox executable resolved to {roblox_exe}")
@@ -400,32 +455,48 @@ class RobloxAPI:
             _log_debug(f"Using Fishstrap launcher at {launcher_exe}")
 
         if not game_id or game_id == "":
-            url = f"roblox://authentication?ticket={auth_ticket}"
+            url = f"roblox://authentication?ticket={auth_ticket_encoded}"
             print(f"Launching Roblox Home...")
             print(f"Account: {username}")
             try:
                 if launcher_exe:
                     _launch_with_launcher(url, "Roblox Home")
-                elif using_local_install:
-
-                    launch_args = [
-                        roblox_exe,
-                        "-a", "https://www.roblox.com/Login/Negotiate.ashx",
-                        "-t", auth_ticket,
-                    ]
-                    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    subprocess.Popen(
-                        launch_args,
-                        cwd=effective_path,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=creation_flags
-                    )
-                    _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
                 else:
-                    if not RobloxAPI._launch_protocol_url(url):
+                    if RobloxAPI._launch_protocol_url(url):
+                        _log_debug(f"Launching Roblox Home via protocol URL: {url}")
+                    elif using_local_install:
+                        try:
+                            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                            subprocess.Popen(
+                                [roblox_exe, url],
+                                cwd=effective_path,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                creationflags=creation_flags
+                            )
+                            _log_debug(f"Launching Roblox Home via RobloxPlayerBeta.exe with URL arg: {url}")
+                            print("[SUCCESS] Roblox home launched successfully!")
+                            if enable_debug:
+                                RobloxAPI._debug_check_auto_login(username, auth_ticket)
+                            return True
+                        except Exception as exc:
+                            _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to -t flow: {exc}")
+                        launch_args = [
+                            roblox_exe,
+                            "-a", "https://www.roblox.com/Login/Negotiate.ashx",
+                            "-t", auth_ticket,
+                        ]
+                        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                        subprocess.Popen(
+                            launch_args,
+                            cwd=effective_path,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=creation_flags
+                        )
+                        _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
+                    else:
                         raise RuntimeError("Roblox protocol handler failed to launch.")
-                    _log_debug(f"Launching default Roblox via protocol URL: {url}")
                 print("[SUCCESS] Roblox home launched successfully!")
                 if enable_debug:
                     RobloxAPI._debug_check_auto_login(username, auth_ticket)
@@ -438,7 +509,7 @@ class RobloxAPI:
         launch_time = int(time.time() * 1000)
 
         url = (
-            "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket +
+            "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket_encoded +
             "+launchtime:" + str(launch_time) +
             "+placelauncherurl:https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame" +
             "&browserTrackerId=" + str(browser_tracker_id) +
@@ -463,32 +534,48 @@ class RobloxAPI:
         try:
             if launcher_exe:
                 _launch_with_launcher(url, "game")
-            elif using_local_install:
-
-                place_launch_url = (
-                    f"https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame"
-                    f"&browserTrackerId={browser_tracker_id}&placeId={game_id}&isPlayTogetherGame=false"
-                    f"{('&linkCode=' + private_server_id) if private_server_id else ''}"
-                )
-                launch_args = [
-                    roblox_exe,
-                    "-a", "https://www.roblox.com/Login/Negotiate.ashx",
-                    "-t", auth_ticket,
-                    "-j", place_launch_url,
-                ]
-                creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                subprocess.Popen(
-                    launch_args,
-                    cwd=effective_path,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=creation_flags
-                )
-                _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
             else:
-                if not RobloxAPI._launch_protocol_url(url):
+                if RobloxAPI._launch_protocol_url(url):
+                    _log_debug(f"Launching game via protocol URL: {url}")
+                elif using_local_install:
+                    try:
+                        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                        subprocess.Popen(
+                            [roblox_exe, url],
+                            cwd=effective_path,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=creation_flags
+                        )
+                        _log_debug(f"Launching game via RobloxPlayerBeta.exe with URL arg: {url}")
+                        print("[SUCCESS] Roblox launched successfully!")
+                        if enable_debug:
+                            RobloxAPI._debug_check_auto_login(username, auth_ticket)
+                        return True
+                    except Exception as exc:
+                        _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to -t flow: {exc}")
+                    place_launch_url = (
+                        f"https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame"
+                        f"&browserTrackerId={browser_tracker_id}&placeId={game_id}&isPlayTogetherGame=false"
+                        f"{('&linkCode=' + private_server_id) if private_server_id else ''}"
+                    )
+                    launch_args = [
+                        roblox_exe,
+                        "-a", "https://www.roblox.com/Login/Negotiate.ashx",
+                        "-t", auth_ticket,
+                        "-j", place_launch_url,
+                    ]
+                    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    subprocess.Popen(
+                        launch_args,
+                        cwd=effective_path,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=creation_flags
+                    )
+                    _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
+                else:
                     raise RuntimeError("Roblox protocol handler failed to launch.")
-                _log_debug(f"Launching default Roblox via protocol URL: {url}")
             print("[SUCCESS] Roblox launched successfully!")
             if enable_debug:
                 RobloxAPI._debug_check_auto_login(username, auth_ticket)
