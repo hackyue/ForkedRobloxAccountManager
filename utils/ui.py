@@ -986,7 +986,9 @@ class AccountManagerUI:
         def worker(selected_group, selected_usernames):
             try:
                 self._close_all_roblox_clients_silent()
-                time.sleep(2)
+                prelaunch_delay = self._get_multi_launch_delay()
+                if prelaunch_delay > 0:
+                    time.sleep(prelaunch_delay)
                 self.root.after(
                     0,
                     lambda: self._launch_game_for_usernames(

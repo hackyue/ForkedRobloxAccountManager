@@ -161,15 +161,31 @@ class RobloxAPI:
         }
 
         try:
-            response = session.post(ticket_url, headers=ticket_headers, timeout=10)
-            if response.status_code == 403:
-                refreshed_token = response.headers.get("x-csrf-token")
-                if refreshed_token:
-                    session.headers["X-CSRF-TOKEN"] = refreshed_token
-                    response = session.post(ticket_url, headers=ticket_headers, timeout=10)
+            max_attempts = 5
+            response = None
+            for attempt in range(1, max_attempts + 1):
+                response = session.post(ticket_url, headers=ticket_headers, timeout=10)
 
-            if response.status_code != 200:
-                print(f"Failed to get auth ticket, status: {response.status_code}")
+                if response.status_code == 403:
+                    refreshed_token = response.headers.get("x-csrf-token")
+                    if refreshed_token:
+                        session.headers["X-CSRF-TOKEN"] = refreshed_token
+                        response = session.post(ticket_url, headers=ticket_headers, timeout=10)
+
+                if response.status_code == 429:
+                    delay_seconds = random.randint(15, 25)
+                    print(
+                        f"[WARNING] Roblox rate limited authentication tickets (429). "
+                        f"Retrying in {delay_seconds}s... ({attempt}/{max_attempts})"
+                    )
+                    time.sleep(delay_seconds)
+                    continue
+
+                break
+
+            if response is None or response.status_code != 200:
+                status = getattr(response, "status_code", "unknown")
+                print(f"Failed to get auth ticket, status: {status}")
                 return None
 
             auth_ticket = response.headers.get("rbx-authentication-ticket")
