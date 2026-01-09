@@ -2,7 +2,7 @@
 Roblox Account Manager
 Main entry point for the application
 """
-
+# python -m pyinstaller --onefile --windowed main.py
 
 
 
