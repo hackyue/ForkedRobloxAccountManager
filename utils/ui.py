@@ -587,7 +587,6 @@ class AccountManagerUI:
             self.root.attributes("-topmost", bool(self.settings.get("enable_topmost", False)))
         except Exception:
             pass
-        
         self._auto_relaunch_after_id = None
         self._auto_relaunch_in_progress = False
         
@@ -598,6 +597,7 @@ class AccountManagerUI:
             "start_index": None,
             "drop_index": None,
             "start_username": None,
+            "start_y": None,
             "is_dragging": False
         }
         self.account_drop_indicator = None
@@ -683,7 +683,7 @@ class AccountManagerUI:
         list_frame = ttk.Frame(left_frame, style="Dark.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(5, 0))
 
-        selectmode = tk.EXTENDED if self.settings.get("enable_multi_select", False) else tk.SINGLE
+        selectmode = tk.SINGLE
         
         self.account_list = tk.Listbox(
             list_frame,
@@ -700,6 +700,8 @@ class AccountManagerUI:
         self.account_list.bind("<ButtonPress-1>", self.on_account_drag_start)
         self.account_list.bind("<B1-Motion>", self.on_account_drag_motion)
         self.account_list.bind("<ButtonRelease-1>", self.on_account_drag_stop)
+        if self.settings.get("enable_multi_select", False):
+            self.account_list.bind("<Control-ButtonPress-1>", self.on_account_ctrl_click)
 
         self.account_drop_indicator = tk.Frame(self.account_list, height=2, bg=self.FG_ACCENT)
 
@@ -1756,7 +1758,6 @@ class AccountManagerUI:
                 except:
                     self.hide_add_account_dropdown()
 
-
     def load_roblox_versions(self):
         """Load available Roblox versions from standard and custom folders."""
         try:
@@ -2131,34 +2132,35 @@ class AccountManagerUI:
         return [self._extract_username(self.account_list.get(index)) for index in selections]
 
     def on_account_drag_start(self, event):
-        if self._get_active_group():
-            self._reset_drag_data()
-            return
         if self.account_list.size() <= 1:
-            return
-        if self._drag_modifiers_active(event):
-            self._reset_drag_data()
             return
         index = self.account_list.nearest(event.y)
         if index < 0 or index >= self.account_list.size():
             return "break"
         self.account_list.selection_clear(0, tk.END)
         self.account_list.selection_set(index)
+        self.account_list.activate(index)
         display_text = self.account_list.get(index)
         self.account_list_drag_data.update({
             "start_index": index,
             "drop_index": index,
             "start_username": self._extract_username(display_text),
+            "start_y": event.y,
             "is_dragging": False
         })
         return "break"
 
     def on_account_drag_motion(self, event):
-        if self._get_active_group():
-            return
         data = self.account_list_drag_data
         if data["start_index"] is None:
             return "break"
+        start_y = data.get("start_y")
+        if not data["is_dragging"]:
+            if start_y is None:
+                data["start_y"] = event.y
+                return "break"
+            if abs(event.y - start_y) < 4:
+                return "break"
         drop_index = self._get_drop_index_from_event(event.y)
         data["drop_index"] = drop_index
         data["is_dragging"] = True
@@ -2166,10 +2168,8 @@ class AccountManagerUI:
         return "break"
 
     def on_account_drag_stop(self, event):
-        if self._get_active_group():
-            self._reset_drag_data()
-            return
         data = self.account_list_drag_data
+
         self._hide_drop_indicator()
         if not data["is_dragging"] or data["start_index"] is None:
             self._reset_drag_data()
@@ -2185,21 +2185,48 @@ class AccountManagerUI:
         self._reset_drag_data()
         return "break"
 
+    def on_account_ctrl_click(self, event):
+        if not self.settings.get("enable_multi_select", False):
+            return "break"
+        if self.account_list.size() <= 0:
+            return "break"
+        index = self.account_list.nearest(event.y)
+        if index < 0 or index >= self.account_list.size():
+            return "break"
+
+        self._hide_drop_indicator()
+        self._reset_drag_data()
+
+        if index in self.account_list.curselection():
+            self.account_list.selection_clear(index)
+        else:
+            self.account_list.selection_set(index)
+        self.account_list.activate(index)
+        return "break"
+
     @staticmethod
     def _drag_modifiers_active(event):
-
         modifiers_mask = 0x1 | 0x4 | 0x8
         return bool(event.state & modifiers_mask)
+
+    @staticmethod
+    def _ctrl_modifier_active(event):
+        return bool(event.state & 0x4)
 
     def _reset_drag_data(self):
         self.account_list_drag_data = {
             "start_index": None,
             "drop_index": None,
             "start_username": None,
+            "start_y": None,
             "is_dragging": False
         }
 
     def _get_drop_index_from_event(self, y_coord):
+        try:
+            self.account_list.update_idletasks()
+        except Exception:
+            pass
         size = self.account_list.size()
         if size == 0:
             return None
@@ -2214,6 +2241,10 @@ class AccountManagerUI:
         return nearest
 
     def _update_drop_indicator(self, drop_index):
+        try:
+            self.account_list.update_idletasks()
+        except Exception:
+            pass
         if self.account_drop_indicator is None or drop_index is None:
             self._hide_drop_indicator()
             return
@@ -2240,15 +2271,39 @@ class AccountManagerUI:
             self.account_drop_indicator.place_forget()
 
     def _finalize_account_reorder(self, start_index, drop_index, moved_username):
-        usernames = [self._extract_username(text) for text in self.account_list.get(0, tk.END)]
-        if not usernames:
+        visible_usernames = [self._extract_username(text) for text in self.account_list.get(0, tk.END)]
+        if not visible_usernames:
             return
-        drop_index = max(0, min(drop_index, len(usernames)))
-        entry = usernames.pop(start_index)
+
+        drop_index = max(0, min(drop_index, len(visible_usernames)))
+        entry = visible_usernames.pop(start_index)
         if drop_index > start_index:
             drop_index -= 1
-        usernames.insert(drop_index, entry)
-        self.manager.reorder_accounts(usernames)
+        visible_usernames.insert(drop_index, entry)
+
+        active_group = self._get_active_group()
+        if not active_group:
+            self.manager.reorder_accounts(visible_usernames)
+            self.refresh_accounts(selected_usernames=[moved_username])
+            return
+
+        current_order = list(self.manager.accounts.keys())
+        visible_set = set(visible_usernames)
+        if not current_order or not visible_set:
+            return
+
+        replacement_iter = iter(visible_usernames)
+        new_order = []
+        for username in current_order:
+            if username in visible_set:
+                try:
+                    new_order.append(next(replacement_iter))
+                except StopIteration:
+                    new_order.append(username)
+            else:
+                new_order.append(username)
+
+        self.manager.reorder_accounts(new_order)
         self.refresh_accounts(selected_usernames=[moved_username])
 
     def add_account(self):
