@@ -583,6 +583,10 @@ class AccountManagerUI:
         
         self.settings_file = os.path.join(self.data_folder, "ui_settings.json")
         self.load_settings()
+        try:
+            self.root.attributes("-topmost", bool(self.settings.get("enable_topmost", False)))
+        except Exception:
+            pass
         
         self._auto_relaunch_after_id = None
         self._auto_relaunch_in_progress = False
