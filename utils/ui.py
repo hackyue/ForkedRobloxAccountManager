@@ -921,6 +921,41 @@ class AccountManagerUI:
         """Return the current launch delay, clamped to the supported range."""
         return clamp_multi_launch_delay(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS))
 
+    def _focus_main_window(self):
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+
+        try:
+            self.root.deiconify()
+        except Exception:
+            pass
+
+        try:
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+        if platform.system() != "Windows" or not win32gui:
+            return
+
+        try:
+            hwnd = self.root.winfo_id()
+            parent = ctypes.windll.user32.GetParent(hwnd)
+            if parent:
+                hwnd = parent
+        except Exception:
+            return
+
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
     def _auto_relaunch_maybe_start(self):
         if self.settings.get("auto_relaunch_enabled", False):
             self._auto_relaunch_start()
@@ -992,15 +1027,17 @@ class AccountManagerUI:
         def worker(selected_group, selected_usernames):
             try:
                 self._close_all_roblox_clients_silent()
-                prelaunch_delay = self._get_multi_launch_delay()
-                if prelaunch_delay > 0:
-                    time.sleep(prelaunch_delay)
+                focus_delay_ms = int(self._get_multi_launch_delay() * 1000)
                 self.root.after(
                     0,
                     lambda: self._launch_game_for_usernames(
                         selected_usernames,
                         confirm_group=selected_group,
                         skip_confirm=True,
+                        on_done_callback=(
+                            lambda success_count: self.root.after(focus_delay_ms, self._focus_main_window)
+                            if success_count > 0 else None
+                        ),
                     ),
                 )
             finally:
@@ -2326,9 +2363,15 @@ class AccountManagerUI:
             """
             try:
                 success = self.manager.add_account(1, "https://www.roblox.com/login", "")
-                self.root.after(0, lambda: self._add_account_complete(success))
+                self.root.after(
+                    0,
+                    lambda: self._add_account_complete(success)
+                )
             except Exception as e:
-                self.root.after(0, lambda: self._add_account_error(str(e)))
+                self.root.after(
+                    0,
+                    lambda: self._add_account_error(str(e))
+                )
         
         thread = threading.Thread(target=add_account_thread, daemon=True)
         thread.start()
@@ -2758,7 +2801,6 @@ class AccountManagerUI:
             return windows
 
         seen = set()
-
         def enum_handler(hwnd, _):
             if hwnd in seen:
                 return True
@@ -2780,8 +2822,9 @@ class AccountManagerUI:
                 return True
 
             if exe_name in self.ROBLOX_CLIENT_EXECUTABLES:
-                windows.append(hwnd)
-                seen.add(hwnd)
+                if hwnd not in seen:
+                    seen.add(hwnd)
+                    windows.append(hwnd)
             return True
 
         win32gui.EnumWindows(enum_handler, None)
@@ -3293,7 +3336,7 @@ class AccountManagerUI:
 
         self._launch_game_for_usernames(usernames, confirm_group=group)
 
-    def _launch_game_for_usernames(self, usernames, confirm_group=None, skip_confirm=False):
+    def _launch_game_for_usernames(self, usernames, confirm_group=None, skip_confirm=False, on_done_callback=None):
         game_id = self.place_entry.get().strip()
         private_server = self.private_server_entry.get().strip()
 
@@ -3339,6 +3382,12 @@ class AccountManagerUI:
                         self.show_success_message("Roblox is launching! Check your desktop.")
                     else:
                         self.show_success_message(f"Roblox is launching for {success_count} account(s)! Check your desktop.")
+
+                    if on_done_callback is not None:
+                        try:
+                            on_done_callback(success_count)
+                        except Exception:
+                            pass
                 else:
                     messagebox.showerror("Error", "Failed to launch Roblox.")
 
