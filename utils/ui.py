@@ -1696,9 +1696,6 @@ class AccountManagerUI:
                 current = self.installer_dialog_state
                 if not current:
                     return
-                window = current.get("window")
-                if not window or not window.winfo_exists():
-                    return
                 if status is not None:
                     try:
                         current["status_var"].set(status)
@@ -1715,39 +1712,6 @@ class AccountManagerUI:
             except Exception:
                 pass
 
-        def ui_finish(success, message):
-            if root is None:
-                return
-
-            def apply():
-                current = self.installer_dialog_state
-                if current:
-                    try:
-                        current["close_button"].configure(state="normal")
-                    except Exception:
-                        pass
-                    try:
-                        current["download_button"].configure(state="normal")
-                    except Exception:
-                        pass
-                    current["download_thread"] = None
-
-                if success:
-                    try:
-                        messagebox.showinfo("Roblox Installer", message)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        messagebox.showerror("Roblox Installer", message)
-                    except Exception:
-                        pass
-
-            try:
-                root.after(0, apply)
-            except Exception:
-                pass
-
         temp_root = None
         try:
             channel = "LIVE"
@@ -1755,103 +1719,112 @@ class AccountManagerUI:
                 channel = (self.settings.get("roblox_download_channel") or channel)
             channel = str(channel).strip() or "LIVE"
 
-            ui_update(status="Preparing download...", progress=0)
-            temp_root = tempfile.mkdtemp(prefix="ram_rdd_")
-            archive_path = os.path.join(temp_root, f"{version}_WindowsPlayer.zip")
+            requested_version = (version or "").strip().lower()
+            if requested_version and not requested_version.startswith("version-"):
+                requested_version = "version-" + requested_version
+            if not requested_version:
+                raise ValueError("Missing version")
 
-            params = {
-                "channel": channel,
-                "binaryType": "WindowsPlayer",
-                "version": version,
-                "includeLauncher": "false",
-            }
+            binary_type = "WindowsPlayer"
+            blob_dir = RDD_BINARY_TYPES.get(binary_type, {}).get("blob_dir", "/")
+
+            ui_update(status="Fetching manifest...", progress=0)
 
             session = requests.Session()
             session.trust_env = False
 
-            def get_response(url):
-                return session.get(
-                    url,
-                    params=params,
-                    headers=ROBLOX_DOWNLOAD_HEADERS,
-                    stream=True,
-                    timeout=(10, 120),
-                )
+            channel_path = RDD_HOST_PATH
+            if channel != "LIVE":
+                channel_path = f"{RDD_HOST_PATH}/channel/{channel.lower()}"
+
+            version_path = f"{channel_path}{blob_dir}{requested_version}-"
+            manifest_url = version_path + "rbxPkgManifest.txt"
 
             try:
-                response = get_response("https://rdd.weao.gg/")
-            except requests.exceptions.SSLError:
-                response = get_response("http://rdd.weao.gg/")
+                resp = session.get(manifest_url, headers=ROBLOX_DOWNLOAD_HEADERS, timeout=15)
+                if not resp.ok:
+                    channel_path = f"{RDD_HOST_PATH}/channel/common"
+                    version_path = f"{channel_path}{blob_dir}{requested_version}-"
+                    manifest_url = version_path + "rbxPkgManifest.txt"
+                    resp = session.get(manifest_url, headers=ROBLOX_DOWNLOAD_HEADERS, timeout=15)
+                resp.raise_for_status()
+                manifest_body = resp.text
+            except Exception as exc:
+                raise RuntimeError(f"Failed to fetch rbxPkgManifest.txt:\n{manifest_url}\n\n{exc}")
 
-            with response as response:
-                response.raise_for_status()
+            lines = [line.strip() for line in manifest_body.splitlines() if line.strip()]
+            if not lines or lines[0] != "v0":
+                raise RuntimeError("Unknown rbxPkgManifest format")
 
-                total_size = response.headers.get("Content-Length")
-                try:
-                    total_size = int(total_size) if total_size else None
-                except Exception:
-                    total_size = None
+            packages = [line for line in lines[1:] if line.lower().endswith(".zip")]
+            if not packages:
+                raise RuntimeError("Manifest contained no packages")
 
-                downloaded = 0
-                last_update = 0
+            if "RobloxApp.zip" in packages:
+                extract_roots = RDD_EXTRACT_ROOTS["player"]
+            elif "RobloxStudio.zip" in packages:
+                extract_roots = RDD_EXTRACT_ROOTS["studio"]
+            else:
+                raise RuntimeError("Bad/unrecognized rbxPkgManifest")
 
-                ui_update(status="Downloading...", progress=0)
-                with open(archive_path, "wb") as f:
-                    for chunk in response.iter_content(chunk_size=1024 * 256):
-                        if not chunk:
+            temp_root = tempfile.mkdtemp(prefix="ram_rdd_")
+            build_dir = os.path.join(temp_root, "build")
+            os.makedirs(build_dir, exist_ok=True)
+
+            app_settings_path = os.path.join(build_dir, "AppSettings.xml")
+            with open(app_settings_path, "w", encoding="utf-8") as f:
+                f.write(RDD_APP_SETTINGS_XML)
+
+            total_pkgs = len(packages)
+            extracted_files = 0
+            for idx, package_name in enumerate(packages, 1):
+                progress = (idx - 1) / max(1, total_pkgs) * 70.0
+                ui_update(status=f"Downloading {package_name}... ({idx}/{total_pkgs})", progress=progress)
+
+                pkg_url = version_path + package_name
+                pkg_path = os.path.join(temp_root, "pkgs", package_name)
+                os.makedirs(os.path.dirname(pkg_path), exist_ok=True)
+
+                with session.get(pkg_url, headers=ROBLOX_DOWNLOAD_HEADERS, stream=True, timeout=(10, 120)) as r:
+                    r.raise_for_status()
+                    with open(pkg_path, "wb") as out:
+                        for chunk in r.iter_content(chunk_size=1024 * 256):
+                            if chunk:
+                                out.write(chunk)
+
+                extract_root = extract_roots.get(package_name)
+                if extract_root is None:
+                    shutil.copy2(pkg_path, os.path.join(build_dir, package_name))
+                    continue
+
+                ui_update(status=f"Extracting {package_name}... ({idx}/{total_pkgs})", progress=progress + 5.0)
+                with zipfile.ZipFile(pkg_path, "r") as zf:
+                    for info in zf.infolist():
+                        name = info.filename
+                        if not name or name.endswith("/") or name.endswith("\\"):
                             continue
-                        f.write(chunk)
-                        downloaded += len(chunk)
+                        fixed = name.replace("\\", "/")
+                        fixed = fixed.lstrip("/")
+                        normalized = os.path.normpath(fixed)
+                        if normalized.startswith("..") or os.path.isabs(normalized):
+                            continue
+                        normalized = normalized.replace("\\", "/")
+                        dest_path = os.path.join(build_dir, extract_root, normalized)
+                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                        with zf.open(info, "r") as src_f, open(dest_path, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                        extracted_files += 1
 
-                        if total_size:
-                            pct = downloaded / total_size
-                            progress = max(0.0, min(70.0, pct * 70.0))
-                            if downloaded - last_update >= 1024 * 1024:
-                                last_update = downloaded
-                                ui_update(
-                                    status=f"Downloading... ({downloaded // (1024 * 1024)} MB)",
-                                    progress=progress,
-                                )
-                        else:
-                            if downloaded - last_update >= 1024 * 1024:
-                                last_update = downloaded
-                                ui_update(
-                                    status=f"Downloading... ({downloaded // (1024 * 1024)} MB)",
-                                    progress=10,
-                                )
+                if idx == 1 or idx == total_pkgs or (idx % 5) == 0:
+                    progress = (idx / max(1, total_pkgs)) * 80.0
+                    ui_update(status=f"Assembling files... ({idx}/{total_pkgs})", progress=progress)
 
-            ui_update(status="Extracting...", progress=70)
-            extract_dir = os.path.join(temp_root, "extract")
-            os.makedirs(extract_dir, exist_ok=True)
-
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                members = zf.infolist()
-                total_members = len(members) or 1
-                for idx, member in enumerate(members, 1):
-                    zf.extract(member, extract_dir)
-                    if idx == 1 or idx == total_members or (idx % 100) == 0:
-                        progress = 70.0 + (idx / total_members) * 20.0
-                        ui_update(status=f"Extracting... ({idx}/{total_members})", progress=progress)
-
-            extracted_content_dir = extract_dir
-            try:
-                top_entries = os.listdir(extract_dir)
-            except Exception:
-                top_entries = []
-            if len(top_entries) == 1:
-                candidate = os.path.join(extract_dir, top_entries[0])
-                if os.path.isdir(candidate):
-                    extracted_content_dir = candidate
-
-            ui_update(status="Installing files...", progress=92)
+            ui_update(status="Installing files...", progress=85)
             os.makedirs(target_dir, exist_ok=True)
-            try:
-                items = os.listdir(extracted_content_dir)
-            except Exception:
-                items = []
+            items = os.listdir(build_dir)
             total_items = len(items) or 1
             for idx, name in enumerate(items, 1):
-                src = os.path.join(extracted_content_dir, name)
+                src = os.path.join(build_dir, name)
                 dst = os.path.join(target_dir, name)
                 if os.path.exists(dst):
                     if os.path.isdir(dst):
@@ -1860,7 +1833,7 @@ class AccountManagerUI:
                         os.remove(dst)
                 shutil.move(src, dst)
                 if idx == 1 or idx == total_items or (idx % 25) == 0:
-                    progress = 92.0 + (idx / total_items) * 8.0
+                    progress = 85.0 + (idx / total_items) * 15.0
                     ui_update(status=f"Installing files... ({idx}/{total_items})", progress=progress)
 
             ui_update(status="Done.", progress=100)
