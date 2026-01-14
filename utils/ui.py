@@ -1686,7 +1686,6 @@ class AccountManagerUI:
         self.installer_dialog_state = None
 
     def _installer_download_thread(self, version, client, target_dir):
-        state = self.installer_dialog_state
         root = getattr(self, "root", None)
 
         def ui_update(status=None, progress=None):
@@ -1764,15 +1763,27 @@ class AccountManagerUI:
                 "channel": channel,
                 "binaryType": "WindowsPlayer",
                 "version": version,
+                "includeLauncher": "false",
             }
 
-            with requests.get(
-                "https://rdd.weao.gg/",
-                params=params,
-                headers=ROBLOX_DOWNLOAD_HEADERS,
-                stream=True,
-                timeout=(10, 120),
-            ) as response:
+            session = requests.Session()
+            session.trust_env = False
+
+            def get_response(url):
+                return session.get(
+                    url,
+                    params=params,
+                    headers=ROBLOX_DOWNLOAD_HEADERS,
+                    stream=True,
+                    timeout=(10, 120),
+                )
+
+            try:
+                response = get_response("https://rdd.weao.gg/")
+            except requests.exceptions.SSLError:
+                response = get_response("http://rdd.weao.gg/")
+
+            with response as response:
                 response.raise_for_status()
 
                 total_size = response.headers.get("Content-Length")
