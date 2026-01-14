@@ -1680,6 +1680,7 @@ class AccountManagerUI:
         state = self.installer_dialog_state
         if not state:
             return
+
         window = state.get("window")
         if window and window.winfo_exists():
             window.destroy()
@@ -1696,6 +1697,9 @@ class AccountManagerUI:
                 current = self.installer_dialog_state
                 if not current:
                     return
+                window = current.get("window")
+                if not window or not window.winfo_exists():
+                    return
                 if status is not None:
                     try:
                         current["status_var"].set(status)
@@ -1704,6 +1708,45 @@ class AccountManagerUI:
                 if progress is not None:
                     try:
                         current["progress_var"].set(progress)
+                    except Exception:
+                        pass
+
+            try:
+                root.after(0, apply)
+            except Exception:
+                pass
+
+        def ui_finish(success, message):
+            if root is None:
+                return
+
+            def apply():
+                current = self.installer_dialog_state
+                if current:
+                    try:
+                        current["close_button"].configure(state="normal")
+                    except Exception:
+                        pass
+                    try:
+                        current["download_button"].configure(state="normal")
+                    except Exception:
+                        pass
+                    current["download_thread"] = None
+
+                if success:
+                    try:
+                        self.load_roblox_versions()
+                    except Exception:
+                        pass
+
+                if success:
+                    try:
+                        messagebox.showinfo("Roblox Installer", message)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        messagebox.showerror("Roblox Installer", message)
                     except Exception:
                         pass
 
@@ -1756,7 +1799,11 @@ class AccountManagerUI:
             if not lines or lines[0] != "v0":
                 raise RuntimeError("Unknown rbxPkgManifest format")
 
-            packages = [line for line in lines[1:] if line.lower().endswith(".zip")]
+            packages = []
+            for line in lines[1:]:
+                name = (line.split() or [""])[0]
+                if name.lower().endswith(".zip"):
+                    packages.append(name)
             if not packages:
                 raise RuntimeError("Manifest contained no packages")
 
@@ -1775,15 +1822,16 @@ class AccountManagerUI:
             with open(app_settings_path, "w", encoding="utf-8") as f:
                 f.write(RDD_APP_SETTINGS_XML)
 
+            pkgs_dir = os.path.join(temp_root, "pkgs")
+            os.makedirs(pkgs_dir, exist_ok=True)
+
             total_pkgs = len(packages)
-            extracted_files = 0
             for idx, package_name in enumerate(packages, 1):
                 progress = (idx - 1) / max(1, total_pkgs) * 70.0
                 ui_update(status=f"Downloading {package_name}... ({idx}/{total_pkgs})", progress=progress)
 
                 pkg_url = version_path + package_name
-                pkg_path = os.path.join(temp_root, "pkgs", package_name)
-                os.makedirs(os.path.dirname(pkg_path), exist_ok=True)
+                pkg_path = os.path.join(pkgs_dir, package_name)
 
                 with session.get(pkg_url, headers=ROBLOX_DOWNLOAD_HEADERS, stream=True, timeout=(10, 120)) as r:
                     r.raise_for_status()
@@ -1803,8 +1851,7 @@ class AccountManagerUI:
                         name = info.filename
                         if not name or name.endswith("/") or name.endswith("\\"):
                             continue
-                        fixed = name.replace("\\", "/")
-                        fixed = fixed.lstrip("/")
+                        fixed = name.replace("\\", "/").lstrip("/")
                         normalized = os.path.normpath(fixed)
                         if normalized.startswith("..") or os.path.isabs(normalized):
                             continue
@@ -1813,7 +1860,6 @@ class AccountManagerUI:
                         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                         with zf.open(info, "r") as src_f, open(dest_path, "wb") as dst_f:
                             shutil.copyfileobj(src_f, dst_f)
-                        extracted_files += 1
 
                 if idx == 1 or idx == total_pkgs or (idx % 5) == 0:
                     progress = (idx / max(1, total_pkgs)) * 80.0
