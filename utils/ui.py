@@ -1685,6 +1685,186 @@ class AccountManagerUI:
             window.destroy()
         self.installer_dialog_state = None
 
+    def _installer_download_thread(self, version, client, target_dir):
+        state = self.installer_dialog_state
+        root = getattr(self, "root", None)
+
+        def ui_update(status=None, progress=None):
+            if root is None:
+                return
+
+            def apply():
+                current = self.installer_dialog_state
+                if not current:
+                    return
+                window = current.get("window")
+                if not window or not window.winfo_exists():
+                    return
+                if status is not None:
+                    try:
+                        current["status_var"].set(status)
+                    except Exception:
+                        pass
+                if progress is not None:
+                    try:
+                        current["progress_var"].set(progress)
+                    except Exception:
+                        pass
+
+            try:
+                root.after(0, apply)
+            except Exception:
+                pass
+
+        def ui_finish(success, message):
+            if root is None:
+                return
+
+            def apply():
+                current = self.installer_dialog_state
+                if current:
+                    try:
+                        current["close_button"].configure(state="normal")
+                    except Exception:
+                        pass
+                    try:
+                        current["download_button"].configure(state="normal")
+                    except Exception:
+                        pass
+                    current["download_thread"] = None
+
+                if success:
+                    try:
+                        messagebox.showinfo("Roblox Installer", message)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        messagebox.showerror("Roblox Installer", message)
+                    except Exception:
+                        pass
+
+            try:
+                root.after(0, apply)
+            except Exception:
+                pass
+
+        temp_root = None
+        try:
+            channel = "LIVE"
+            if hasattr(self, "settings") and isinstance(self.settings, dict):
+                channel = (self.settings.get("roblox_download_channel") or channel)
+            channel = str(channel).strip() or "LIVE"
+
+            ui_update(status="Preparing download...", progress=0)
+            temp_root = tempfile.mkdtemp(prefix="ram_rdd_")
+            archive_path = os.path.join(temp_root, f"{version}_WindowsPlayer.zip")
+
+            params = {
+                "channel": channel,
+                "binaryType": "WindowsPlayer",
+                "version": version,
+            }
+
+            with requests.get(
+                "https://rdd.weao.gg/",
+                params=params,
+                headers=ROBLOX_DOWNLOAD_HEADERS,
+                stream=True,
+                timeout=(10, 120),
+            ) as response:
+                response.raise_for_status()
+
+                total_size = response.headers.get("Content-Length")
+                try:
+                    total_size = int(total_size) if total_size else None
+                except Exception:
+                    total_size = None
+
+                downloaded = 0
+                last_update = 0
+
+                ui_update(status="Downloading...", progress=0)
+                with open(archive_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=1024 * 256):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        if total_size:
+                            pct = downloaded / total_size
+                            progress = max(0.0, min(70.0, pct * 70.0))
+                            if downloaded - last_update >= 1024 * 1024:
+                                last_update = downloaded
+                                ui_update(
+                                    status=f"Downloading... ({downloaded // (1024 * 1024)} MB)",
+                                    progress=progress,
+                                )
+                        else:
+                            if downloaded - last_update >= 1024 * 1024:
+                                last_update = downloaded
+                                ui_update(
+                                    status=f"Downloading... ({downloaded // (1024 * 1024)} MB)",
+                                    progress=10,
+                                )
+
+            ui_update(status="Extracting...", progress=70)
+            extract_dir = os.path.join(temp_root, "extract")
+            os.makedirs(extract_dir, exist_ok=True)
+
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                members = zf.infolist()
+                total_members = len(members) or 1
+                for idx, member in enumerate(members, 1):
+                    zf.extract(member, extract_dir)
+                    if idx == 1 or idx == total_members or (idx % 100) == 0:
+                        progress = 70.0 + (idx / total_members) * 20.0
+                        ui_update(status=f"Extracting... ({idx}/{total_members})", progress=progress)
+
+            extracted_content_dir = extract_dir
+            try:
+                top_entries = os.listdir(extract_dir)
+            except Exception:
+                top_entries = []
+            if len(top_entries) == 1:
+                candidate = os.path.join(extract_dir, top_entries[0])
+                if os.path.isdir(candidate):
+                    extracted_content_dir = candidate
+
+            ui_update(status="Installing files...", progress=92)
+            os.makedirs(target_dir, exist_ok=True)
+            try:
+                items = os.listdir(extracted_content_dir)
+            except Exception:
+                items = []
+            total_items = len(items) or 1
+            for idx, name in enumerate(items, 1):
+                src = os.path.join(extracted_content_dir, name)
+                dst = os.path.join(target_dir, name)
+                if os.path.exists(dst):
+                    if os.path.isdir(dst):
+                        shutil.rmtree(dst)
+                    else:
+                        os.remove(dst)
+                shutil.move(src, dst)
+                if idx == 1 or idx == total_items or (idx % 25) == 0:
+                    progress = 92.0 + (idx / total_items) * 8.0
+                    ui_update(status=f"Installing files... ({idx}/{total_items})", progress=progress)
+
+            ui_update(status="Done.", progress=100)
+            ui_finish(True, f"Installed {version} into {client['name']}.")
+
+        except Exception as exc:
+            ui_update(status="Failed.", progress=0)
+            ui_finish(False, f"Failed to install {version}:\n{exc}")
+        finally:
+            if temp_root and os.path.isdir(temp_root):
+                try:
+                    shutil.rmtree(temp_root)
+                except Exception:
+                    pass
+
     def on_add_account_split_click(self, event):
         """Handle clicks on the unified split button: left area adds account, right area opens dropdown."""
         try:
