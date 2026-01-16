@@ -540,6 +540,116 @@ class RobloxAccountManager:
                 except:
                     pass
             return False
+
+    def add_accounts_from_credentials(self, credentials, timeout_per_account=120):
+        if not credentials:
+            return 0
+
+        success_count = 0
+
+        def first_present(driver, selectors):
+            for by, selector in selectors:
+                try:
+                    element = driver.find_element(by, selector)
+                    if element is not None:
+                        return element
+                except Exception:
+                    continue
+            return None
+
+        for idx, entry in enumerate(credentials, 1):
+            driver = None
+            try:
+                if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+                    continue
+                input_username, input_password = entry
+                if not input_username or not input_password:
+                    continue
+
+                print(f"Launching credential login {idx}/{len(credentials)}...")
+
+                driver = self.setup_chrome_driver()
+                if not driver:
+                    print(f"[ERROR] Failed to setup Chrome driver for credential {idx}")
+                    continue
+
+                driver.set_window_size(500, 650)
+                driver.get("https://www.roblox.com/login")
+
+                username_input = first_present(driver, [
+                    (By.ID, "login-username"),
+                    (By.NAME, "username"),
+                    (By.CSS_SELECTOR, "input#login-username"),
+                    (By.CSS_SELECTOR, "input[name='username']"),
+                ])
+                password_input = first_present(driver, [
+                    (By.ID, "login-password"),
+                    (By.NAME, "password"),
+                    (By.CSS_SELECTOR, "input#login-password"),
+                    (By.CSS_SELECTOR, "input[name='password']"),
+                ])
+
+                if username_input is None or password_input is None:
+                    print(f"[ERROR] Could not locate login inputs for credential {idx}")
+                    continue
+
+                try:
+                    username_input.clear()
+                except Exception:
+                    pass
+                try:
+                    password_input.clear()
+                except Exception:
+                    pass
+
+                username_input.send_keys(str(input_username))
+                password_input.send_keys(str(input_password))
+
+                login_btn = first_present(driver, [
+                    (By.ID, "login-button"),
+                    (By.CSS_SELECTOR, "button#login-button"),
+                    (By.CSS_SELECTOR, "button[type='submit']"),
+                ])
+                if login_btn is not None:
+                    try:
+                        login_btn.click()
+                    except Exception:
+                        try:
+                            driver.execute_script("arguments[0].click();", login_btn)
+                        except Exception:
+                            pass
+
+                logged_in = self.wait_for_login(driver, timeout=timeout_per_account)
+                if not logged_in:
+                    print(f"[WARNING] Login failed or timed out for credential {idx}")
+                    continue
+
+                username, cookie = self.extract_user_info(driver)
+                if not username or not cookie:
+                    print(f"[ERROR] Failed to extract account info for credential {idx}")
+                    continue
+
+                self.accounts[username] = {
+                    'username': username,
+                    'cookie': cookie,
+                    'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'note': '',
+                    'group': ''
+                }
+                self.save_accounts()
+                success_count += 1
+                print(f"[SUCCESS] Successfully added account: {username}")
+            except Exception as e:
+                print(f"[ERROR] Error importing credential {idx}: {e}")
+            finally:
+                if driver is not None:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                self.cleanup_temp_profile()
+
+        return success_count
     
     def import_cookie_account(self, cookie):
         if not cookie:

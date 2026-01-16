@@ -1365,6 +1365,17 @@ class AccountManagerUI:
         import_btn.pack(side="left", padx=(0, 8))
         self.menu_buttons.append(import_btn)
 
+        cred_btn = tk.Button(
+            self.menu_bar_frame,
+            text="Import User:Pass",
+            command=self.import_username_password,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0
+        )
+        cred_btn.pack(side="left", padx=(0, 8))
+        self.menu_buttons.append(cred_btn)
+
         force_btn = tk.Button(
             self.menu_bar_frame,
             text="Force Quit Roblox",
@@ -2724,6 +2735,136 @@ class AccountManagerUI:
             command=do_import
         ).pack(side="left", fill="x", expand=True, padx=(0, 5))
         
+        ttk.Button(
+            button_frame,
+            text="Cancel",
+            style="Dark.TButton",
+            command=import_window.destroy
+        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+
+    def import_username_password(self):
+        import_window = tk.Toplevel(self.root)
+        import_window.title("Import Username:Password")
+        import_window.geometry("450x320")
+        import_window.configure(bg=self.BG_DARK)
+        import_window.resizable(False, False)
+
+        self.root.update_idletasks()
+        main_x = self.root.winfo_x()
+        main_y = self.root.winfo_y()
+        main_width = self.root.winfo_width()
+        main_height = self.root.winfo_height()
+
+        x = main_x + (main_width - 450) // 2
+        y = main_y + (main_height - 320) // 2
+        import_window.geometry(f"450x320+{x}+{y}")
+
+        if self.settings.get("enable_topmost", False):
+            import_window.attributes("-topmost", True)
+
+        import_window.transient(self.root)
+        import_window.grab_set()
+        self.register_toplevel(import_window)
+
+        main_frame = ttk.Frame(import_window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        ttk.Label(
+            main_frame,
+            text="Import Accounts from Username:Password",
+            style="Dark.TLabel",
+            font=("Segoe UI", 12, "bold")
+        ).pack(anchor="w", pady=(0, 15))
+
+        ttk.Label(
+            main_frame,
+            text="Paste one per line (example: C0d3Danc3r94:Bloxgen2M4KF)",
+            style="Dark.TLabel",
+        ).pack(anchor="w", pady=(0, 5))
+
+        cred_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        cred_frame.pack(fill="both", expand=True, pady=(0, 15))
+
+        cred_text = tk.Text(
+            cred_frame,
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            font=("Segoe UI", 9),
+            height=8,
+            wrap="none"
+        )
+        cred_text.pack(side="left", fill="both", expand=True)
+        self.register_themable_text_widget(cred_text)
+
+        cred_scrollbar = ttk.Scrollbar(cred_frame, command=cred_text.yview)
+        cred_scrollbar.pack(side="right", fill="y")
+        cred_text.config(yscrollcommand=cred_scrollbar.set)
+
+        def parse_credentials(raw_text):
+            credentials = []
+            invalid_lines = 0
+            for line in (raw_text or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if ":" not in line:
+                    invalid_lines += 1
+                    continue
+                username, password = line.split(":", 1)
+                username = username.strip()
+                password = password.strip()
+                if not username or not password:
+                    invalid_lines += 1
+                    continue
+                credentials.append((username, password))
+            return credentials, invalid_lines
+
+        def do_import():
+            raw = cred_text.get("1.0", "end-1c")
+            credentials, invalid_lines = parse_credentials(raw)
+
+            if not credentials:
+                messagebox.showwarning("Missing Information", "Please paste at least one username:password line.")
+                return
+
+            if invalid_lines:
+                messagebox.showwarning(
+                    "Invalid Lines",
+                    f"Skipped {invalid_lines} invalid line(s). Format must be username:password."
+                )
+
+            def worker(parsed_credentials):
+                try:
+                    success_count = self.manager.add_accounts_from_credentials(parsed_credentials)
+                    if success_count > 0:
+                        self.root.after(0, lambda: [
+                            self.refresh_accounts(),
+                            self.show_success_message(f"Imported {success_count} account(s) successfully!"),
+                        ])
+                    else:
+                        self.root.after(0, lambda: messagebox.showerror(
+                            "Error",
+                            "No accounts were imported. Check the console for details."
+                        ))
+                except Exception as e:
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "Error",
+                        f"Failed to import accounts: {str(e)}"
+                    ))
+
+            threading.Thread(target=worker, args=(credentials,), daemon=True).start()
+            import_window.destroy()
+
+        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        button_frame.pack(fill="x")
+
+        ttk.Button(
+            button_frame,
+            text="Import",
+            style="Dark.TButton",
+            command=do_import
+        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
+
         ttk.Button(
             button_frame,
             text="Cancel",
