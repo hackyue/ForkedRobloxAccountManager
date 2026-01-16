@@ -10,6 +10,7 @@ import io
 import tempfile
 import zipfile
 import shutil
+import hashlib
 import requests
 import json
 import math
@@ -553,7 +554,7 @@ class AccountManagerUI:
     def __init__(self, root, manager):
         self.root = root
         self.manager = manager
-        self.APP_VERSION = "2.3.7"
+        self.APP_VERSION = "2.3.8"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -571,7 +572,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.3.7 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.3.8 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -838,6 +839,7 @@ class AccountManagerUI:
         self.update_game_name()
 
         self.root.after(500, self._auto_relaunch_maybe_start)
+        self.root.after(1500, self._auto_update_maybe_start)
 
     def load_settings(self):
         """Load UI settings from file"""
@@ -860,6 +862,7 @@ class AccountManagerUI:
             "auto_relaunch_enabled": False,
             "auto_relaunch_interval_minutes": 60,
             "auto_relaunch_group": "",
+            "auto_update_enabled": True,
         }
 
         try:
@@ -2172,6 +2175,179 @@ class AccountManagerUI:
                 json.dump(self.settings, f, indent=2)
         except Exception as e:
             print(f"Failed to save settings: {e}")
+
+    def _is_frozen_exe(self):
+        try:
+            return bool(getattr(sys, "frozen", False)) and os.path.isfile(sys.executable)
+        except Exception:
+            return False
+
+    def _parse_version_tuple(self, version_str):
+        if not version_str:
+            return (0,)
+        value = str(version_str).strip()
+        if value.lower().startswith("v"):
+            value = value[1:]
+        parts = []
+        for part in value.split("."):
+            try:
+                parts.append(int(part))
+            except Exception:
+                parts.append(0)
+        return tuple(parts) if parts else (0,)
+
+    def _auto_update_maybe_start(self):
+        if not self.settings.get("auto_update_enabled", True):
+            return
+        if not self._is_frozen_exe():
+            return
+        if getattr(self, "_auto_update_check_started", False):
+            return
+        self._auto_update_check_started = True
+
+        def worker():
+            try:
+                api_url = "https://api.github.com/repos/hackyue/ForkedRobloxAccountManager/releases/latest"
+                headers = {
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "FRAM",
+                }
+                response = requests.get(api_url, headers=headers, timeout=12)
+                response.raise_for_status()
+                release = response.json()
+
+                latest_tag = (release.get("tag_name") or "").strip()
+                latest_tuple = self._parse_version_tuple(latest_tag)
+                current_tuple = self._parse_version_tuple(getattr(self, "APP_VERSION", "0"))
+                if latest_tuple <= current_tuple:
+                    return
+
+                self.root.after(0, lambda: self._prompt_update_available(release))
+            except Exception:
+                return
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _prompt_update_available(self, release):
+        if getattr(self, "_auto_update_prompt_shown", False):
+            return
+        self._auto_update_prompt_shown = True
+
+        try:
+            latest_tag = (release.get("tag_name") or "").strip()
+            latest_display = latest_tag[1:] if latest_tag.lower().startswith("v") else latest_tag
+        except Exception:
+            latest_display = ""
+
+        current_display = getattr(self, "APP_VERSION", "")
+        prompt = (
+            f"A new version is available.\n\n"
+            f"Current: {current_display}\n"
+            f"Latest: {latest_display}\n\n"
+            f"Update now?"
+        )
+
+        if not messagebox.askyesno("Update Available", prompt, parent=self.root):
+            return
+
+        self._download_update_and_apply(release)
+
+    def _download_update_and_apply(self, release):
+        def worker():
+            downloaded_path = None
+
+            try:
+                assets = release.get("assets") or []
+                asset = None
+                for entry in assets:
+                    name = (entry.get("name") or "").lower()
+                    if name.endswith(".exe"):
+                        asset = entry
+                        break
+                if not asset:
+                    raise RuntimeError("No EXE asset found in latest release")
+
+                download_url = asset.get("browser_download_url")
+                if not download_url:
+                    raise RuntimeError("Missing download URL")
+
+                expected_digest = asset.get("digest")
+                expected_sha256 = None
+                if isinstance(expected_digest, str) and expected_digest.lower().startswith("sha256:"):
+                    expected_sha256 = expected_digest.split(":", 1)[1].strip().lower()
+
+                try:
+                    os.makedirs(self.data_folder, exist_ok=True)
+                except Exception:
+                    pass
+
+                fd, downloaded_path = tempfile.mkstemp(prefix="fram_update_", suffix=".exe", dir=self.data_folder)
+                os.close(fd)
+
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Updating",
+                        "Downloading update... The app will restart when finished.",
+                        parent=self.root,
+                    ),
+                )
+
+                headers = {"User-Agent": "FRAM"}
+                hasher = hashlib.sha256()
+                with requests.get(download_url, headers=headers, stream=True, timeout=60) as resp:
+                    resp.raise_for_status()
+                    with open(downloaded_path, "wb") as fp:
+                        for chunk in resp.iter_content(chunk_size=1024 * 256):
+                            if not chunk:
+                                continue
+                            fp.write(chunk)
+                            hasher.update(chunk)
+
+                if expected_sha256:
+                    actual = hasher.hexdigest().lower()
+                    if actual != expected_sha256:
+                        raise RuntimeError("Downloaded update failed integrity check")
+
+                target_exe = sys.executable
+                if not (target_exe and os.path.isfile(target_exe)):
+                    raise RuntimeError("Unable to locate current executable")
+
+                updater_copy = os.path.join(self.data_folder, "FRAM_Updater.exe")
+                try:
+                    if os.path.exists(updater_copy):
+                        os.remove(updater_copy)
+                except Exception:
+                    pass
+
+                shutil.copy2(target_exe, updater_copy)
+
+                args = [
+                    updater_copy,
+                    "--apply-update",
+                    "--pid",
+                    str(os.getpid()),
+                    "--source",
+                    downloaded_path,
+                    "--target",
+                    target_exe,
+                ]
+
+                subprocess.Popen(args, close_fds=True)
+                self.root.after(0, self.root.destroy)
+            except Exception as exc:
+                if downloaded_path:
+                    try:
+                        os.remove(downloaded_path)
+                    except Exception:
+                        pass
+
+                try:
+                    self.root.after(0, lambda: messagebox.showerror("Update Failed", str(exc), parent=self.root))
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def is_chrome_installed(self):
         """Best-effort check to see if Google Chrome is installed (Windows)."""
@@ -3712,6 +3888,7 @@ class AccountManagerUI:
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
+        auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update_enabled", True))
         theme_var = tk.StringVar(value=self.settings.get("selected_theme", self.theme_name))
         custom_launcher_var = tk.BooleanVar(value=self.settings.get("enable_custom_launcher", False))
         custom_launcher_path_var = tk.StringVar(value=self.settings.get("custom_launcher_path", ""))
@@ -3856,6 +4033,14 @@ class AccountManagerUI:
             variable=disable_success_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("disable_success_popups", disable_success_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            ram_tab,
+            text="Enable Auto Updates",
+            variable=auto_update_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("auto_update_enabled", auto_update_var)
         ).pack(anchor="w", pady=2)
 
         ttk.Label(
