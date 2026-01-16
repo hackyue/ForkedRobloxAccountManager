@@ -831,7 +831,6 @@ class AccountManagerUI:
 
         self.refresh_accounts()
         self.refresh_game_list()
-        self.update_game_name()
 
         self.root.after(500, self._auto_relaunch_maybe_start)
         self.root.after(1500, self._auto_update_maybe_start)
@@ -2748,34 +2747,33 @@ class AccountManagerUI:
         import_window.geometry("450x320")
         import_window.configure(bg=self.BG_DARK)
         import_window.resizable(False, False)
-
+        
         self.root.update_idletasks()
         main_x = self.root.winfo_x()
         main_y = self.root.winfo_y()
         main_width = self.root.winfo_width()
         main_height = self.root.winfo_height()
-
+        
         x = main_x + (main_width - 450) // 2
         y = main_y + (main_height - 320) // 2
         import_window.geometry(f"450x320+{x}+{y}")
-
+        
         if self.settings.get("enable_topmost", False):
             import_window.attributes("-topmost", True)
-
+        
         import_window.transient(self.root)
-        import_window.grab_set()
         self.register_toplevel(import_window)
-
+        
         main_frame = ttk.Frame(import_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
-
+        
         ttk.Label(
             main_frame,
             text="Import Accounts from Username:Password",
             style="Dark.TLabel",
             font=("Segoe UI", 12, "bold")
         ).pack(anchor="w", pady=(0, 15))
-
+        
         ttk.Label(
             main_frame,
             text="Paste one per line (example: C0d3Danc3r94:Bloxgen2M4KF)",
@@ -2784,7 +2782,7 @@ class AccountManagerUI:
 
         cred_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         cred_frame.pack(fill="both", expand=True, pady=(0, 15))
-
+        
         cred_text = tk.Text(
             cred_frame,
             bg=self.BG_MID,
@@ -2795,11 +2793,11 @@ class AccountManagerUI:
         )
         cred_text.pack(side="left", fill="both", expand=True)
         self.register_themable_text_widget(cred_text)
-
+        
         cred_scrollbar = ttk.Scrollbar(cred_frame, command=cred_text.yview)
         cred_scrollbar.pack(side="right", fill="y")
         cred_text.config(yscrollcommand=cred_scrollbar.set)
-
+        
         def parse_credentials(raw_text):
             credentials = []
             invalid_lines = 0
@@ -2822,11 +2820,11 @@ class AccountManagerUI:
         def do_import():
             raw = cred_text.get("1.0", "end-1c")
             credentials, invalid_lines = parse_credentials(raw)
-
+            
             if not credentials:
                 messagebox.showwarning("Missing Information", "Please paste at least one username:password line.")
                 return
-
+            
             if invalid_lines:
                 messagebox.showwarning(
                     "Invalid Lines",

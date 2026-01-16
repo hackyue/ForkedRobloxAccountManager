@@ -9,6 +9,7 @@ import json
 import time
 import tempfile
 import hashlib
+import shutil
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -137,11 +138,10 @@ class RobloxAccountManager:
         """Clean up temporary profile directory"""
         if self.temp_profile_dir and os.path.exists(self.temp_profile_dir):
             try:
-                import shutil
                 shutil.rmtree(self.temp_profile_dir)
             except:
                 pass
-    
+
     def setup_chrome_driver(self):
         """Setup Chrome driver with maximum speed optimizations"""
         profile_dir = self.create_temp_profile()
@@ -151,7 +151,6 @@ class RobloxAccountManager:
         chrome_options.add_argument("--no-first-run")
         chrome_options.add_argument("--no-default-browser-check")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
         chrome_options.add_argument("--log-level=3")
@@ -162,9 +161,11 @@ class RobloxAccountManager:
         chrome_options.add_argument("--no-default-browser-check")
         chrome_options.add_argument("--disable-default-apps")
         chrome_options.add_argument("--disable-web-security")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
-        
+
+        exclude_switches = {"enable-automation", "enable-logging"}
+        chrome_options.add_experimental_option("excludeSwitches", sorted(exclude_switches))
+
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--disable-plugins")
         chrome_options.add_argument("--disable-dev-shm-usage")

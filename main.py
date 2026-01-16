@@ -116,7 +116,14 @@ def main():
     
     root = tk.Tk()
     app = AccountManagerUI(root, manager)
-    root.mainloop()
+
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        try:
+            root.destroy()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
