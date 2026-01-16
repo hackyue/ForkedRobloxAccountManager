@@ -1,7 +1,9 @@
 [![Version](https://img.shields.io/github/v/release/evanovar/RobloxAccountManager)](https://github.com/hackyue/ForkedRobloxAccountManager/releases/latest)
 ![License](https://img.shields.io/github/license/evanovar/RobloxAccountManager)
-[!![Discord](https://img.shields.io/discord/1449551915464790170)](https://discord.gg/SpMTxg8YjJ)<br>
+[!![Discord](https://img.shields.io/discord/1449551915464790170)](https://discord.gg/SpMTxg8YjJ)
+[![Github All Releases](https://img.shields.io/github/downloads/hackyue/ForkedRobloxAccountManager/total.svg)]()<br>
 [![Download Fork](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/hackyue/ForkedRobloxAccountManager/releases/latest/download/FRAM.exe)
+
 
 # 🚀 Roblox Account Manager
 
@@ -9,7 +11,7 @@ A powerful tool for managing multiple Roblox accounts with secure cookie extract
 Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <br>
 ⭐ If you like this project, please consider starring the repository! ⭐<br>
 
-<img width="446" height="528" alt="image" src="https://i.ibb.co/c4T89HR/Screenshot-2025-12-02-224949.png" />
+<img width="446" height="528" alt="image" src="https://i.ibb.co/Z62D3LzQ/Screenshot-2026-01-14-224308.png" />
 <img width="298" height="347" alt="image" src="https://i.ibb.co/1Y8WxtTt/Screenshot-2025-12-02-225144.png" />
 
 
