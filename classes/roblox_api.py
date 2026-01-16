@@ -378,7 +378,21 @@ class RobloxAPI:
         launcher_exe = None
         launcher_name = None
         launcher_requires_player_flag = False
-        effective_path = roblox_path or RobloxAPI._get_default_roblox_path()
+        explicit_executable_provided = False
+        explicit_executable_path = None
+
+        try:
+            roblox_path_expanded = os.path.expandvars(str(roblox_path)) if roblox_path else ""
+        except Exception:
+            roblox_path_expanded = str(roblox_path) if roblox_path else ""
+
+        if roblox_path_expanded and os.path.isfile(roblox_path_expanded):
+            explicit_executable_provided = True
+            explicit_executable_path = roblox_path_expanded
+            effective_path = os.path.dirname(roblox_path_expanded)
+        else:
+            effective_path = roblox_path_expanded or RobloxAPI._get_default_roblox_path()
+
         using_local_install = effective_path and os.path.isdir(effective_path)
 
         bloxstrap_root = os.path.expandvars(r"%LOCALAPPDATA%\Bloxstrap")
@@ -404,60 +418,78 @@ class RobloxAPI:
             _log_debug(f"Launching {context} via {launcher_display} with URL: {target_url}")
 
         if using_local_install:
-            roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
+            explicit_name = None
+            if explicit_executable_provided and explicit_executable_path:
+                explicit_name = os.path.basename(explicit_executable_path).lower()
+
+            if explicit_name == "robloxplayerlauncher.exe":
+                launcher_exe = explicit_executable_path
+                launcher_name = "RobloxPlayerLauncher"
+                roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
+                _log_debug(f"Using explicitly selected launcher at {launcher_exe}")
+            elif explicit_executable_provided and explicit_executable_path:
+                roblox_exe = explicit_executable_path
+                _log_debug(f"Using explicitly selected RobloxPlayer at {roblox_exe}")
+            else:
+                roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
+
+            if launcher_exe and not os.path.exists(launcher_exe):
+                print(f"[ERROR] Launcher executable not found: {launcher_exe}")
+                return False
             if not os.path.exists(roblox_exe):
                 print(f"[ERROR] RobloxPlayerBeta.exe not found in {effective_path}")
                 return False
 
-            normalized_root = bloxstrap_root.lower()
-            effective_lower = effective_path.lower()
-            if normalized_root and effective_lower.startswith(normalized_root):
-                is_bloxstrap_install = True
-                if os.path.exists(bloxstrap_launcher):
-                    launcher_exe = bloxstrap_launcher
-                    launcher_name = "Bloxstrap"
-                    launcher_requires_player_flag = True
-                    _log_debug(f"Using Bloxstrap launcher at {launcher_exe}")
-                else:
-                    print("[WARNING] Bloxstrap path detected but Bloxstrap.exe was not found; falling back to RobloxPlayerBeta.exe")
+            if not explicit_executable_provided:
+                normalized_root = bloxstrap_root.lower()
+                effective_lower = effective_path.lower()
+                if normalized_root and effective_lower.startswith(normalized_root):
+                    is_bloxstrap_install = True
+                    if os.path.exists(bloxstrap_launcher):
+                        launcher_exe = bloxstrap_launcher
+                        launcher_name = "Bloxstrap"
+                        launcher_requires_player_flag = True
+                        _log_debug(f"Using Bloxstrap launcher at {launcher_exe}")
+                    else:
+                        print("[WARNING] Bloxstrap path detected but Bloxstrap.exe was not found; falling back to RobloxPlayerBeta.exe")
 
-            fishstrap_root_lower = fishstrap_root.lower()
-            if not launcher_exe and fishstrap_root_lower and effective_lower.startswith(fishstrap_root_lower):
-                is_fishstrap_install = True
-                if os.path.exists(fishstrap_launcher):
-                    launcher_exe = fishstrap_launcher
-                    launcher_name = "Fishstrap"
-                    launcher_requires_player_flag = True
-                    _log_debug(f"Using Fishstrap launcher at {launcher_exe}")
-                else:
-                    print("[WARNING] Fishstrap path detected but Fishstrap.exe was not found; falling back to RobloxPlayerBeta.exe")
+                fishstrap_root_lower = fishstrap_root.lower()
+                if not launcher_exe and fishstrap_root_lower and effective_lower.startswith(fishstrap_root_lower):
+                    is_fishstrap_install = True
+                    if os.path.exists(fishstrap_launcher):
+                        launcher_exe = fishstrap_launcher
+                        launcher_name = "Fishstrap"
+                        launcher_requires_player_flag = True
+                        _log_debug(f"Using Fishstrap launcher at {launcher_exe}")
+                    else:
+                        print("[WARNING] Fishstrap path detected but Fishstrap.exe was not found; falling back to RobloxPlayerBeta.exe")
 
-            if not launcher_exe:
-                possible_launcher = os.path.join(effective_path, "RobloxPlayerLauncher.exe")
-                if os.path.exists(possible_launcher):
-                    launcher_exe = possible_launcher
-                    launcher_name = "RobloxPlayerLauncher"
-                    _log_debug(f"Found RobloxPlayerLauncher.exe at {launcher_exe}")
-                else:
-                    try:
-                        versions_root = Path(effective_path).parent
-                        launcher_candidates = []
-                        for candidate_dir in versions_root.iterdir():
-                            if not candidate_dir.is_dir() or not candidate_dir.name.startswith("version-"):
-                                continue
-                            candidate_launcher = candidate_dir / "RobloxPlayerLauncher.exe"
-                            if candidate_launcher.exists():
-                                launcher_candidates.append(candidate_launcher)
+                if not launcher_exe:
+                    possible_launcher = os.path.join(effective_path, "RobloxPlayerLauncher.exe")
+                    if os.path.exists(possible_launcher):
+                        launcher_exe = possible_launcher
+                        launcher_name = "RobloxPlayerLauncher"
+                        _log_debug(f"Found RobloxPlayerLauncher.exe at {launcher_exe}")
+                    else:
+                        try:
+                            versions_root = Path(effective_path).parent
+                            launcher_candidates = []
+                            for candidate_dir in versions_root.iterdir():
+                                if not candidate_dir.is_dir() or not candidate_dir.name.startswith("version-"):
+                                    continue
+                                candidate_launcher = candidate_dir / "RobloxPlayerLauncher.exe"
+                                if candidate_launcher.exists():
+                                    launcher_candidates.append(candidate_launcher)
 
-                        if launcher_candidates:
-                            best_launcher = max(launcher_candidates, key=lambda p: p.stat().st_mtime)
-                            launcher_exe = str(best_launcher)
-                            launcher_name = "RobloxPlayerLauncher"
-                            _log_debug(f"Found RobloxPlayerLauncher.exe in {best_launcher.parent.name}: {launcher_exe}")
-                        else:
-                            _log_debug("RobloxPlayerLauncher.exe not found, falling back to RobloxPlayerBeta.exe")
-                    except Exception as exc:
-                        _log_debug(f"RobloxPlayerLauncher.exe scan failed, falling back to RobloxPlayerBeta.exe: {exc}")
+                            if launcher_candidates:
+                                best_launcher = max(launcher_candidates, key=lambda p: p.stat().st_mtime)
+                                launcher_exe = str(best_launcher)
+                                launcher_name = "RobloxPlayerLauncher"
+                                _log_debug(f"Found RobloxPlayerLauncher.exe in {best_launcher.parent.name}: {launcher_exe}")
+                            else:
+                                _log_debug("RobloxPlayerLauncher.exe not found, falling back to RobloxPlayerBeta.exe")
+                        except Exception as exc:
+                            _log_debug(f"RobloxPlayerLauncher.exe scan failed, falling back to RobloxPlayerBeta.exe: {exc}")
 
             print(f"Using Roblox version from: {effective_path}")
             _log_debug(f"Roblox executable resolved to {roblox_exe}")
@@ -465,7 +497,7 @@ class RobloxAPI:
             roblox_exe = 'RobloxPlayerBeta.exe'
             _log_debug("Using default Roblox installation (RobloxPlayerBeta.exe on PATH)")
 
-        if not launcher_exe and os.path.exists(fishstrap_launcher):
+        if not explicit_executable_provided and not launcher_exe and os.path.exists(fishstrap_launcher):
             launcher_exe = fishstrap_launcher
             launcher_name = "Fishstrap"
             launcher_requires_player_flag = True

@@ -666,13 +666,13 @@ class RobloxAccountManager:
             print(f"[ERROR] Failed to launch Chrome: {e}")
             return False
 
-    def launch_home_app(self, username, enable_debug=False):
+    def launch_home_app(self, username, version=None, enable_debug=False):
         """Launch the native Roblox Home experience for the account"""
         if username not in self.accounts:
             print(f"[ERROR] Account '{username}' not found")
             return False
 
-        return self.launch_roblox(username, "", "", enable_debug=enable_debug)
+        return self.launch_roblox(username, "", "", version=version, enable_debug=enable_debug)
 
     def launch_roblox(self, username, game_id, private_server_id="", version=None, enable_debug=False):
         """

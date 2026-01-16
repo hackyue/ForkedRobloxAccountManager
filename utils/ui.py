@@ -794,7 +794,7 @@ class AccountManagerUI:
         ttk.Button(right_frame, text="Delete Selected", style="Dark.TButton", command=self.delete_game_from_list).pack(fill="x", pady=(5, 0))
 
         ttk.Label(right_frame, text="Quick Actions", style="Dark.TLabel").pack(anchor="w", pady=(10, 5))
-        
+
         action_frame = ttk.Frame(right_frame, style="Dark.TFrame")
         action_frame.pack(fill="x", pady=(5, 0))
 
@@ -804,9 +804,6 @@ class AccountManagerUI:
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Auto-Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
 
-        self.add_account_dropdown = None
-        self.add_account_dropdown_visible = False
-        
         bottom_frame = ttk.Frame(self.root, style="Dark.TFrame")
         bottom_frame.pack(fill="x", padx=10, pady=(5, 10), anchor='s')
 
@@ -814,9 +811,9 @@ class AccountManagerUI:
             bottom_frame,
             text="Add Account",
             style="Dark.TButton",
+            command=self.add_account,
         )
         self.add_account_split_btn.pack(side="left", fill="both", expand=True, padx=(0, 2))
-        self.add_account_split_btn.bind("<Button-1>", self.on_add_account_split_click)
 
         ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.delete_account).pack(
             side="left", fill="both", expand=True, padx=2
@@ -832,8 +829,6 @@ class AccountManagerUI:
             side="left", fill="both", expand=True, padx=(2, 0)
         )
 
-        self.root.bind("<Button-1>", self.hide_dropdown_on_click_outside)
-        self.root.bind("<Configure>", self.on_root_configure)
         self.refresh_accounts()
         self.refresh_game_list()
         self.update_game_name()
@@ -857,7 +852,7 @@ class AccountManagerUI:
             "disable_success_popups": False,
             "auto_arrange_scope": "both",
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
-            "custom_version_sources": [],
+            "custom_roblox_player_path": "",
             "selected_group": "All",
             "auto_relaunch_enabled": False,
             "auto_relaunch_interval_minutes": 60,
@@ -1156,18 +1151,6 @@ class AccountManagerUI:
                 highlightbackground=self.BORDER_COLOR,
                 highlightcolor=self.BORDER_COLOR
             )
-
-        if getattr(self, "add_account_dropdown", None):
-            self.add_account_dropdown.configure(bg=self.BG_MID, highlightbackground=self.BORDER_COLOR)
-            for widget in self.add_account_dropdown.winfo_children():
-                if isinstance(widget, tk.Button):
-                    widget.configure(
-                        bg=self.BG_MID,
-                        fg=self.FG_TEXT,
-                        activebackground=self.HOVER_BG,
-                        activeforeground=self.FG_TEXT,
-                        bd=0
-                    )
 
         self._apply_menu_palette_defaults()
         self.apply_menu_theme()
@@ -1788,11 +1771,6 @@ class AccountManagerUI:
 
             try:
                 resp = session.get(manifest_url, headers=ROBLOX_DOWNLOAD_HEADERS, timeout=15)
-                if not resp.ok:
-                    channel_path = f"{RDD_HOST_PATH}/channel/common"
-                    version_path = f"{channel_path}{blob_dir}{requested_version}-"
-                    manifest_url = version_path + "rbxPkgManifest.txt"
-                    resp = session.get(manifest_url, headers=ROBLOX_DOWNLOAD_HEADERS, timeout=15)
                 resp.raise_for_status()
                 manifest_body = resp.text
             except Exception as exc:
@@ -1898,116 +1876,6 @@ class AccountManagerUI:
                 except Exception:
                     pass
 
-    def on_add_account_split_click(self, event):
-        """Handle clicks on the unified split button: left area adds account, right area opens dropdown."""
-        try:
-            width = event.widget.winfo_width()
-        except Exception:
-            width = 0
-        arrow_zone = 24
-        if event.x >= max(0, width - arrow_zone):
-            self.toggle_add_account_dropdown()
-        else:
-            self.add_account()
-        return "break"
-
-    def show_add_account_dropdown(self):
-        """Show the Add Account dropdown menu"""
-        if self.add_account_dropdown is not None:
-            self.add_account_dropdown.destroy()
-        
-        self.add_account_dropdown = tk.Toplevel(self.root)
-        self.add_account_dropdown.overrideredirect(True)
-        self.add_account_dropdown.configure(bg=self.BG_MID, highlightthickness=1, highlightbackground="white")
-        
-        self.position_add_account_dropdown()
-        
-        import_cookie_btn = tk.Button(
-            self.add_account_dropdown,
-            text="Import Cookie",
-            anchor="w",
-            relief="flat",
-            bg=self.BG_MID,
-            fg=self.FG_TEXT,
-            activebackground=self.HOVER_BG,
-            activeforeground=self.FG_TEXT,
-            font=("Segoe UI", 9),
-            bd=0,
-            highlightthickness=0,
-            command=lambda: [self.hide_add_account_dropdown(), self.import_cookie()]
-        )
-        import_cookie_btn.pack(fill="x", padx=2, pady=1)
-        
-        javascript_btn = tk.Button(
-            self.add_account_dropdown,
-            text="Javascript",
-            anchor="w",
-            relief="flat",
-            bg=self.BG_MID,
-            fg=self.FG_TEXT,
-            activebackground=self.HOVER_BG,
-            activeforeground=self.FG_TEXT,
-            font=("Segoe UI", 9),
-            bd=0,
-            highlightthickness=0,
-            command=lambda: [self.hide_add_account_dropdown(), self.javascript_import()]
-        )
-        javascript_btn.pack(fill="x", padx=2, pady=1)
-        
-        self.position_add_account_dropdown()
-        
-        if self.settings.get("enable_topmost", False):
-            self.add_account_dropdown.attributes("-topmost", True)
-        
-        self.add_account_dropdown.bind("<FocusOut>", lambda e: self.hide_add_account_dropdown())
-
-    def position_add_account_dropdown(self):
-        """Position the dropdown right under the split button and match its width."""
-        try:
-            if self.add_account_dropdown is None or not self.add_account_dropdown_visible:
-                return
-            self.root.update_idletasks()
-            x = self.add_account_split_btn.winfo_rootx()
-            y = self.add_account_split_btn.winfo_rooty() + self.add_account_split_btn.winfo_height()
-            width = self.add_account_split_btn.winfo_width()
-            req_h = self.add_account_dropdown.winfo_reqheight()
-            self.add_account_dropdown.geometry(f"{width}x{req_h}+{x}+{y}")
-            if self.settings.get("enable_topmost", False):
-                self.add_account_dropdown.attributes("-topmost", True)
-        except Exception:
-            pass
-
-    def on_root_configure(self, event=None):
-        """Called when the main window moves/resizes; keep dropdown attached."""
-        if self.add_account_dropdown_visible and self.add_account_dropdown is not None:
-            self.position_add_account_dropdown()
-
-    def hide_add_account_dropdown(self):
-        """Hide the Add Account dropdown menu"""
-        if self.add_account_dropdown is not None:
-            self.add_account_dropdown.destroy()
-            self.add_account_dropdown = None
-        self.add_account_dropdown_visible = False
-    
-    def is_child_of(self, child, parent):
-        """Check if a widget is a child of another widget"""
-        while child is not None:
-            if child == parent:
-                return True
-            child = child.master
-        return False
-    
-    def hide_dropdown_on_click_outside(self, event):
-        """Hide dropdown when clicking outside of it"""
-        widget = event.widget
-        if self.add_account_dropdown_visible and self.add_account_dropdown is not None:
-            if not self.is_child_of(widget, self.add_account_split_btn):
-                try:
-                    if not self.is_child_of(widget, self.add_account_dropdown):
-                        self.hide_add_account_dropdown()
-                except:
-                    self.hide_add_account_dropdown()
-
     def load_roblox_versions(self):
         """Load available Roblox versions from standard and custom folders."""
         try:
@@ -2052,13 +1920,6 @@ class AccountManagerUI:
         add_source("Bloxstrap", r"%LOCALAPPDATA%\Bloxstrap\Versions")
         add_source("Fishstrap", r"%LOCALAPPDATA%\Fishstrap\Versions")
         add_source("Voidstrap", r"%LOCALAPPDATA%\Voidstrap\RblxVersions")
-
-        custom_sources = self.settings.get("custom_version_sources", []) if hasattr(self, "settings") else []
-        for entry in custom_sources:
-            base = entry.get("base")
-            if not base:
-                continue
-            add_source(entry.get("name") or "Custom", base)
 
         return sources
 
@@ -3671,12 +3532,13 @@ class AccountManagerUI:
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
         launch_delay = self._get_multi_launch_delay()
+        custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
 
         def worker(selected_usernames, delay_seconds):
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
-                    if self.manager.launch_home_app(uname, enable_debug=debug_enabled):
+                    if self.manager.launch_home_app(uname, version=custom_player_path or None, enable_debug=debug_enabled):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch Roblox home for {uname}: {e}")
@@ -3728,6 +3590,10 @@ class AccountManagerUI:
 
         selected_version_label = self.version_var.get()
         version_path = self.version_options.get(selected_version_label)
+        if not version_path:
+            custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
+            if custom_player_path:
+                version_path = custom_player_path
 
         if not game_id:
             messagebox.showwarning("Missing Information", "Please enter a Place ID.")
@@ -3894,6 +3760,7 @@ class AccountManagerUI:
         custom_launcher_path_var = tk.StringVar(value=self.settings.get("custom_launcher_path", ""))
         custom_launcher_player_var = tk.BooleanVar(value=self.settings.get("custom_launcher_requires_player", False))
         auto_arrange_scope_var = tk.StringVar(value=self.settings.get("auto_arrange_scope", "both"))
+        custom_roblox_player_path_var = tk.StringVar(value=self.settings.get("custom_roblox_player_path", ""))
         
         checkbox_style = ttk.Style()
         checkbox_style.configure(
@@ -3991,8 +3858,7 @@ class AccountManagerUI:
         
         content_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         content_frame.pack(fill="both", expand=True)
-        content_frame.grid_rowconfigure(0, weight=1)
-        content_frame.grid_columnconfigure(0, weight=1)
+        content_frame.grid_rowconfigure(0, weight=1)  
         
         ram_tab = ttk.Frame(content_frame, style="Dark.TFrame")
         ram_tab.grid(row=0, column=0, sticky="nsew")
@@ -4114,109 +3980,66 @@ class AccountManagerUI:
 
         ttk.Label(
             ram_tab,
-            text="Custom Version Folders",
+            text="Custom RobloxPlayer",
             style="Dark.TLabel",
             font=("Segoe UI", 10, "bold")
         ).pack(anchor="w", pady=(12, 2))
 
-        
+        custom_player_frame = ttk.Frame(ram_tab, style="Dark.TFrame")
+        custom_player_frame.pack(fill="x", pady=(0, 6))
+        custom_player_frame.columnconfigure(0, weight=1)
 
-        custom_versions_frame = ttk.Frame(ram_tab, style="Dark.TFrame")
-        custom_versions_frame.pack(fill="both", expand=True, pady=(0, 6))
-        custom_versions_frame.columnconfigure(0, weight=1)
+        custom_player_entry = ttk.Entry(custom_player_frame, style="Dark.TEntry", textvariable=custom_roblox_player_path_var)
+        custom_player_entry.grid(row=0, column=0, sticky="ew")
 
-        listbox_frame = ttk.Frame(custom_versions_frame, style="Dark.TFrame")
-        listbox_frame.grid(row=0, column=0, sticky="nsew")
-        listbox_frame.columnconfigure(0, weight=1)
+        def save_custom_player_path(value):
+            if value is None:
+                return
+            value = (value or "").strip()
+            self.settings["custom_roblox_player_path"] = value
+            custom_roblox_player_path_var.set(value)
+            self.save_settings()
 
-        custom_sources_list = tk.Listbox(
-            listbox_frame,
-            bg=self.BG_MID,
-            fg=self.FG_TEXT,
-            selectbackground=self.FG_ACCENT,
-            highlightthickness=0,
-            border=0,
-            height=6
-        )
-        custom_sources_list.grid(row=0, column=0, sticky="nsew")
-
-        custom_scroll = ttk.Scrollbar(listbox_frame, command=custom_sources_list.yview)
-        custom_scroll.grid(row=0, column=1, sticky="ns")
-        custom_sources_list.config(yscrollcommand=custom_scroll.set)
-
-        button_row = ttk.Frame(custom_versions_frame, style="Dark.TFrame")
-        button_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-        button_row.columnconfigure(0, weight=1)
-        button_row.columnconfigure(1, weight=1)
-
-        def refresh_custom_sources_list():
-            custom_sources_list.delete(0, tk.END)
-            for entry in self.settings.get("custom_version_sources", []):
-                name = entry.get("name") or "Custom"
-                base = entry.get("base") or ""
-                custom_sources_list.insert(tk.END, f"{name} — {base}")
-
-        def add_custom_version_folder():
-            path = filedialog.askdirectory(
+        def browse_custom_player_path():
+            path = filedialog.askopenfilename(
                 parent=settings_window,
-                title="Select Versions Folder"
+                title="Select RobloxPlayer executable",
+                filetypes=[("Executable", "*.exe"), ("All Files", "*.*")]
             )
             if not path:
                 return
             path = os.path.normpath(path)
-            if not os.path.isdir(path):
-                messagebox.showerror("Custom Versions", "Selected path is not a folder.")
+            if not os.path.isfile(path):
+                messagebox.showerror("Custom RobloxPlayer", "Selected path is not a file.")
                 return
-            name_default = os.path.basename(path.rstrip(r"\\/")) or "Custom"
-            name = simpledialog.askstring(
-                "Custom Versions",
-                "Display name for this folder:",
-                parent=settings_window,
-                initialvalue=name_default
-            )
-            if name is None:
+            exe_name = os.path.basename(path).lower()
+            if exe_name not in self.ROBLOX_CLIENT_EXECUTABLES:
+                messagebox.showerror(
+                    "Custom RobloxPlayer",
+                    "Please select RobloxPlayerBeta.exe or RobloxPlayerLauncher.exe."
+                )
                 return
-            name = name.strip() or name_default
-            sources = self.settings.get("custom_version_sources", [])
-            normalized_existing = {os.path.normcase(os.path.normpath(entry.get("base", ""))) for entry in sources}
-            normalized_path = os.path.normcase(path)
-            if normalized_path in normalized_existing:
-                messagebox.showinfo("Custom Versions", "That folder is already listed.")
-                return
-            sources.append({"name": name, "base": path})
-            self.settings["custom_version_sources"] = sources
-            self.save_settings()
-            refresh_custom_sources_list()
-            self.load_roblox_versions()
+            save_custom_player_path(path)
 
-        def remove_custom_version_folder():
-            selection = custom_sources_list.curselection()
-            if not selection:
-                return
-            index = selection[0]
-            sources = self.settings.get("custom_version_sources", [])
-            if 0 <= index < len(sources):
-                del sources[index]
-                self.settings["custom_version_sources"] = sources
-                self.save_settings()
-                refresh_custom_sources_list()
-                self.load_roblox_versions()
+        def clear_custom_player_path():
+            save_custom_player_path("")
 
         ttk.Button(
-            button_row,
-            text="Add Folder",
+            custom_player_frame,
+            text="Browse",
             style="Dark.TButton",
-            command=add_custom_version_folder
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+            command=browse_custom_player_path
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         ttk.Button(
-            button_row,
-            text="Remove Selected",
+            custom_player_frame,
+            text="Clear",
             style="Dark.TButton",
-            command=remove_custom_version_folder
-        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+            command=clear_custom_player_path
+        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
 
-        refresh_custom_sources_list()
+        custom_player_entry.bind("<FocusOut>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
+        custom_player_entry.bind("<Return>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
 
         roblox_tab = ttk.Frame(content_frame, style="Dark.TFrame")
         roblox_tab.grid(row=0, column=0, sticky="nsew")
