@@ -21,6 +21,7 @@ dist/
 saved_accounts.json
 AccountManagerData/
 build_exe.bat
+icon.ico
 
 # IDE and editor files
 .vscode/
