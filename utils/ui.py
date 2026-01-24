@@ -629,8 +629,8 @@ class AccountManagerUI:
         
         
         main_frame.grid_rowconfigure(0, weight=1)
-        main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_columnconfigure(1, weight=2)  
+        main_frame.grid_columnconfigure(0, weight=3)
+        main_frame.grid_columnconfigure(1, weight=1)
 
         left_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
