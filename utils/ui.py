@@ -684,7 +684,7 @@ class AccountManagerUI:
         list_frame = ttk.Frame(left_frame, style="Dark.TFrame")
         list_frame.pack(fill="both", expand=True, pady=(5, 0))
 
-        selectmode = tk.SINGLE
+        selectmode = tk.EXTENDED if self.settings.get("enable_multi_select", False) else tk.SINGLE
         
         self.account_list = tk.Listbox(
             list_frame,
@@ -3148,87 +3148,7 @@ class AccountManagerUI:
             style="Dark.TButton",
             command=website_window.destroy
         ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-    
-    def javascript_import_code(self, amount, website):
-        """
-        Get Javascript code to execute and launch Chrome instances
-        """
-        js_window = tk.Toplevel(self.root)
-        js_window.title("Javascript Import - Code")
-        js_window.geometry("500x300")
-        js_window.configure(bg=self.BG_DARK)
-        js_window.resizable(False, False)
-        
-        self.root.update_idletasks()
-        main_x = self.root.winfo_x()
-        main_y = self.root.winfo_y()
-        main_width = self.root.winfo_width()
-        main_height = self.root.winfo_height()
-        
-        x = main_x + (main_width - 500) // 2
-        y = main_y + (main_height - 300) // 2
-        js_window.geometry(f"500x300+{x}+{y}")
-        
-        if self.settings.get("enable_topmost", False):
-            js_window.attributes("-topmost", True)
-        
-        js_window.transient(self.root)
-        self.register_toplevel(js_window)
-        
-        main_frame = ttk.Frame(js_window, style="Dark.TFrame")
-        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        ttk.Label(
-            main_frame,
-            text="Javascript:",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(0, 10))
-        
-        js_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        js_frame.pack(fill="both", expand=True, pady=(0, 15))
-        
-        js_text = tk.Text(
-            js_frame,
-            bg=self.BG_MID,
-            fg=self.FG_TEXT,
-            font=("Consolas", 9),
-            height=10,
-            wrap="word"
-        )
-        js_text.pack(side="left", fill="both", expand=True)
-        self.register_themable_text_widget(js_text)
-        
-        js_scrollbar = ttk.Scrollbar(js_frame, command=js_text.yview)
-        js_scrollbar.pack(side="right", fill="y")
-        js_text.config(yscrollcommand=js_scrollbar.set)
-        js_text.focus_set()
-        
-        def execute_javascript():
-            javascript = js_text.get("1.0", "end-1c").strip()
-            if not javascript:
-                messagebox.showwarning("Missing Information", "Please enter Javascript code.")
-                return
-            js_window.destroy()
-            self.launch_javascript_browsers(amount, website, javascript)
-        
-        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        button_frame.pack(fill="x")
-        
-        ttk.Button(
-            button_frame,
-            text="Yes",
-            style="Dark.TButton",
-            command=execute_javascript
-        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
-        
-        ttk.Button(
-            button_frame,
-            text="Cancel",
-            style="Dark.TButton",
-            command=js_window.destroy
-        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-    
+
     def launch_javascript_browsers(self, amount, website, javascript):
         """
         Launch account addition with Javascript execution
@@ -3541,14 +3461,53 @@ class AccountManagerUI:
 
     def validate_account(self):
         """Validate the selected account"""
-        username = self.get_selected_username()
-        if not username:
-            return
-        is_valid = self.manager.validate_account(username)
-        if is_valid:
-            messagebox.showinfo("Validation", f"Account '{username}' is valid!")
+        if self.settings.get("enable_multi_select", False):
+            usernames = self.get_selected_usernames()
+            if not usernames:
+                return
         else:
-            messagebox.showwarning("Validation", f"Account '{username}' is invalid or expired.")
+            username = self.get_selected_username()
+            if not username:
+                return
+            usernames = [username]
+
+        valid_usernames = []
+        invalid_usernames = []
+
+        for username in usernames:
+            try:
+                is_valid = self.manager.validate_account(username)
+            except Exception:
+                is_valid = False
+            if is_valid:
+                valid_usernames.append(username)
+            else:
+                invalid_usernames.append(username)
+
+        if len(usernames) == 1:
+            if valid_usernames:
+                messagebox.showinfo("Validation", f"Account '{usernames[0]}' is valid!")
+            else:
+                messagebox.showwarning("Validation", f"Account '{usernames[0]}' is invalid or expired.")
+            return
+
+        lines = [
+            f"Validated {len(usernames)} account(s).",
+            "",
+            f"Valid: {len(valid_usernames)}",
+            f"Invalid/Expired: {len(invalid_usernames)}",
+        ]
+
+        if valid_usernames:
+            lines.extend(["", "Valid accounts:", *valid_usernames])
+        if invalid_usernames:
+            lines.extend(["", "Invalid/Expired accounts:", *invalid_usernames])
+
+        message = "\n".join(lines)
+        if invalid_usernames:
+            messagebox.showwarning("Validation", message)
+        else:
+            messagebox.showinfo("Validation", message)
     
     def edit_account_note(self):
         """Edit note for the selected account(s)"""
