@@ -2126,6 +2126,8 @@ class AccountManagerUI:
     def _download_update_and_apply(self, release):
         def worker():
             downloaded_path = None
+            progress_state = {"window": None, "status_var": None, "progress_var": None, "progress_bar": None}
+            progress_ready = threading.Event()
 
             try:
                 assets = release.get("assets") or []
@@ -2155,25 +2157,162 @@ class AccountManagerUI:
                 fd, downloaded_path = tempfile.mkstemp(prefix="fram_update_", suffix=".exe", dir=self.data_folder)
                 os.close(fd)
 
-                self.root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "Updating",
-                        "Downloading update... The app will restart when finished.",
-                        parent=self.root,
-                    ),
-                )
+                def open_progress():
+                    try:
+                        window = tk.Toplevel(self.root)
+                        window.withdraw()
+                        window.title("Updating")
+                        window.configure(bg=self.BG_DARK)
+                        window.resizable(False, False)
+                        window.transient(self.root)
+                        try:
+                            window.grab_set()
+                        except Exception:
+                            pass
+                        self.register_toplevel(window)
+
+                        WIDTH, HEIGHT = 420, 150
+                        self._center_window(window, WIDTH, HEIGHT)
+
+                        main_frame = ttk.Frame(window, style="Dark.TFrame")
+                        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+                        status_var = tk.StringVar(value="Starting download...")
+                        progress_var = tk.DoubleVar(value=0.0)
+
+                        ttk.Label(
+                            main_frame,
+                            textvariable=status_var,
+                            style="Dark.TLabel",
+                            wraplength=WIDTH - 60,
+                        ).pack(anchor="w", fill="x")
+
+                        progress_bar = ttk.Progressbar(
+                            main_frame,
+                            maximum=100,
+                            variable=progress_var,
+                            mode="determinate",
+                        )
+                        progress_bar.pack(fill="x", pady=(12, 0))
+
+                        window.protocol("WM_DELETE_WINDOW", lambda: None)
+
+                        if self.settings.get("enable_topmost", False):
+                            try:
+                                window.attributes("-topmost", True)
+                            except Exception:
+                                pass
+
+                        window.deiconify()
+                        try:
+                            window.lift()
+                        except Exception:
+                            pass
+
+                        progress_state["window"] = window
+                        progress_state["status_var"] = status_var
+                        progress_state["progress_var"] = progress_var
+                        progress_state["progress_bar"] = progress_bar
+                    finally:
+                        progress_ready.set()
+
+                def ui_update(message=None, percent=None, indeterminate=None):
+                    def apply():
+                        window = progress_state.get("window")
+                        if window is None:
+                            return
+                        try:
+                            if not window.winfo_exists():
+                                return
+                        except Exception:
+                            return
+
+                        if message is not None:
+                            try:
+                                progress_state["status_var"].set(message)
+                            except Exception:
+                                pass
+
+                        bar = progress_state.get("progress_bar")
+                        if indeterminate is not None and bar is not None:
+                            try:
+                                if indeterminate:
+                                    bar.configure(mode="indeterminate")
+                                    bar.start(12)
+                                else:
+                                    bar.stop()
+                                    bar.configure(mode="determinate")
+                            except Exception:
+                                pass
+
+                        if percent is not None:
+                            try:
+                                progress_state["progress_var"].set(max(0.0, min(100.0, float(percent))))
+                            except Exception:
+                                pass
+
+                    try:
+                        self.root.after(0, apply)
+                    except Exception:
+                        pass
+
+                def ui_close():
+                    def apply():
+                        window = progress_state.get("window")
+                        if window is None:
+                            return
+                        try:
+                            if window.winfo_exists():
+                                window.destroy()
+                        except Exception:
+                            pass
+
+                    try:
+                        self.root.after(0, apply)
+                    except Exception:
+                        pass
+
+                self.root.after(0, open_progress)
+                progress_ready.wait(2.0)
 
                 headers = {"User-Agent": "FRAM"}
                 hasher = hashlib.sha256()
                 with requests.get(download_url, headers=headers, stream=True, timeout=60) as resp:
                     resp.raise_for_status()
+                    total_bytes = None
+                    try:
+                        total_bytes = int(resp.headers.get("Content-Length") or "")
+                    except Exception:
+                        total_bytes = None
+
+                    if not total_bytes:
+                        ui_update(indeterminate=True)
+
+                    downloaded_bytes = 0
+                    last_ui_update = 0.0
                     with open(downloaded_path, "wb") as fp:
                         for chunk in resp.iter_content(chunk_size=1024 * 256):
                             if not chunk:
                                 continue
                             fp.write(chunk)
                             hasher.update(chunk)
+
+                            downloaded_bytes += len(chunk)
+                            now = time.time()
+                            if (now - last_ui_update) >= 0.15:
+                                last_ui_update = now
+                                if total_bytes and total_bytes > 0:
+                                    percent = (downloaded_bytes / total_bytes) * 100.0
+                                    status = (
+                                        f"Downloading update... {downloaded_bytes / (1024 * 1024):.1f} / "
+                                        f"{total_bytes / (1024 * 1024):.1f} MB"
+                                    )
+                                    ui_update(message=status, percent=percent, indeterminate=False)
+                                else:
+                                    status = f"Downloading update... {downloaded_bytes / (1024 * 1024):.1f} MB"
+                                    ui_update(message=status)
+
+                ui_update(message="Applying update...", percent=100.0, indeterminate=True)
 
                 if expected_sha256:
                     actual = hasher.hexdigest().lower()
@@ -2205,8 +2344,10 @@ class AccountManagerUI:
                 ]
 
                 subprocess.Popen(args, close_fds=True)
+                ui_close()
                 self.root.after(0, self.root.destroy)
             except Exception as exc:
+                ui_close()
                 if downloaded_path:
                     try:
                         os.remove(downloaded_path)
