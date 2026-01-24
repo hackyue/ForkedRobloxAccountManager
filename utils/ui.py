@@ -554,7 +554,7 @@ class AccountManagerUI:
     def __init__(self, root, manager):
         self.root = root
         self.manager = manager
-        self.APP_VERSION = "2.3.8"
+        self.APP_VERSION = "2.3.9"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -572,7 +572,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.3.8 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.3.9 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -3671,13 +3671,19 @@ class AccountManagerUI:
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
         launch_delay = self._get_multi_launch_delay()
-        custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
+
+        selected_version_label = self.version_var.get()
+        version_path = self.version_options.get(selected_version_label)
+        if not version_path:
+            custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
+            if custom_player_path:
+                version_path = custom_player_path
 
         def worker(selected_usernames, delay_seconds):
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
-                    if self.manager.launch_home_app(uname, version=custom_player_path or None, enable_debug=debug_enabled):
+                    if self.manager.launch_home_app(uname, version=version_path or None, enable_debug=debug_enabled):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch Roblox home for {uname}: {e}")
