@@ -3942,7 +3942,7 @@ class AccountManagerUI:
                 self.disable_multi_roblox()
                 self.settings["enable_multi_roblox"] = False
             self.save_settings()
-        
+
         def on_multi_select_toggle():
             self.settings["enable_multi_select"] = multi_select_var.get()
             if multi_select_var.get():
@@ -3950,19 +3950,19 @@ class AccountManagerUI:
             else:
                 self.account_list.config(selectmode=tk.SINGLE)
             self.save_settings()
-        
-        tab_var = tk.StringVar(value="ram")
+
+        tab_var = tk.StringVar(value="general")
         tab_buttons = {}
-        
+        tabs = {}
+
         tab_bar = tk.Frame(main_frame, bg=self.BG_DARK)
         tab_bar.pack(fill="x", pady=(0, 8))
-        
+
         def set_active_tab(tab_name):
             tab_var.set(tab_name)
-            if tab_name == "ram":
-                ram_tab.tkraise()
-            else:
-                roblox_tab.tkraise()
+            tab = tabs.get(tab_name)
+            if tab is not None:
+                tab.tkraise()
             for name, btn in tab_buttons.items():
                 if name == tab_name:
                     btn.configure(
@@ -3985,7 +3985,7 @@ class AccountManagerUI:
                 text=label,
                 relief="flat",
                 borderwidth=0,
-                padx=14,
+                padx=12,
                 pady=3,
                 font=("Segoe UI", 10, "bold"),
                 cursor="hand2",
@@ -3997,57 +3997,67 @@ class AccountManagerUI:
             btn.pack(side="left", padx=(0, 8))
             btn.configure(command=lambda n=tab_name: set_active_tab(n))
             tab_buttons[tab_name] = btn
-        
-        create_tab_button("FRAM Settings", "ram")
-        create_tab_button("Roblox Client", "roblox")
-        
+
         content_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         content_frame.pack(fill="both", expand=True)
-        content_frame.grid_rowconfigure(0, weight=1)  
-        
-        ram_tab = ttk.Frame(content_frame, style="Dark.TFrame")
-        ram_tab.grid(row=0, column=0, sticky="nsew")
+        content_frame.grid_rowconfigure(0, weight=1)
+
+        def create_tab_frame(tab_name):
+            frame = ttk.Frame(content_frame, style="Dark.TFrame")
+            frame.grid(row=0, column=0, sticky="nsew")
+            tabs[tab_name] = frame
+            return frame
+
+        create_tab_button("General", "general")
+        create_tab_button("Roblox", "roblox")
+        create_tab_button("Automation", "automation")
+        create_tab_button("Advanced", "advanced")
+
+        general_tab = create_tab_frame("general")
+        roblox_tab = create_tab_frame("roblox")
+        automation_tab = create_tab_frame("automation")
+        advanced_tab = create_tab_frame("advanced")
 
         ttk.Label(
-            ram_tab,
+            general_tab,
             text="Interface & Notifications",
             style="Dark.TLabel",
             font=("Segoe UI", 11, "bold")
         ).pack(anchor="w", pady=(0, 6))
-        
+
         ttk.Checkbutton(
-            ram_tab,
+            general_tab,
             text="Enable Topmost",
             variable=topmost_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("enable_topmost", topmost_var)
         ).pack(anchor="w", pady=2)
-        
+
         ttk.Checkbutton(
-            ram_tab,
+            general_tab,
             text="Multi Select (Ctrl + Click)",
             variable=multi_select_var,
             style="Dark.TCheckbutton",
             command=on_multi_select_toggle
         ).pack(anchor="w", pady=2)
-        
+
         ttk.Checkbutton(
-            ram_tab,
-            text="Enable Debug Logging",
-            variable=debug_var,
-            style="Dark.TCheckbutton",
-            command=auto_save_setting("enable_debug_logging", debug_var)
-        ).pack(anchor="w", pady=2)
-        ttk.Checkbutton(
-            ram_tab,
+            general_tab,
             text="Disable Success Popups",
             variable=disable_success_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("disable_success_popups", disable_success_var)
         ).pack(anchor="w", pady=2)
 
+        ttk.Label(
+            general_tab,
+            text="Updates",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(10, 6))
+
         ttk.Checkbutton(
-            ram_tab,
+            general_tab,
             text="Enable Auto Updates",
             variable=auto_update_var,
             style="Dark.TCheckbutton",
@@ -4055,14 +4065,14 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Label(
-            ram_tab,
+            general_tab,
             text="Theme",
             style="Dark.TLabel",
             font=("Segoe UI", 10, "bold")
         ).pack(anchor="w", pady=(10, 2))
 
         theme_combo = ttk.Combobox(
-            ram_tab,
+            general_tab,
             values=list(THEMES.keys()),
             textvariable=theme_var,
             state="readonly",
@@ -4081,7 +4091,7 @@ class AccountManagerUI:
         theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
 
         ttk.Label(
-            ram_tab,
+            general_tab,
             text="Auto-Arrange applies to",
             style="Dark.TLabel",
             font=("Segoe UI", 10, "bold")
@@ -4097,7 +4107,7 @@ class AccountManagerUI:
             selected_label = scope_display_map.get(auto_arrange_scope_var.get(), scope_display_map["both"])
 
             scope_combo = ttk.Combobox(
-                ram_tab,
+                general_tab,
                 values=list(scope_display_map.values()),
                 state="readonly",
                 style="Dark.TCombobox"
@@ -4117,20 +4127,91 @@ class AccountManagerUI:
             self.settings["auto_arrange_scope"] = "primary"
             auto_arrange_scope_var.set("primary")
             ttk.Label(
-                ram_tab,
+                general_tab,
                 text="Only one monitor detected. Auto-arrange will use the available screen.",
                 style="Dark.TLabel",
                 wraplength=320
             ).pack(anchor="w", pady=(0, 4))
 
         ttk.Label(
-            ram_tab,
+            roblox_tab,
+            text="Roblox Client",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        ttk.Checkbutton(
+            roblox_tab,
+            text="Confirm Before Launch",
+            variable=confirm_launch_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("confirm_before_launch", confirm_launch_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            roblox_tab,
+            text="Enable Multi Roblox",
+            variable=multi_roblox_var,
+            style="Dark.TCheckbutton",
+            command=on_multi_roblox_toggle
+        ).pack(anchor="w", pady=2)
+
+        ttk.Label(roblox_tab, text="", style="Dark.TLabel").pack(pady=5)
+
+        custom_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
+        custom_frame.pack(fill="x", pady=(0, 6))
+
+        ttk.Label(
+            custom_frame,
+            text="Launch Delay (seconds)",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(0, 2))
+
+        delay_var = tk.DoubleVar(value=self._get_multi_launch_delay())
+
+        def on_delay_var_change(*_):
+            try:
+                value = float(delay_var.get())
+            except (tk.TclError, ValueError):
+                return
+            clamped = clamp_multi_launch_delay(value)
+            if not math.isclose(value, clamped):
+                delay_var.set(clamped)
+                return
+            if not math.isclose(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS), clamped):
+                self.settings["multi_launch_delay"] = clamped
+                self.save_settings()
+
+        vcmd = (self.root.register(lambda text: text == "" or re.match(r"^\d*\.?\d*$", text) is not None), "%P")
+
+        delay_spin = ttk.Spinbox(
+            custom_frame,
+            from_=MIN_LAUNCH_DELAY_SECONDS,
+            to=MAX_LAUNCH_DELAY_SECONDS,
+            increment=0.5,
+            textvariable=delay_var,
+            format="%.1f",
+            width=8,
+            validate="key",
+            validatecommand=vcmd,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_delay_var_change
+        )
+        delay_spin.pack(anchor="w")
+        delay_spin.bind("<FocusOut>", lambda _: on_delay_var_change())
+        delay_spin.bind("<Return>", lambda _: on_delay_var_change())
+        delay_var.trace_add("write", on_delay_var_change)
+
+        ttk.Label(
+            roblox_tab,
             text="Custom RobloxPlayer",
             style="Dark.TLabel",
             font=("Segoe UI", 10, "bold")
         ).pack(anchor="w", pady=(12, 2))
 
-        custom_player_frame = ttk.Frame(ram_tab, style="Dark.TFrame")
+        custom_player_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
         custom_player_frame.pack(fill="x", pady=(0, 6))
         custom_player_frame.columnconfigure(0, weight=1)
 
@@ -4186,84 +4267,10 @@ class AccountManagerUI:
         custom_player_entry.bind("<FocusOut>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
         custom_player_entry.bind("<Return>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
 
-        roblox_tab = ttk.Frame(content_frame, style="Dark.TFrame")
-        roblox_tab.grid(row=0, column=0, sticky="nsew")
-
-        ttk.Label(
-            roblox_tab,
-            text="Roblox Client",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(0, 6))
-
-        ttk.Checkbutton(
-            roblox_tab,
-            text="Confirm Before Launch",
-            variable=confirm_launch_var,
-            style="Dark.TCheckbutton",
-            command=auto_save_setting("confirm_before_launch", confirm_launch_var)
-        ).pack(anchor="w", pady=2)
-
-        ttk.Checkbutton(
-            roblox_tab,
-            text="Enable Multi Roblox",
-            variable=multi_roblox_var,
-            style="Dark.TCheckbutton",
-            command=on_multi_roblox_toggle
-        ).pack(anchor="w", pady=2)
-        
-        ttk.Label(roblox_tab, text="", style="Dark.TLabel").pack(pady=5)
-        
-        custom_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
-        custom_frame.pack(fill="x", pady=(0, 6))
-
-        ttk.Label(
-            custom_frame,
-            text="Launch Delay (seconds)",
-            style="Dark.TLabel",
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(0, 2))
-
-        delay_var = tk.DoubleVar(value=self._get_multi_launch_delay())
-
-        def on_delay_var_change(*_):
-            try:
-                value = float(delay_var.get())
-            except (tk.TclError, ValueError):
-                return
-            clamped = clamp_multi_launch_delay(value)
-            if not math.isclose(value, clamped):
-                delay_var.set(clamped)
-                return
-            if not math.isclose(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS), clamped):
-                self.settings["multi_launch_delay"] = clamped
-                self.save_settings()
-
-        vcmd = (self.root.register(lambda text: text == "" or re.match(r"^\d*\.?\d*$", text) is not None), "%P")
-
-        delay_spin = ttk.Spinbox(
-            custom_frame,
-            from_=MIN_LAUNCH_DELAY_SECONDS,
-            to=MAX_LAUNCH_DELAY_SECONDS,
-            increment=0.5,
-            textvariable=delay_var,
-            format="%.1f",
-            width=8,
-            validate="key",
-            validatecommand=vcmd,
-            style="Dark.TSpinbox",
-            justify="center",
-            command=on_delay_var_change
-        )
-        delay_spin.pack(anchor="w")
-        delay_spin.bind("<FocusOut>", lambda _: on_delay_var_change())
-        delay_spin.bind("<Return>", lambda _: on_delay_var_change())
-        delay_var.trace_add("write", on_delay_var_change)
-
         auto_relaunch_enabled_var = tk.BooleanVar(value=self.settings.get("auto_relaunch_enabled", False))
         auto_relaunch_interval_var = tk.IntVar(value=self.settings.get("auto_relaunch_interval_minutes", 60))
         auto_relaunch_group_var = tk.StringVar(value=self.settings.get("auto_relaunch_group", ""))
-        
+
         def on_auto_relaunch_update(*_):
             try:
                 interval = int(auto_relaunch_interval_var.get())
@@ -4283,23 +4290,23 @@ class AccountManagerUI:
                 self._auto_relaunch_start()
             else:
                 self._auto_relaunch_stop()
-        
+
         ttk.Label(
-            roblox_tab,
-            text="Auto Relaunch Group",
+            automation_tab,
+            text="Auto Relaunch",
             style="Dark.TLabel",
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(12, 2))
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 6))
 
         ttk.Checkbutton(
-            roblox_tab,
+            automation_tab,
             text="Enable Auto Relaunch",
             variable=auto_relaunch_enabled_var,
             style="Dark.TCheckbutton",
             command=on_auto_relaunch_update
         ).pack(anchor="w", pady=2)
 
-        interval_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
+        interval_frame = ttk.Frame(automation_tab, style="Dark.TFrame")
         interval_frame.pack(fill="x", pady=(4, 0))
 
         ttk.Label(interval_frame, text="Interval (minutes)", style="Dark.TLabel").pack(side="left")
@@ -4323,7 +4330,7 @@ class AccountManagerUI:
         if auto_relaunch_group_var.get() not in groups:
             auto_relaunch_group_var.set("")
 
-        group_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
+        group_frame = ttk.Frame(automation_tab, style="Dark.TFrame")
         group_frame.pack(fill="x", pady=(6, 0))
         ttk.Label(group_frame, text="Group", style="Dark.TLabel").pack(side="left")
 
@@ -4339,11 +4346,28 @@ class AccountManagerUI:
         auto_relaunch_group_combo.bind("<<ComboboxSelected>>", lambda _=None: on_auto_relaunch_update())
 
         ttk.Button(
-            roblox_tab,
+            automation_tab,
             text="Run Auto Relaunch Now",
             style="Dark.TButton",
             command=self._auto_relaunch_run_once
         ).pack(fill="x", pady=(10, 0))
+
+        ttk.Label(
+            advanced_tab,
+            text="Logging",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        ttk.Checkbutton(
+            advanced_tab,
+            text="Enable Debug Logging",
+            variable=debug_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("enable_debug_logging", debug_var)
+        ).pack(anchor="w", pady=2)
+
+        set_active_tab("general")
 
         settings_window.update_idletasks()
         padding_w = 40
