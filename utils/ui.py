@@ -1129,6 +1129,34 @@ class AccountManagerUI:
             foreground=[("readonly", self.ENTRY_FG)]
         )
 
+        self.style.configure(
+            "Dark.Treeview",
+            background=self.LIST_BG,
+            fieldbackground=self.LIST_BG,
+            foreground=self.FG_TEXT,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.BORDER_COLOR,
+            darkcolor=self.BORDER_COLOR,
+        )
+        self.style.map(
+            "Dark.Treeview",
+            background=[("selected", self.FG_ACCENT)],
+            foreground=[("selected", self.FG_TEXT)],
+        )
+        self.style.configure(
+            "Dark.Treeview.Heading",
+            background=self.BG_LIGHT,
+            foreground=self.FG_TEXT,
+            bordercolor=self.BORDER_COLOR,
+            relief="flat",
+            font=self.FONT,
+        )
+        self.style.map(
+            "Dark.Treeview.Heading",
+            background=[("active", self.HOVER_BG)],
+            foreground=[("active", self.FG_TEXT)],
+        )
+
         if getattr(self, "status_label", None):
             self.status_label.configure(bg=self.BG_DARK)
 
@@ -4573,215 +4601,279 @@ class AccountManagerUI:
         settings_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         settings_frame.pack(fill="both", expand=True, pady=(0, 10))
 
-        # Create scrollable frame for settings
-        settings_canvas = tk.Canvas(settings_frame, bg=self.BG_MID, highlightthickness=0)
-        settings_scrollbar = ttk.Scrollbar(settings_frame, orient="vertical", command=settings_canvas.yview)
-        scrollable_settings_frame = ttk.Frame(settings_canvas, style="Dark.TFrame")
+        list_frame = ttk.Frame(settings_frame, style="Dark.TFrame")
+        list_frame.pack(side="left", fill="both", expand=False)
 
-        scrollable_settings_frame.bind(
-            "<Configure>",
-            lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+        detail_frame = ttk.Frame(settings_frame, style="Dark.TFrame")
+        detail_frame.pack(side="right", fill="both", expand=True, padx=(12, 0))
+
+        self.global_settings_values = {}
+        self.global_settings_xml_names = {}
+        self.global_settings_meta = {}
+
+        selected_setting_var = tk.StringVar(value="")
+        editor_value_str = tk.StringVar(value="")
+        editor_value_bool = tk.BooleanVar(value=False)
+
+        xml_tree = None
+        xml_root = None
+
+        settings_def = []
+
+        search_var = tk.StringVar(value="")
+        search_frame = ttk.Frame(list_frame, style="Dark.TFrame")
+        search_frame.pack(fill="x", pady=(0, 6))
+        ttk.Entry(search_frame, textvariable=search_var, style="Dark.TEntry").pack(fill="x")
+
+        tree = ttk.Treeview(
+            list_frame,
+            columns=("setting", "value"),
+            show="headings",
+            height=18,
+            selectmode="browse",
+            style="Dark.Treeview",
         )
+        tree.heading("setting", text="Setting")
+        tree.heading("value", text="Value")
+        tree.column("setting", width=170, anchor="w")
+        tree.column("value", width=90, anchor="w")
+        tree.pack(side="left", fill="both", expand=True)
 
-        settings_canvas.create_window((0, 0), window=scrollable_settings_frame, anchor="nw")
-        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        list_scroll.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=list_scroll.set)
 
-        settings_canvas.pack(side="left", fill="both", expand=True)
-        settings_scrollbar.pack(side="right", fill="y")
+        detail_title = ttk.Label(detail_frame, text="", style="Dark.TLabel", font=("Segoe UI", 11, "bold"))
+        detail_title.pack(anchor="w")
 
-        # Global settings variables
-        self.global_settings_vars = {}
-        self.global_settings_entries = {}
+        detail_desc = ttk.Label(
+            detail_frame,
+            text="",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888",
+            wraplength=260
+        )
+        detail_desc.pack(anchor="w", pady=(2, 10))
+
+        editor_container = ttk.Frame(detail_frame, style="Dark.TFrame")
+        editor_container.pack(fill="x")
+
+        editor_entry = ttk.Entry(editor_container, textvariable=editor_value_str, style="Dark.TEntry")
+        editor_combo = ttk.Combobox(editor_container, textvariable=editor_value_str, state="readonly", style="Dark.TCombobox")
+        editor_check = ttk.Checkbutton(editor_container, text="Enabled", variable=editor_value_bool, style="Dark.TCheckbutton")
+
+        def set_editor_mode(mode: str, options=None):
+            for w in (editor_entry, editor_combo, editor_check):
+                w.pack_forget()
+
+            if mode == "bool":
+                editor_check.pack(anchor="w")
+            elif mode == "choice":
+                editor_combo.configure(values=options or [])
+                editor_combo.pack(fill="x")
+            else:
+                editor_entry.pack(fill="x")
+
+        def get_properties_node(root_elem, xml_name: str):
+            properties = root_elem.find(".//Properties")
+            if properties is None:
+                return None
+            return properties.find(f".//*[@name='{xml_name}']")
+
+        def read_value_from_xml(root_elem, item_meta):
+            xml_name = item_meta["xml"]
+            prop = get_properties_node(root_elem, xml_name)
+            if prop is not None and prop.text is not None:
+                return prop.text.strip()
+
+            fallback_setting = root_elem.find(f".//Setting[@name='{xml_name}']")
+            if fallback_setting is not None:
+                return (fallback_setting.get("value") or "").strip()
+
+            if item_meta["type"] == "bool":
+                return "false"
+            if item_meta["type"] in ("int", "token", "int64"):
+                return "0"
+            return ""
+
+        def refresh_tree_values():
+            query = (search_var.get() or "").strip().lower()
+            for row in tree.get_children():
+                tree.delete(row)
+
+            for item in settings_def:
+                key = item["key"]
+                if query and query not in key.lower():
+                    continue
+                value = self.global_settings_values.get(key, "")
+                tree.insert("", "end", iid=key, values=(key, value))
+
+            sel = tree.selection()
+            if not sel:
+                children = tree.get_children()
+                if children:
+                    tree.selection_set(children[0])
+                    tree.focus(children[0])
+                    on_select_setting()
 
         # Parse and load settings
         def load_global_settings():
+            nonlocal xml_tree, xml_root
             try:
-                # Make file writable for editing
                 if os.path.exists(global_settings_path):
                     try:
                         import stat
                         os.chmod(global_settings_path, stat.S_IWRITE | stat.S_IREAD)
-                    except Exception as e:
-                        print(f"Warning: Could not make file writable: {e}")
-                
-                # Clear existing settings
-                for widget in scrollable_settings_frame.winfo_children():
-                    widget.destroy()
-                self.global_settings_vars.clear()
-                self.global_settings_entries.clear()
+                    except Exception:
+                        pass
 
-                # Default settings structure - simplified to only essential settings
-                default_settings = {
-                    "GraphicsQualityLevel": {"value": "1", "type": "choice", "options": ["1", "2", "3", "4", "5"], "description": "Graphics Quality (1=Low, 5=High)"},
-                    "FramerateCap": {"value": "60", "type": "choice", "options": ["30", "60", "120", "144", "240", "0"], "description": "Framerate Limit (0=Unlimited)"},
-                    "Transparency": {"value": "true", "type": "boolean", "description": "Enable Transparency Effects"},
-                    "ReducedMotion": {"value": "false", "type": "boolean", "description": "Enable Reduced Motion"},
-                    "FontSize": {"value": "14", "type": "choice", "options": ["12", "14", "16", "18", "20", "24"], "description": "Font Size"},
-                    "MouseSensitivity": {"value": "1.0", "type": "float", "min": "0.1", "max": "5.0", "description": "Mouse Sensitivity (0.1-5.0)"},
-                    "VREnabled": {"value": "false", "type": "boolean", "description": "Enable VR Mode"},
-                }
-
-                # Load existing settings from file if it exists
+                import xml.etree.ElementTree as ET
                 if os.path.exists(global_settings_path):
-                    try:
-                        import xml.etree.ElementTree as ET
-                        tree = ET.parse(global_settings_path)
-                        root = tree.getroot()
-                        
-                        # Load all existing settings
-                        for setting in root.findall('.//Setting'):
-                            name = setting.get('name')
-                            value = setting.get('value', '')
-                            if name and name in default_settings:
-                                default_settings[name]['value'] = value
-                                print(f"Loaded {name} = {value}")  # Debug output
-                    except Exception as e:
-                        print(f"Warning: Could not parse existing settings: {e}")
+                    xml_tree = ET.parse(global_settings_path)
+                    xml_root = xml_tree.getroot()
+                else:
+                    xml_tree = None
+                    xml_root = None
 
-                # Create UI controls for each setting
-                for setting_name, setting_info in default_settings.items():
-                    setting_frame = ttk.Frame(scrollable_settings_frame, style="Dark.TFrame")
-                    setting_frame.pack(fill="x", pady=3, padx=5)
+                settings_def.clear()
+                self.global_settings_xml_names.clear()
+                self.global_settings_meta.clear()
 
-                    # Setting name and description
-                    name_label = ttk.Label(
-                        setting_frame,
-                        text=setting_name,
-                        style="Dark.TLabel",
-                        font=("Segoe UI", 10, "bold")
-                    )
-                    name_label.pack(anchor="w")
+                supported_tags = {"bool", "int", "int64", "float", "token", "string"}
+                properties = xml_root.find(".//Properties") if xml_root is not None else None
+                if properties is not None:
+                    for child in list(properties):
+                        try:
+                            name_attr = child.get("name")
+                        except Exception:
+                            name_attr = None
 
-                    desc_label = ttk.Label(
-                        setting_frame,
-                        text=setting_info['description'],
-                        style="Dark.TLabel",
-                        font=("Segoe UI", 8),
-                        foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888"
-                    )
-                    desc_label.pack(anchor="w", pady=(0, 2))
+                        if not name_attr:
+                            continue
+                        if child.tag not in supported_tags:
+                            continue
+                        if list(child):
+                            continue
 
-                    # Control frame
-                    control_frame = ttk.Frame(setting_frame, style="Dark.TFrame")
-                    control_frame.pack(fill="x", pady=(2, 5))
+                        settings_def.append({
+                            "key": name_attr,
+                            "xml": name_attr,
+                            "type": child.tag,
+                            "description": f"{child.tag} setting",
+                        })
 
-                    # Create appropriate control based on type
-                    setting_type = setting_info['type']
-                    current_value = setting_info['value']
+                settings_def.sort(key=lambda x: x["key"].lower())
 
-                    if setting_type == "boolean":
-                        var = tk.BooleanVar(value=current_value.lower() == "true")
-                        checkbox = ttk.Checkbutton(
-                            control_frame,
-                            text="Enabled",
-                            variable=var,
-                            style="Dark.TCheckbutton"
-                        )
-                        checkbox.pack(side="left")
-                        self.global_settings_vars[setting_name] = var
+                for item in settings_def:
+                    self.global_settings_xml_names[item["key"]] = item["xml"]
+                    self.global_settings_meta[item["key"]] = item
 
-                    elif setting_type == "choice":
-                        var = tk.StringVar(value=current_value)
-                        combo = ttk.Combobox(
-                            control_frame,
-                            textvariable=var,
-                            values=setting_info['options'],
-                            state="readonly",
-                            style="Dark.TCombobox",
-                            width=12
-                        )
-                        combo.pack(side="left", fill="x", expand=True)
-                        self.global_settings_vars[setting_name] = var
+                self.global_settings_values.clear()
+                for item in settings_def:
+                    if xml_root is None:
+                        current = "false" if item["type"] == "bool" else ("0" if item["type"] in ("int", "token", "int64") else "")
+                    else:
+                        current = read_value_from_xml(xml_root, item)
+                    self.global_settings_values[item["key"]] = current
 
-                    elif setting_type in ["integer", "float"]:
-                        var = tk.StringVar(value=current_value)
-                        entry = ttk.Entry(
-                            control_frame,
-                            textvariable=var,
-                            style="Dark.TEntry",
-                            width=10
-                        )
-                        entry.pack(side="left")
-                        
-                        # Add validation
-                        if setting_type == "integer":
-                            vcmd = (self.root.register(lambda text: text == "" or text.lstrip('-').isdigit()), "%P")
-                            entry.configure(validate="key", validatecommand=vcmd)
-                        else:  # float
-                            vcmd = (self.root.register(lambda text: text == "" or text.replace('.', '', 1).lstrip('-').isdigit()), "%P")
-                            entry.configure(validate="key", validatecommand=vcmd)
-                        
-                        self.global_settings_vars[setting_name] = var
-                        self.global_settings_entries[setting_name] = entry
+                refresh_tree_values()
 
-                    # Add min/max labels for numeric types
-                    if setting_type in ["integer", "float"] and 'min' in setting_info and 'max' in setting_info:
-                        range_label = ttk.Label(
-                            control_frame,
-                            text=f"({setting_info['min']} - {setting_info['max']})",
-                            style="Dark.TLabel",
-                            font=("Segoe UI", 8),
-                            foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888"
-                        )
-                        range_label.pack(side="left", padx=(5, 0))
+                if settings_def:
+                    first_key = settings_def[0]["key"]
+                    tree.selection_set(first_key)
+                    tree.focus(first_key)
+                    on_select_setting()
 
             except Exception as e:
                 messagebox.showerror("Error Loading Settings", f"Failed to load global settings: {str(e)}")
 
+        def on_select_setting(_event=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            key = sel[0]
+            selected_setting_var.set(key)
+
+            meta = self.global_settings_meta.get(key, {})
+            detail_title.configure(text=key)
+            detail_desc.configure(text=meta.get("description", ""))
+
+            current_value = self.global_settings_values.get(key, "")
+            if meta.get("type") == "bool":
+                editor_value_bool.set(str(current_value).strip().lower() == "true")
+                set_editor_mode("bool")
+            else:
+                editor_value_str.set(str(current_value))
+                set_editor_mode("text")
+
+        tree.bind("<<TreeviewSelect>>", on_select_setting)
+
+        def _on_search_change(*_):
+            refresh_tree_values()
+
+        search_var.trace_add("write", _on_search_change)
+
+        def apply_current_edit():
+            key = selected_setting_var.get()
+            if not key:
+                return
+            meta = self.global_settings_meta.get(key, {})
+            if meta.get("type") == "bool":
+                self.global_settings_values[key] = "true" if bool(editor_value_bool.get()) else "false"
+            else:
+                self.global_settings_values[key] = (editor_value_str.get() or "").strip()
+            refresh_tree_values()
+            tree.selection_set(key)
+            tree.focus(key)
+
+        ttk.Button(detail_frame, text="Apply", style="Dark.TButton", command=apply_current_edit).pack(fill="x", pady=(10, 0))
+
         # Save the settings
         def save_global_settings():
             try:
+                apply_current_edit()
+
                 import xml.etree.ElementTree as ET
                 from xml.dom import minidom
 
                 # Load existing XML file if it exists, otherwise create new structure
                 if os.path.exists(global_settings_path):
                     try:
-                        tree = ET.parse(global_settings_path)
-                        root = tree.getroot()
+                        xml_tree_local = ET.parse(global_settings_path)
+                        root = xml_tree_local.getroot()
                     except Exception as e:
                         print(f"Warning: Could not parse existing XML, creating new: {e}")
                         root = ET.Element("Settings")
                 else:
                     root = ET.Element("Settings")
                 
-                # Update only the settings we have controls for
-                for setting_name, var in self.global_settings_vars.items():
-                    # Convert boolean values to strings for XML
-                    value = var.get()
-                    if isinstance(value, bool):
-                        value = "true" if value else "false"
-                    value_str = str(value)
-                    
-                    print(f"Saving {setting_name} = {value_str} (type: {type(value)})")  # Debug output
-                    
-                    # Update Settings section (our custom settings)
-                    existing_setting = root.find(f".//Setting[@name='{setting_name}']")
-                    if existing_setting is not None:
-                        existing_setting.set("value", value_str)
+                for item in settings_def:
+                    key = item["key"]
+                    xml_name = item["xml"]
+                    value_str = str(self.global_settings_values.get(key, "")).strip()
+
+                    if item.get("type") == "bool":
+                        value_str = "true" if value_str.lower() == "true" else "false"
+
+                    if item.get("type") == "string":
+                        pass
                     else:
-                        setting_elem = ET.SubElement(root, "Setting")
-                        setting_elem.set("name", setting_name)
-                        setting_elem.set("value", value_str)
-                    
-                    # Also update Properties section if it exists (Roblox's main settings)
+                        if value_str == "":
+                            value_str = "0" if item.get("type") in {"int", "int64", "float", "token"} else value_str
+
                     properties = root.find(".//Properties")
                     if properties is not None:
-                        # Find the setting in Properties section
-                        prop_setting = properties.find(f".//*[@name='{setting_name}']")
+                        prop_setting = properties.find(f".//*[@name='{xml_name}']")
                         if prop_setting is not None:
-                            # Handle different element types
-                            if prop_setting.tag == "int":
-                                prop_setting.text = value_str
-                            elif prop_setting.tag == "bool":
+                            if prop_setting.tag == "bool":
                                 prop_setting.text = value_str.lower()
-                            elif prop_setting.tag == "float":
+                            else:
                                 prop_setting.text = value_str
-                            elif prop_setting.tag == "token":
-                                prop_setting.text = value_str
-                            elif prop_setting.tag == "string":
-                                prop_setting.text = value_str
-                            print(f"Updated Properties section {setting_name} = {value_str}")
+
+                    existing_setting = root.find(f".//Setting[@name='{xml_name}']")
+                    if existing_setting is not None:
+                        existing_setting.set("value", value_str)
                 
                 # Create directory if it doesn't exist
                 os.makedirs(os.path.dirname(global_settings_path), exist_ok=True)
