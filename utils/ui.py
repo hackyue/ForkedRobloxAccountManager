@@ -555,7 +555,7 @@ class AccountManagerUI:
     def __init__(self, root, manager):
         self.root = root
         self.manager = manager
-        self.APP_VERSION = "2.3.9"
+        self.APP_VERSION = "2.4.0"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -573,7 +573,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.3.9 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.4.0 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -4259,6 +4259,18 @@ class AccountManagerUI:
 
         ttk.Label(roblox_tab, text="", style="Dark.TLabel").pack(pady=5)
 
+        def open_global_settings_and_close_settings():
+            """Open Global Settings editor and close settings window"""
+            settings_window.destroy()
+            self.open_global_settings_editor()
+
+        ttk.Button(
+            roblox_tab,
+            text="Global Settings",
+            style="Dark.TButton",
+            command=open_global_settings_and_close_settings
+        ).pack(fill="x", pady=(10, 2))
+
         custom_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
         custom_frame.pack(fill="x", pady=(0, 6))
 
@@ -4510,8 +4522,337 @@ class AccountManagerUI:
         if self.console_window:
             self.console_window.show()
 
+    def open_global_settings_editor(self):
+        """Open the Global Settings editor window."""
+        # Check if window already exists and focus it
+        if hasattr(self, 'global_settings_window') and self.global_settings_window and self.global_settings_window.winfo_exists():
+            self.global_settings_window.deiconify()
+            self.global_settings_window.lift()
+            self.global_settings_window.focus_force()
+            return
+
+        self.global_settings_window = tk.Toplevel(self.root)
+        self.global_settings_window.title("Roblox Global Settings Editor")
+        self.global_settings_window.geometry("500x600")
+        self.global_settings_window.minsize(450, 500)
+        self.global_settings_window.configure(bg=self.BG_DARK)
+        self.global_settings_window.resizable(True, True)
+        
+        self.global_settings_window.transient(self.root)
+        self.global_settings_window.grab_set()
+        self.register_toplevel(self.global_settings_window)
+        
+        if self.settings.get("enable_topmost", False):
+            self.global_settings_window.attributes("-topmost", True)
+
+        # Main frame
+        main_frame = ttk.Frame(self.global_settings_window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=15)
+
+        # Title
+        title_label = ttk.Label(
+            main_frame,
+            text="Roblox Global Settings Editor",
+            style="Dark.TLabel",
+            font=("Segoe UI", 14, "bold")
+        )
+        title_label.pack(anchor="w", pady=(0, 10))
+
+        # File path info
+        global_settings_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\GlobalBasicSettings_13.xml")
+        path_label = ttk.Label(
+            main_frame,
+            text=f"Editing: {global_settings_path}",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888"
+        )
+        path_label.pack(anchor="w", pady=(0, 10))
+
+        # Settings frame
+        settings_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        settings_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        # Create scrollable frame for settings
+        settings_canvas = tk.Canvas(settings_frame, bg=self.BG_MID, highlightthickness=0)
+        settings_scrollbar = ttk.Scrollbar(settings_frame, orient="vertical", command=settings_canvas.yview)
+        scrollable_settings_frame = ttk.Frame(settings_canvas, style="Dark.TFrame")
+
+        scrollable_settings_frame.bind(
+            "<Configure>",
+            lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+        )
+
+        settings_canvas.create_window((0, 0), window=scrollable_settings_frame, anchor="nw")
+        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+
+        settings_canvas.pack(side="left", fill="both", expand=True)
+        settings_scrollbar.pack(side="right", fill="y")
+
+        # Global settings variables
+        self.global_settings_vars = {}
+        self.global_settings_entries = {}
+
+        # Parse and load settings
+        def load_global_settings():
+            try:
+                # Make file writable for editing
+                if os.path.exists(global_settings_path):
+                    try:
+                        import stat
+                        os.chmod(global_settings_path, stat.S_IWRITE | stat.S_IREAD)
+                    except Exception as e:
+                        print(f"Warning: Could not make file writable: {e}")
+                
+                # Clear existing settings
+                for widget in scrollable_settings_frame.winfo_children():
+                    widget.destroy()
+                self.global_settings_vars.clear()
+                self.global_settings_entries.clear()
+
+                # Default settings structure - simplified to only essential settings
+                default_settings = {
+                    "GraphicsQualityLevel": {"value": "1", "type": "choice", "options": ["1", "2", "3", "4", "5"], "description": "Graphics Quality (1=Low, 5=High)"},
+                    "FramerateCap": {"value": "60", "type": "choice", "options": ["30", "60", "120", "144", "240", "0"], "description": "Framerate Limit (0=Unlimited)"},
+                    "Transparency": {"value": "true", "type": "boolean", "description": "Enable Transparency Effects"},
+                    "ReducedMotion": {"value": "false", "type": "boolean", "description": "Enable Reduced Motion"},
+                    "FontSize": {"value": "14", "type": "choice", "options": ["12", "14", "16", "18", "20", "24"], "description": "Font Size"},
+                    "MouseSensitivity": {"value": "1.0", "type": "float", "min": "0.1", "max": "5.0", "description": "Mouse Sensitivity (0.1-5.0)"},
+                    "VREnabled": {"value": "false", "type": "boolean", "description": "Enable VR Mode"},
+                }
+
+                # Load existing settings from file if it exists
+                if os.path.exists(global_settings_path):
+                    try:
+                        import xml.etree.ElementTree as ET
+                        tree = ET.parse(global_settings_path)
+                        root = tree.getroot()
+                        
+                        # Load all existing settings
+                        for setting in root.findall('.//Setting'):
+                            name = setting.get('name')
+                            value = setting.get('value', '')
+                            if name and name in default_settings:
+                                default_settings[name]['value'] = value
+                                print(f"Loaded {name} = {value}")  # Debug output
+                    except Exception as e:
+                        print(f"Warning: Could not parse existing settings: {e}")
+
+                # Create UI controls for each setting
+                for setting_name, setting_info in default_settings.items():
+                    setting_frame = ttk.Frame(scrollable_settings_frame, style="Dark.TFrame")
+                    setting_frame.pack(fill="x", pady=3, padx=5)
+
+                    # Setting name and description
+                    name_label = ttk.Label(
+                        setting_frame,
+                        text=setting_name,
+                        style="Dark.TLabel",
+                        font=("Segoe UI", 10, "bold")
+                    )
+                    name_label.pack(anchor="w")
+
+                    desc_label = ttk.Label(
+                        setting_frame,
+                        text=setting_info['description'],
+                        style="Dark.TLabel",
+                        font=("Segoe UI", 8),
+                        foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888"
+                    )
+                    desc_label.pack(anchor="w", pady=(0, 2))
+
+                    # Control frame
+                    control_frame = ttk.Frame(setting_frame, style="Dark.TFrame")
+                    control_frame.pack(fill="x", pady=(2, 5))
+
+                    # Create appropriate control based on type
+                    setting_type = setting_info['type']
+                    current_value = setting_info['value']
+
+                    if setting_type == "boolean":
+                        var = tk.BooleanVar(value=current_value.lower() == "true")
+                        checkbox = ttk.Checkbutton(
+                            control_frame,
+                            text="Enabled",
+                            variable=var,
+                            style="Dark.TCheckbutton"
+                        )
+                        checkbox.pack(side="left")
+                        self.global_settings_vars[setting_name] = var
+
+                    elif setting_type == "choice":
+                        var = tk.StringVar(value=current_value)
+                        combo = ttk.Combobox(
+                            control_frame,
+                            textvariable=var,
+                            values=setting_info['options'],
+                            state="readonly",
+                            style="Dark.TCombobox",
+                            width=12
+                        )
+                        combo.pack(side="left", fill="x", expand=True)
+                        self.global_settings_vars[setting_name] = var
+
+                    elif setting_type in ["integer", "float"]:
+                        var = tk.StringVar(value=current_value)
+                        entry = ttk.Entry(
+                            control_frame,
+                            textvariable=var,
+                            style="Dark.TEntry",
+                            width=10
+                        )
+                        entry.pack(side="left")
+                        
+                        # Add validation
+                        if setting_type == "integer":
+                            vcmd = (self.root.register(lambda text: text == "" or text.lstrip('-').isdigit()), "%P")
+                            entry.configure(validate="key", validatecommand=vcmd)
+                        else:  # float
+                            vcmd = (self.root.register(lambda text: text == "" or text.replace('.', '', 1).lstrip('-').isdigit()), "%P")
+                            entry.configure(validate="key", validatecommand=vcmd)
+                        
+                        self.global_settings_vars[setting_name] = var
+                        self.global_settings_entries[setting_name] = entry
+
+                    # Add min/max labels for numeric types
+                    if setting_type in ["integer", "float"] and 'min' in setting_info and 'max' in setting_info:
+                        range_label = ttk.Label(
+                            control_frame,
+                            text=f"({setting_info['min']} - {setting_info['max']})",
+                            style="Dark.TLabel",
+                            font=("Segoe UI", 8),
+                            foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888"
+                        )
+                        range_label.pack(side="left", padx=(5, 0))
+
+            except Exception as e:
+                messagebox.showerror("Error Loading Settings", f"Failed to load global settings: {str(e)}")
+
+        # Save the settings
+        def save_global_settings():
+            try:
+                import xml.etree.ElementTree as ET
+                from xml.dom import minidom
+
+                # Load existing XML file if it exists, otherwise create new structure
+                if os.path.exists(global_settings_path):
+                    try:
+                        tree = ET.parse(global_settings_path)
+                        root = tree.getroot()
+                    except Exception as e:
+                        print(f"Warning: Could not parse existing XML, creating new: {e}")
+                        root = ET.Element("Settings")
+                else:
+                    root = ET.Element("Settings")
+                
+                # Update only the settings we have controls for
+                for setting_name, var in self.global_settings_vars.items():
+                    # Convert boolean values to strings for XML
+                    value = var.get()
+                    if isinstance(value, bool):
+                        value = "true" if value else "false"
+                    value_str = str(value)
+                    
+                    print(f"Saving {setting_name} = {value_str} (type: {type(value)})")  # Debug output
+                    
+                    # Update Settings section (our custom settings)
+                    existing_setting = root.find(f".//Setting[@name='{setting_name}']")
+                    if existing_setting is not None:
+                        existing_setting.set("value", value_str)
+                    else:
+                        setting_elem = ET.SubElement(root, "Setting")
+                        setting_elem.set("name", setting_name)
+                        setting_elem.set("value", value_str)
+                    
+                    # Also update Properties section if it exists (Roblox's main settings)
+                    properties = root.find(".//Properties")
+                    if properties is not None:
+                        # Find the setting in Properties section
+                        prop_setting = properties.find(f".//*[@name='{setting_name}']")
+                        if prop_setting is not None:
+                            # Handle different element types
+                            if prop_setting.tag == "int":
+                                prop_setting.text = value_str
+                            elif prop_setting.tag == "bool":
+                                prop_setting.text = value_str.lower()
+                            elif prop_setting.tag == "float":
+                                prop_setting.text = value_str
+                            elif prop_setting.tag == "token":
+                                prop_setting.text = value_str
+                            elif prop_setting.tag == "string":
+                                prop_setting.text = value_str
+                            print(f"Updated Properties section {setting_name} = {value_str}")
+                
+                # Create directory if it doesn't exist
+                os.makedirs(os.path.dirname(global_settings_path), exist_ok=True)
+                
+                # Create backup
+                if os.path.exists(global_settings_path):
+                    backup_path = global_settings_path + ".backup"
+                    try:
+                        import shutil
+                        shutil.copy2(global_settings_path, backup_path)
+                    except Exception:
+                        pass  # Ignore backup errors
+                
+                # Pretty print XML
+                xml_str = ET.tostring(root, encoding='unicode')
+                dom = minidom.parseString(xml_str)
+                pretty_xml = dom.toprettyxml(indent="\t")[23:]  # Remove XML declaration line
+                
+                # Save the file
+                with open(global_settings_path, 'w', encoding='utf-8') as f:
+                    f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                    f.write(pretty_xml)
+                
+                # Set file as read-only after saving
+                try:
+                    import stat
+                    os.chmod(global_settings_path, stat.S_IREAD)
+                except Exception as e:
+                    print(f"Warning: Could not set file as read-only: {e}")
+                
+                messagebox.showinfo("Success", f"Global settings saved successfully!\n\nBackup created at: {global_settings_path}.backup\n\nFile is now read-only.")
+            except Exception as e:
+                messagebox.showerror("Error Saving Settings", f"Failed to save global settings: {str(e)}")
+
+        # Reset to defaults
+        def reset_to_defaults():
+            if messagebox.askyesno("Confirm Reset", "This will reset all settings to their default values. Continue?"):
+                load_global_settings()
+                messagebox.showinfo("Reset Complete", "Settings have been reset to defaults. Click Save to apply.")
+
+        # Button frame
+        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        button_frame.pack(fill="x")
+
+        ttk.Button(
+            button_frame,
+            text="Reset to Defaults",
+            style="Dark.TButton",
+            command=reset_to_defaults
+        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        ttk.Button(
+            button_frame,
+            text="Save",
+            style="Dark.TButton",
+            command=save_global_settings
+        ).pack(side="left", fill="x", expand=True, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="Close",
+            style="Dark.TButton",
+            command=self.global_settings_window.destroy
+        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+
+        # Load initial settings
+        load_global_settings()
+
     def open_fastflags_editor(self):
         """Open the FastFlags editor window."""
+        # Check if window already exists and focus it
         if hasattr(self, 'fastflags_window') and self.fastflags_window and self.fastflags_window.winfo_exists():
             self.fastflags_window.deiconify()
             self.fastflags_window.lift()
