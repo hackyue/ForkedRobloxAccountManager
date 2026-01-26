@@ -20,7 +20,7 @@ dist/
 # Account data (SENSITIVE - DO NOT COMMIT!)
 saved_accounts.json
 AccountManagerData/
-build_exe.bat
+RAM.bat
 icon.ico
 
 # IDE and editor files
