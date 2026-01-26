@@ -21,7 +21,6 @@ dist/
 saved_accounts.json
 AccountManagerData/
 RAM.bat
-icon.ico
 
 # IDE and editor files
 .vscode/

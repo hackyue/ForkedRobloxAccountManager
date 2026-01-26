@@ -3,6 +3,7 @@ setlocal
 
 rem Build a single-file, no-console Windows executable
 python -m PyInstaller --noconfirm --clean --onefile --windowed ^
+  --icon icon.ico ^
   --collect-all selenium ^
   --collect-all webdriver_manager ^
   main.py
