@@ -38,6 +38,7 @@ else:
     win32api = win32con = win32gui = win32process = None
 
 from classes.roblox_api import RobloxAPI
+from classes.fastflags import FastFlagsManager
 
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
@@ -4314,7 +4315,6 @@ class AccountManagerUI:
         custom_player_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
         custom_player_frame.pack(fill="x", pady=(0, 6))
         custom_player_frame.columnconfigure(0, weight=1)
-
         custom_player_entry = ttk.Entry(custom_player_frame, style="Dark.TEntry", textvariable=custom_roblox_player_path_var)
         custom_player_entry.grid(row=0, column=0, sticky="ew")
 
@@ -4467,9 +4467,19 @@ class AccountManagerUI:
             command=auto_save_setting("enable_debug_logging", debug_var)
         ).pack(anchor="w", pady=2)
 
-        set_active_tab("general")
+        def open_fastflags_and_close_settings():
+            """Open FastFlags editor and close settings window"""
+            settings_window.destroy()
+            self.open_fastflags_editor()
 
-        settings_window.update_idletasks()
+        ttk.Button(
+            advanced_tab,
+            text="FastFlags Editor",
+            style="Dark.TButton",
+            command=open_fastflags_and_close_settings
+        ).pack(fill="x", pady=(10, 2))
+
+        set_active_tab("general")
         padding_w = 40
         padding_h = 40
         min_w = 420
@@ -4499,3 +4509,317 @@ class AccountManagerUI:
         """Open or focus the console output window."""
         if self.console_window:
             self.console_window.show()
+
+    def open_fastflags_editor(self):
+        """Open the FastFlags editor window."""
+        if hasattr(self, 'fastflags_window') and self.fastflags_window and self.fastflags_window.winfo_exists():
+            self.fastflags_window.deiconify()
+            self.fastflags_window.lift()
+            self.fastflags_window.focus_force()
+            return
+
+        self.fastflags_window = tk.Toplevel(self.root)
+        self.fastflags_window.title("FastFlags Editor")
+        self.fastflags_window.geometry("700x600")
+        self.fastflags_window.minsize(600, 500)
+        self.fastflags_window.configure(bg=self.BG_DARK)
+        self.fastflags_window.resizable(True, True)
+        
+        self.fastflags_window.transient(self.root)
+        self.fastflags_window.grab_set()
+        self.register_toplevel(self.fastflags_window)
+        
+        if self.settings.get("enable_topmost", False):
+            self.fastflags_window.attributes("-topmost", True)
+
+        # Main frame
+        main_frame = ttk.Frame(self.fastflags_window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=15)
+
+        # Initialize FastFlags manager with currently selected version
+        selected_version = self.version_var.get()
+        version_path = None
+        
+        if selected_version != "Latest Version" and selected_version in self.version_options:
+            version_path = self.version_options[selected_version]
+        
+        fastflags_manager = FastFlagsManager(version_path=version_path)
+
+        # Title with version info
+        version_info = ""
+        if version_path:
+            version_name = os.path.basename(version_path)
+            version_info = f" - {version_name}"
+        
+        title_label = ttk.Label(
+            main_frame,
+            text=f"Roblox FastFlags Editor{version_info}",
+            style="Dark.TLabel",
+            font=("Segoe UI", 14, "bold")
+        )
+        title_label.pack(anchor="w", pady=(0, 10))
+
+        # Version path info
+        if version_path:
+            path_label = ttk.Label(
+                main_frame,
+                text=f"Editing FastFlags for: {version_path}",
+                style="Dark.TLabel",
+                font=("Segoe UI", 9),
+                foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888"
+            )
+            path_label.pack(anchor="w", pady=(0, 10))
+
+        # Preset section
+        preset_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        preset_frame.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(
+            preset_frame,
+            text="Quick Presets:",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        preset_buttons_frame = ttk.Frame(preset_frame, style="Dark.TFrame")
+        preset_buttons_frame.pack(fill="x")
+
+        # Create preset buttons
+        preset_var = tk.StringVar()
+        presets = fastflags_manager.get_available_presets()
+        
+        for i, preset in enumerate(presets):
+            if i % 3 == 0 and i > 0:
+                preset_buttons_frame = ttk.Frame(preset_frame, style="Dark.TFrame")
+                preset_buttons_frame.pack(fill="x", pady=(5, 0))
+            
+            def apply_preset_func(p_name=preset):
+                if fastflags_manager.apply_preset(p_name):
+                    messagebox.showinfo("Success", f"Applied '{p_name}' preset")
+                    refresh_current_flags()
+                else:
+                    messagebox.showerror("Error", f"Failed to apply '{p_name}' preset")
+
+            ttk.Button(
+                preset_buttons_frame,
+                text=preset,
+                style="Dark.TButton",
+                command=apply_preset_func
+            ).pack(side="left", padx=(0, 5), fill="x", expand=True)
+
+        # Current flags section
+        flags_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        flags_frame.pack(fill="both", expand=True, pady=(10, 0))
+
+        ttk.Label(
+            flags_frame,
+            text="Current FastFlags:",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        # Create scrollable frame for flags
+        flags_canvas = tk.Canvas(flags_frame, bg=self.BG_MID, highlightthickness=0)
+        flags_scrollbar = ttk.Scrollbar(flags_frame, orient="vertical", command=flags_canvas.yview)
+        scrollable_frame = ttk.Frame(flags_canvas, style="Dark.TFrame")
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: flags_canvas.configure(scrollregion=flags_canvas.bbox("all"))
+        )
+
+        flags_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        flags_canvas.configure(yscrollcommand=flags_scrollbar.set)
+
+        flags_canvas.pack(side="left", fill="both", expand=True)
+        flags_scrollbar.pack(side="right", fill="y")
+
+        # Custom flag entry
+        custom_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        custom_frame.pack(fill="x", pady=(10, 0))
+
+        ttk.Label(
+            custom_frame,
+            text="Add Custom Flag:",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(0, 5))
+
+        entry_frame = ttk.Frame(custom_frame, style="Dark.TFrame")
+        entry_frame.pack(fill="x")
+
+        flag_name_var = tk.StringVar()
+        flag_value_var = tk.StringVar()
+
+        ttk.Entry(
+            entry_frame,
+            textvariable=flag_name_var,
+            style="Dark.TEntry"
+        ).pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        ttk.Entry(
+            entry_frame,
+            textvariable=flag_value_var,
+            style="Dark.TEntry",
+            width=15
+        ).pack(side="left", padx=(0, 5))
+
+        def add_custom_flag():
+            flag_name = flag_name_var.get().strip()
+            flag_value = flag_value_var.get().strip()
+            
+            if not flag_name or not flag_value:
+                messagebox.showerror("Error", "Please enter both flag name and value")
+                return
+            
+            # Validate flag name with detailed error message
+            is_valid_name, name_error = fastflags_manager.validate_flag_name(flag_name)
+            if not is_valid_name:
+                messagebox.showerror("Invalid Flag Name", name_error)
+                return
+            
+            # Validate flag value with detailed error message
+            is_valid_value, value_error = fastflags_manager.validate_flag_value(flag_value)
+            if not is_valid_value:
+                messagebox.showerror("Invalid Flag Value", value_error)
+                return
+            
+            if fastflags_manager.set_flag(flag_name, flag_value):
+                messagebox.showinfo("Success", f"Set {flag_name} = {flag_value}")
+                flag_name_var.set("")
+                flag_value_var.set("")
+                refresh_current_flags()
+            else:
+                messagebox.showerror("Error", f"Failed to set {flag_name}")
+
+        ttk.Button(
+            entry_frame,
+            text="Add",
+            style="Dark.TButton",
+            command=add_custom_flag
+        ).pack(side="left")
+
+        # Action buttons
+        action_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        action_frame.pack(fill="x", pady=(10, 0))
+
+        def backup_flags():
+            if fastflags_manager.backup_fast_flags():
+                messagebox.showinfo("Success", "FastFlags backed up successfully")
+            else:
+                messagebox.showerror("Error", "Failed to backup FastFlags")
+
+        def restore_flags():
+            if fastflags_manager.restore_fast_flags():
+                messagebox.showinfo("Success", "FastFlags restored successfully")
+                refresh_current_flags()
+            else:
+                messagebox.showerror("Error", "Failed to restore FastFlags")
+
+        def reset_flags():
+            if messagebox.askyesno("Confirm Reset", "This will reset all FastFlags to default. Continue?"):
+                if fastflags_manager.reset_to_default():
+                    messagebox.showinfo("Success", "FastFlags reset to default")
+                    refresh_current_flags()
+                else:
+                    messagebox.showerror("Error", "Failed to reset FastFlags")
+
+        ttk.Button(
+            action_frame,
+            text="Backup",
+            style="Dark.TButton",
+            command=backup_flags
+        ).pack(side="left", padx=(0, 5))
+
+        ttk.Button(
+            action_frame,
+            text="Restore",
+            style="Dark.TButton",
+            command=restore_flags
+        ).pack(side="left", padx=(0, 5))
+
+        ttk.Button(
+            action_frame,
+            text="Reset All",
+            style="Dark.TButton",
+            command=reset_flags
+        ).pack(side="left")
+
+        ttk.Button(
+            action_frame,
+            text="Close",
+            style="Dark.TButton",
+            command=self.fastflags_window.destroy
+        ).pack(side="right")
+
+        def refresh_current_flags():
+            # Clear existing flags display
+            for widget in scrollable_frame.winfo_children():
+                widget.destroy()
+            
+            # Load and display current flags
+            current_flags = fastflags_manager.load_fast_flags()
+            
+            if not current_flags:
+                ttk.Label(
+                    scrollable_frame,
+                    text="No FastFlags set",
+                    style="Dark.TLabel",
+                    font=("Segoe UI", 10),
+                    foreground=self.FG_MUTED if hasattr(self, 'FG_MUTED') else "#888888"
+                ).pack(anchor="w", pady=5)
+                return
+            
+            for flag_name, flag_value in current_flags.items():
+                flag_frame = ttk.Frame(scrollable_frame, style="Dark.TFrame")
+                flag_frame.pack(fill="x", pady=2)
+                
+                ttk.Label(
+                    flag_frame,
+                    text=f"{flag_name}:",
+                    style="Dark.TLabel",
+                    font=("Segoe UI", 9)
+                ).pack(side="left")
+                
+                ttk.Label(
+                    flag_frame,
+                    text=str(flag_value),
+                    style="Dark.TLabel",
+                    font=("Segoe UI", 9),
+                    foreground=self.FG_ACCENT
+                ).pack(side="left", padx=(5, 0))
+                
+                ttk.Button(
+                    flag_frame,
+                    text="Remove",
+                    style="Dark.TButton",
+                    command=lambda name=flag_name: remove_flag(name)
+                ).pack(side="right", padx=(5, 0))
+
+        def remove_flag(flag_name):
+            if fastflags_manager.remove_flag(flag_name):
+                refresh_current_flags()
+            else:
+                messagebox.showerror("Error", f"Failed to remove {flag_name}")
+
+        # Handle window close
+        def on_closing():
+            try:
+                self.fastflags_window.destroy()
+                self.fastflags_window = None
+            except:
+                pass
+
+        self.fastflags_window.protocol("WM_DELETE_WINDOW", on_closing)
+
+        # Initial load of current flags
+        refresh_current_flags()
+
+        # Center window
+        self.fastflags_window.update_idletasks()
+        width = self.fastflags_window.winfo_reqwidth()
+        height = self.fastflags_window.winfo_reqheight()
+        x = (self.fastflags_window.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.fastflags_window.winfo_screenheight() // 2) - (height // 2)
+        self.fastflags_window.geometry(f"{width}x{height}+{x}+{y}")
+        self.fastflags_window.deiconify()
