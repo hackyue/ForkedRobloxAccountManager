@@ -33,6 +33,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 - **Persistent Settings**: Automatically saves Place IDs, Private Server codes, game list, and preferences
 
 ### 🚀 Bootstrapper Support
+###### Most bootstrappers force roblox updates, so **Roblox Version Selector** may not work.
 - **Roblox**: https://www.roblox.com/home
 - **Bloxstrap**: https://bloxstraplabs.com/
 - **Fishstrap**: https://www.fishstrap.app/

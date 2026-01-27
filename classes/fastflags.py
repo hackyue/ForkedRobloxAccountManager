@@ -78,13 +78,13 @@ class FastFlagsManager:
         """Get all possible Roblox version sources (including bootstrappers)"""
         sources = []
         
-        # Standard Roblox locations
+        
         sources.append({
             "name": "Roblox",
             "base": os.path.join(self.app_data, "Roblox", "Versions")
         })
         
-        # Bootstrapper locations
+        
         bootstrapper_paths = [
             ("Bloxstrap", os.path.join(self.app_data, "Bloxstrap", "Versions")),
             ("Fishstrap", os.path.join(self.app_data, "Fishstrap", "Versions")),
@@ -102,7 +102,7 @@ class FastFlagsManager:
         if self.version_path:
             return self.version_path
         
-        # Check all sources for latest version
+        
         sources = self.get_version_sources()
         all_versions = []
         
@@ -141,7 +141,7 @@ class FastFlagsManager:
                 os.makedirs(client_settings_path, exist_ok=True)
                 return os.path.join(client_settings_path, "ClientAppSettings.json")
         
-        # Fallback to old location if no version found
+        
         fallback_location = os.path.join(self.app_data, "Roblox", "PlayerSettings")
         os.makedirs(fallback_location, exist_ok=True)
         return os.path.join(fallback_location, "ClientAppSettings.json")
@@ -165,10 +165,10 @@ class FastFlagsManager:
         """Save FastFlags to file"""
         file_path = self.get_fast_flags_file()
         
-        # Ensure directory exists
+        
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
-        # Create the JSON structure
+        
         data = {
             "variables": flags
         }
