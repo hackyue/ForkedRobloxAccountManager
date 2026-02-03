@@ -74,6 +74,10 @@ class EncryptionSetupUI:
         if self.encryption_config.is_encryption_enabled():
             return None
         
+        
+        if self.encryption_config.is_no_encryption_chosen():
+            return None
+        
         root = tk.Tk()
         root.title("Encryption Setup")
         root.geometry("500x300")

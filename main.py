@@ -16,6 +16,7 @@ from ctypes import wintypes
 import warnings
 import tkinter as tk
 from tkinter import messagebox, simpledialog
+import requests
 
 warnings.filterwarnings("ignore")
 
@@ -84,6 +85,19 @@ def _apply_update_mode(argv):
         return 1
 
 
+def setup_icon():
+    icon_path = os.path.join("AccountManagerData", "icon.ico")
+    if not os.path.exists(icon_path):
+        try:
+            response = requests.get("https://github.com/hackyue/ForkedRobloxAccountManager/blob/Windows/icon.ico?raw=true")
+            if response.status_code == 200:
+                with open(icon_path, 'wb') as f:
+                    f.write(response.content)
+        except:
+            pass
+    return icon_path if os.path.exists(icon_path) else None
+
+
 def main():
     """Main application entry point"""
     password = setup_encryption()
@@ -91,6 +105,8 @@ def main():
     data_folder = "AccountManagerData"
     if not os.path.exists(data_folder):
         os.makedirs(data_folder)
+    
+    icon_path = setup_icon()
     
     encryption_config = EncryptionConfig(os.path.join(data_folder, "encryption_config.json"))
     
@@ -115,6 +131,11 @@ def main():
         return
     
     root = tk.Tk()
+    if icon_path:
+        try:
+            root.iconbitmap(icon_path)
+        except:
+            pass
     app = AccountManagerUI(root, manager)
 
     try:

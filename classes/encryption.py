@@ -207,6 +207,7 @@ class EncryptionConfig:
         """Enable hardware-based encryption"""
         self.config['encryption_enabled'] = True
         self.config['encryption_method'] = 'hardware'
+        self.config['no_encryption_chosen'] = False  
         self.save_config()
     
     def enable_password_encryption(self, salt, password_hash):
@@ -216,16 +217,22 @@ class EncryptionConfig:
         self.config['salt'] = salt
         self.config['password_hash'] = password_hash
         self.config['password_verified'] = True
+        self.config['no_encryption_chosen'] = False  
         self.save_config()
     
     def is_password_verified(self):
         """Check if password has been verified with actual data"""
         return self.config.get('password_verified', False)
     
+    def is_no_encryption_chosen(self):
+        """Check if user has explicitly chosen no encryption"""
+        return self.config.get('no_encryption_chosen', False)
+    
     def disable_encryption(self):
         """Disable encryption"""
         self.config['encryption_enabled'] = False
         self.config['encryption_method'] = None
+        self.config['no_encryption_chosen'] = True  
         if 'salt' in self.config:
             del self.config['salt']
         self.save_config()
