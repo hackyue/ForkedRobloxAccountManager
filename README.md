@@ -60,6 +60,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 
 
 ### Method 2 (devs)
+###### Will contain pre release features expect **bugs**
 
 **Full source code access and customization**
 
