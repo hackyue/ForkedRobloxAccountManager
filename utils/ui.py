@@ -4507,8 +4507,25 @@ class AccountManagerUI:
             command=auto_save_setting("enable_debug_logging", debug_var)
         ).pack(anchor="w", pady=2)
 
+        def open_instance_manager_and_close_settings():
+            settings_window.destroy()
+            self.open_instance_manager()
+
+        ttk.Label(
+            advanced_tab,
+            text="Instance Manager",
+            style="Dark.TLabel",
+            font=("Segoe UI", 11, "bold")
+        ).pack(anchor="w", pady=(12, 6))
+
+        ttk.Button(
+            advanced_tab,
+            text="Instance Manager",
+            style="Dark.TButton",
+            command=open_instance_manager_and_close_settings
+        ).pack(fill="x", pady=(0, 10))
+
         def open_fastflags_and_close_settings():
-            """Open FastFlags editor and close settings window"""
             settings_window.destroy()
             self.open_fastflags_editor()
 
@@ -4517,7 +4534,7 @@ class AccountManagerUI:
             text="FastFlags Editor",
             style="Dark.TButton",
             command=open_fastflags_and_close_settings
-        ).pack(fill="x", pady=(10, 2))
+        ).pack(fill="x", pady=(10, 0))
 
         set_active_tab("general")
         padding_w = 40
@@ -4544,6 +4561,316 @@ class AccountManagerUI:
             style="Dark.TButton",
             command=settings_window.destroy
         ).pack(fill="x", pady=(0, 0))
+
+    def open_instance_manager(self):
+        if platform.system() != "Windows" or not win32gui or not win32process:
+            messagebox.showerror("Instance Manager", "This feature is only available on Windows.")
+            return
+
+        if hasattr(self, "instance_manager_window") and self.instance_manager_window and self.instance_manager_window.winfo_exists():
+            self.instance_manager_window.deiconify()
+            self.instance_manager_window.lift()
+            self.instance_manager_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        self.instance_manager_window = window
+        window.withdraw()
+        window.title("Instance Manager")
+        window.configure(bg=self.BG_DARK)
+        window.resizable(True, True)
+
+        window.transient(self.root)
+        window.grab_set()
+        self.register_toplevel(window)
+
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+
+        main_frame = ttk.Frame(window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=15)
+
+        title_label = ttk.Label(
+            main_frame,
+            text="Instance Manager",
+            style="Dark.TLabel",
+            font=("Segoe UI", 14, "bold")
+        )
+        title_label.pack(anchor="w", pady=(0, 10))
+
+        list_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        list_frame.pack(fill="both", expand=True)
+
+        tree = ttk.Treeview(
+            list_frame,
+            columns=("pid", "exe", "account", "title"),
+            show="headings",
+            height=14,
+            selectmode="browse",
+            style="Dark.Treeview",
+        )
+        tree.heading("pid", text="PID")
+        tree.heading("exe", text="Executable")
+        tree.heading("account", text="Account")
+        tree.heading("title", text="Window Title")
+        tree.column("pid", width=70, anchor="w")
+        tree.column("exe", width=150, anchor="w")
+        tree.column("account", width=140, anchor="w")
+        tree.column("title", width=320, anchor="w")
+        tree.pack(side="left", fill="both", expand=True)
+
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        list_scroll.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=list_scroll.set)
+
+        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        button_frame.pack(fill="x", pady=(10, 0))
+
+        state = {
+            "pid_to_hwnd": {},
+            "pid_to_account": {},
+        }
+
+        target_exes = {
+            "robloxplayerbeta.exe",
+            "robloxstudiobeta.exe",
+            "robloxplayerlauncher.exe",
+            "robloxstudiolauncherbeta.exe",
+        }
+
+        def extract_account_from_title(title_text: str):
+            if not title_text:
+                return ""
+            candidates = []
+            for match in re.finditer(r"([A-Za-z0-9_]{3,})@", title_text):
+                candidates.append(match.group(1))
+            for match in re.finditer(r"@([A-Za-z0-9_]{3,})", title_text):
+                candidates.append(match.group(1))
+            if not candidates:
+                return ""
+            accounts = getattr(self.manager, "accounts", {})
+            if isinstance(accounts, dict):
+                account_lookup = {str(k).lower(): str(k) for k in accounts.keys()}
+                for candidate in candidates:
+                    resolved = account_lookup.get(candidate.lower())
+                    if resolved:
+                        return resolved
+            return candidates[0]
+
+        def get_running_roblox_pids():
+            pid_to_image = {}
+            for exe in sorted(target_exes):
+                try:
+                    result = subprocess.run(
+                        ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/FO", "CSV", "/NH"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace"
+                    )
+                except Exception:
+                    continue
+
+                stdout = (result.stdout or "").strip()
+                if not stdout:
+                    continue
+                if stdout.lower().startswith("info:"):
+                    continue
+
+                try:
+                    rows = list(csv.reader(io.StringIO(stdout)))
+                except Exception:
+                    continue
+                for row in rows:
+                    if not row or len(row) < 2:
+                        continue
+                    image_name = (row[0] or "").strip().strip('"')
+                    pid_text = (row[1] or "").strip().strip('"')
+                    try:
+                        pid_value = int(pid_text)
+                    except Exception:
+                        continue
+                    if pid_value > 0:
+                        pid_to_image[pid_value] = image_name
+            return pid_to_image
+
+        def refresh_instances():
+            state["pid_to_hwnd"].clear()
+            state["pid_to_account"].clear()
+            for row in tree.get_children():
+                tree.delete(row)
+
+            pid_to_image = get_running_roblox_pids()
+            pid_to_titles = {}
+
+            def enum_handler(hwnd, _):
+                if not win32gui.IsWindowVisible(hwnd):
+                    return True
+                if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                    return True
+                try:
+                    _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
+                except Exception:
+                    return True
+
+                image = pid_to_image.get(pid_value)
+                exe_name = str(image).lower() if image else ""
+                if not exe_name:
+                    exe_path = self._get_process_executable(pid_value)
+                    exe_name = os.path.basename(exe_path).lower() if exe_path else ""
+                    if exe_name in target_exes:
+                        pid_to_image[pid_value] = os.path.basename(exe_path)
+
+                if exe_name not in target_exes:
+                    return True
+
+                title_text = ""
+                try:
+                    title_text = win32gui.GetWindowText(hwnd) or ""
+                except Exception:
+                    title_text = ""
+
+                state["pid_to_hwnd"].setdefault(pid_value, hwnd)
+                if title_text.strip():
+                    pid_to_titles.setdefault(pid_value, []).append(title_text.strip())
+                return True
+
+            try:
+                win32gui.EnumWindows(enum_handler, None)
+            except Exception:
+                pass
+
+            all_pids = set(pid_to_image.keys()) | set(state["pid_to_hwnd"].keys())
+            for pid_value in sorted(all_pids):
+                image = pid_to_image.get(pid_value) or ""
+                titles = pid_to_titles.get(pid_value) or []
+                title_text = titles[0] if titles else ""
+                account = extract_account_from_title(title_text)
+                state["pid_to_account"][pid_value] = account
+                tree.insert("", "end", iid=str(pid_value), values=(str(pid_value), image, account, title_text))
+
+        def get_selected_pid():
+            sel = tree.selection()
+            if not sel:
+                return None
+            try:
+                return int(sel[0])
+            except Exception:
+                return None
+
+        def focus_selected():
+            pid_value = get_selected_pid()
+            if pid_value is None:
+                return
+            hwnd = state["pid_to_hwnd"].get(pid_value)
+            if not hwnd:
+                return
+            try:
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.BringWindowToTop(hwnd)
+            except Exception:
+                pass
+
+        def close_selected():
+            pid_value = get_selected_pid()
+            if pid_value is None:
+                return
+            confirm = messagebox.askyesno("Close Instance", f"Close Roblox instance PID {pid_value}?")
+            if not confirm:
+                return
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid_value), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+            except Exception:
+                pass
+            refresh_instances()
+
+        def relaunch_selected():
+            pid_value = get_selected_pid()
+            if pid_value is None:
+                return
+            account = state["pid_to_account"].get(pid_value) or ""
+            if not account:
+                messagebox.showerror("Relaunch", "Unable to detect an account for this instance.")
+                return
+
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid_value), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace"
+                )
+            except Exception:
+                pass
+
+            debug_enabled = self.settings.get("enable_debug_logging", False)
+            selected_version_label = self.version_var.get() if hasattr(self, "version_var") else ""
+            version_path = self.version_options.get(selected_version_label) if hasattr(self, "version_options") else None
+            if not version_path:
+                custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
+                if custom_player_path:
+                    version_path = custom_player_path
+
+            def worker():
+                try:
+                    self.manager.launch_home_app(account, version=version_path or None, enable_debug=debug_enabled)
+                except Exception:
+                    pass
+                self.root.after(0, refresh_instances)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def copy_pid():
+            pid_value = get_selected_pid()
+            if pid_value is None:
+                return
+            try:
+                window.clipboard_clear()
+                window.clipboard_append(str(pid_value))
+                window.update_idletasks()
+            except Exception:
+                pass
+
+        ttk.Button(button_frame, text="Refresh", style="Dark.TButton", command=refresh_instances).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Focus", style="Dark.TButton", command=focus_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Close", style="Dark.TButton", command=close_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Relaunch", style="Dark.TButton", command=relaunch_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Copy PID", style="Dark.TButton", command=copy_pid).pack(side="left")
+
+        tree.bind("<Double-1>", lambda _evt: focus_selected())
+
+        def on_close():
+            try:
+                window.grab_release()
+            except Exception:
+                pass
+            try:
+                window.destroy()
+            finally:
+                self.instance_manager_window = None
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
+
+        window.update_idletasks()
+        padding_w = 80
+        padding_h = 80
+        min_w = 760
+        min_h = 420
+        req_w = window.winfo_reqwidth() + padding_w
+        req_h = window.winfo_reqheight() + padding_h
+        final_w = max(req_w, min_w)
+        final_h = max(req_h, min_h)
+        self._center_window(window, final_w, final_h)
+        window.deiconify()
+        refresh_instances()
 
     def open_console_output(self):
         """Open or focus the console output window."""
