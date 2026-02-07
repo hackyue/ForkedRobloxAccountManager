@@ -595,6 +595,14 @@ class AccountManagerUI:
         self.multi_roblox_handle = None
         self.console_output = get_console_output_buffer()
         self.console_window = ConsoleOutputWindow(self, self.console_output)
+        self._pid_account_map = {}
+        self._pid_account_lock = threading.Lock()
+        self._tracked_roblox_exes = {
+            "robloxplayerbeta.exe",
+            "robloxstudiobeta.exe",
+            "robloxplayerlauncher.exe",
+            "robloxstudiolauncherbeta.exe",
+        }
         self.account_list_drag_data = {
             "start_index": None,
             "drop_index": None,
@@ -803,7 +811,7 @@ class AccountManagerUI:
         ttk.Button(action_frame, text="Edit Note", style="Dark.TButton", command=self.edit_account_note).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Set Group", style="Dark.TButton", command=self.edit_account_group).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
-        ttk.Button(action_frame, text="Auto-Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
+        ttk.Button(action_frame, text="Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
 
         bottom_frame = ttk.Frame(self.root, style="Dark.TFrame")
         bottom_frame.pack(fill="x", padx=10, pady=(5, 10), anchor='s')
@@ -1787,7 +1795,7 @@ class AccountManagerUI:
                 channel = (self.settings.get("roblox_download_channel") or channel)
             channel = str(channel).strip() or "LIVE"
 
-            requested_version = (version or "").strip().lower()
+            requested_version = (version or "").strip()
             if requested_version and not requested_version.startswith("version-"):
                 requested_version = "version-" + requested_version
             if not requested_version:
@@ -3812,8 +3820,15 @@ class AccountManagerUI:
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
+                    before_pids = self._get_running_tracked_roblox_pid_set()
                     if self.manager.launch_home_app(uname, version=version_path or None, enable_debug=debug_enabled):
                         success_count += 1
+                    time.sleep(0.8)
+                    after_pids = self._get_running_tracked_roblox_pid_set()
+                    if not (set(after_pids) - set(before_pids)):
+                        time.sleep(1.0)
+                        after_pids = self._get_running_tracked_roblox_pid_set()
+                    self._assign_new_pids_to_account(uname, before_pids, after_pids)
                 except Exception as e:
                     print(f"Failed to launch Roblox home for {uname}: {e}")
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
@@ -3825,12 +3840,73 @@ class AccountManagerUI:
                         self.show_success_message("Roblox is launching to home! Check your desktop.")
                     else:
                         self.show_success_message(f"Roblox is launching to home for {success_count} account(s)! Check your desktop.")
+
+                    if on_done_callback is not None:
+                        try:
+                            on_done_callback(success_count)
+                        except Exception:
+                            pass
                 else:
                     messagebox.showerror("Error", "Failed to launch Roblox.")
 
             self.root.after(0, notify)
 
         threading.Thread(target=worker, args=(usernames, launch_delay), daemon=True).start()
+
+    def _get_running_tracked_roblox_pid_set(self):
+        pid_set = set()
+
+        for exe in sorted(getattr(self, "_tracked_roblox_exes", [])):
+            try:
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/FO", "CSV", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except Exception:
+                continue
+
+            stdout = (result.stdout or "").strip()
+            if not stdout:
+                continue
+            if stdout.lower().startswith("info:"):
+                continue
+
+            try:
+                rows = list(csv.reader(io.StringIO(stdout)))
+            except Exception:
+                continue
+
+            for row in rows:
+                if not row or len(row) < 2:
+                    continue
+                pid_text = (row[1] or "").strip().strip('"')
+                try:
+                    pid_value = int(pid_text)
+                except Exception:
+                    continue
+                if pid_value > 0:
+                    pid_set.add(pid_value)
+
+        return pid_set
+
+    def _assign_new_pids_to_account(self, username, before_pids, after_pids):
+        if not username:
+            return
+        try:
+            new_pids = set(after_pids) - set(before_pids)
+        except Exception:
+            return
+        if not new_pids:
+            return
+        try:
+            with self._pid_account_lock:
+                for pid_value in new_pids:
+                    self._pid_account_map[int(pid_value)] = str(username)
+        except Exception:
+            pass
 
     def launch_game(self):
         """Launch Roblox game with the selected account(s)"""
@@ -3890,8 +3966,15 @@ class AccountManagerUI:
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
+                    before_pids = self._get_running_tracked_roblox_pid_set()
                     if self.manager.launch_roblox(uname, pid, psid, ver, enable_debug=debug_flag):
                         success_count += 1
+                    time.sleep(0.8)
+                    after_pids = self._get_running_tracked_roblox_pid_set()
+                    if not (set(after_pids) - set(before_pids)):
+                        time.sleep(1.0)
+                        after_pids = self._get_running_tracked_roblox_pid_set()
+                    self._assign_new_pids_to_account(uname, before_pids, after_pids)
                 except Exception as e:
                     print(f"Failed to launch game for {uname}: {e}")
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
@@ -4745,7 +4828,14 @@ class AccountManagerUI:
                 image = pid_to_image.get(pid_value) or ""
                 titles = pid_to_titles.get(pid_value) or []
                 title_text = titles[0] if titles else ""
-                account = extract_account_from_title(title_text)
+                mapped_account = ""
+                try:
+                    with self._pid_account_lock:
+                        mapped_account = self._pid_account_map.get(int(pid_value), "")
+                except Exception:
+                    mapped_account = ""
+
+                account = mapped_account or extract_account_from_title(title_text)
                 state["pid_to_account"][pid_value] = account
                 tree.insert("", "end", iid=str(pid_value), values=(str(pid_value), image, account, title_text))
 
