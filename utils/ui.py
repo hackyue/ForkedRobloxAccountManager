@@ -141,6 +141,9 @@ RDD_APP_SETTINGS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 MIN_LAUNCH_DELAY_SECONDS = 0.0
 MAX_LAUNCH_DELAY_SECONDS = 60.0
 
+MIN_INSTALLER_PREVIOUS_VERSIONS = 5
+MAX_INSTALLER_PREVIOUS_VERSIONS = 15
+
 
 def clamp_multi_launch_delay(value):
     """Clamp arbitrary input to the allowed multi-launch delay range."""
@@ -149,6 +152,14 @@ def clamp_multi_launch_delay(value):
     except (TypeError, ValueError):
         numeric = MIN_LAUNCH_DELAY_SECONDS
     return max(MIN_LAUNCH_DELAY_SECONDS, min(MAX_LAUNCH_DELAY_SECONDS, numeric))
+
+
+def clamp_installer_previous_versions(value):
+    try:
+        int_value = int(value)
+    except (TypeError, ValueError):
+        int_value = MIN_INSTALLER_PREVIOUS_VERSIONS
+    return max(MIN_INSTALLER_PREVIOUS_VERSIONS, min(MAX_INSTALLER_PREVIOUS_VERSIONS, int_value))
 
 
 THEMES = {
@@ -866,6 +877,7 @@ class AccountManagerUI:
             "auto_relaunch_interval_minutes": 60,
             "auto_relaunch_group": "",
             "auto_update_enabled": True,
+            "installer_previous_versions": MIN_INSTALLER_PREVIOUS_VERSIONS,
         }
 
         try:
@@ -879,6 +891,10 @@ class AccountManagerUI:
 
         self.settings["multi_launch_delay"] = clamp_multi_launch_delay(
             self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS)
+        )
+
+        self.settings["installer_previous_versions"] = clamp_installer_previous_versions(
+            self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)
         )
 
         self._ensure_auto_arrange_scope_valid()
@@ -1462,7 +1478,10 @@ class AccountManagerUI:
             return
 
         self.installer_menu.delete(0, tk.END)
-        versions = self.get_available_roblox_versions(limit=5)
+        limit = clamp_installer_previous_versions(
+            self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)
+        )
+        versions = self.get_available_roblox_versions(limit=limit)
         if not versions:
             self.installer_menu.add_command(label="No versions found", state="disabled")
             return
@@ -3116,7 +3135,7 @@ class AccountManagerUI:
             style="Dark.TButton",
             command=amount_window.destroy
         ).pack(side="left", fill="x", expand=True, padx=(5, 0))
-    
+
     def javascript_import_website(self, amount):
         """
         Get website URL for Javascript import
@@ -4118,6 +4137,7 @@ class AccountManagerUI:
         custom_launcher_player_var = tk.BooleanVar(value=self.settings.get("custom_launcher_requires_player", False))
         auto_arrange_scope_var = tk.StringVar(value=self.settings.get("auto_arrange_scope", "both"))
         custom_roblox_player_path_var = tk.StringVar(value=self.settings.get("custom_roblox_player_path", ""))
+        installer_previous_versions_var = tk.IntVar(value=clamp_installer_previous_versions(self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)))
         
         checkbox_style = ttk.Style()
         checkbox_style.configure(
@@ -4260,6 +4280,51 @@ class AccountManagerUI:
             style="Dark.TCheckbutton",
             command=auto_save_setting("disable_success_popups", disable_success_var)
         ).pack(anchor="w", pady=2)
+
+        installer_versions_frame = ttk.Frame(general_tab, style="Dark.TFrame")
+        installer_versions_frame.pack(fill="x", pady=(10, 0))
+
+        ttk.Label(
+            installer_versions_frame,
+            text="Roblox Installer",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(0, 2))
+
+        installer_versions_row = ttk.Frame(installer_versions_frame, style="Dark.TFrame")
+        installer_versions_row.pack(fill="x")
+
+        ttk.Label(
+            installer_versions_row,
+            text="Previous versions to show",
+            style="Dark.TLabel"
+        ).pack(side="left")
+
+        def on_installer_previous_versions_update(*_):
+            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
+            if installer_previous_versions_var.get() != clamped:
+                installer_previous_versions_var.set(clamped)
+                return
+
+            if self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS) != clamped:
+                self.settings["installer_previous_versions"] = clamped
+                self.save_settings()
+                self.refresh_installer_menu()
+
+        installer_versions_spin = ttk.Spinbox(
+            installer_versions_row,
+            from_=MIN_INSTALLER_PREVIOUS_VERSIONS,
+            to=MAX_INSTALLER_PREVIOUS_VERSIONS,
+            increment=1,
+            textvariable=installer_previous_versions_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_installer_previous_versions_update
+        )
+        installer_versions_spin.pack(side="right")
+        installer_versions_spin.bind("<FocusOut>", lambda _: on_installer_previous_versions_update())
+        installer_versions_spin.bind("<Return>", lambda _: on_installer_previous_versions_update())
 
         ttk.Label(
             general_tab,
