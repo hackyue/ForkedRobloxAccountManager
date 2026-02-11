@@ -556,8 +556,6 @@ class RobloxAPI:
             try:
                 if launcher_exe:
                     _launch_with_launcher(url, "Roblox Home")
-                elif RobloxAPI._launch_protocol_url(url):
-                    _log_debug(f"Launching Roblox Home via protocol URL: {url}")
                 elif using_local_install:
                     try:
                         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -585,6 +583,8 @@ class RobloxAPI:
                             creationflags=creation_flags
                         )
                         _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
+                elif RobloxAPI._launch_protocol_url(url):
+                    _log_debug(f"Launching Roblox Home via protocol URL: {url}")
                 else:
                     raise RuntimeError("Roblox protocol handler failed to launch.")
 
@@ -626,9 +626,7 @@ class RobloxAPI:
             if launcher_exe:
                 _launch_with_launcher(url, "game")
             else:
-                if RobloxAPI._launch_protocol_url(url):
-                    _log_debug(f"Launching game via protocol URL: {url}")
-                elif using_local_install:
+                if using_local_install:
                     try:
                         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                         subprocess.Popen(
@@ -665,6 +663,8 @@ class RobloxAPI:
                         creationflags=creation_flags
                     )
                     _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
+                elif RobloxAPI._launch_protocol_url(url):
+                    _log_debug(f"Launching game via protocol URL: {url}")
                 else:
                     raise RuntimeError("Roblox protocol handler failed to launch.")
             print("[SUCCESS] Roblox launched successfully!")
