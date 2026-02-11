@@ -3821,7 +3821,7 @@ class AccountManagerUI:
 
         threading.Thread(target=worker, args=(usernames, launch_delay), daemon=True).start()
 
-    def launch_home_app(self):
+    def launch_home_app(self, on_done_callback=None):
         """Launch the Roblox client to the home page for the selected account(s) (non-blocking)"""
         if self.settings.get("enable_multi_select", False):
             usernames = self.get_selected_usernames()
@@ -3850,7 +3850,7 @@ class AccountManagerUI:
             if custom_player_path:
                 version_path = custom_player_path
 
-        def worker(selected_usernames, delay_seconds):
+        def worker(selected_usernames, delay_seconds, done_callback):
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
@@ -3868,7 +3868,7 @@ class AccountManagerUI:
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
                     time.sleep(delay_seconds)
 
-            def notify():
+            def notify(success_count=success_count, selected_usernames=selected_usernames, on_done_callback=done_callback):
                 if success_count > 0:
                     if len(selected_usernames) == 1:
                         self.show_success_message("Roblox is launching to home! Check your desktop.")
@@ -3885,7 +3885,7 @@ class AccountManagerUI:
 
             self.root.after(0, notify)
 
-        threading.Thread(target=worker, args=(usernames, launch_delay), daemon=True).start()
+        threading.Thread(target=worker, args=(usernames, launch_delay, on_done_callback), daemon=True).start()
 
     def _get_running_tracked_roblox_pid_set(self):
         pid_set = set()
