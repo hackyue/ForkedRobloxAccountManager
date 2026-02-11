@@ -2058,7 +2058,22 @@ class AccountManagerUI:
 
     def get_available_roblox_versions(self, limit=None):
         """Get Roblox versions preferring remote history, falling back to local folders."""
-        remote_versions = self.fetch_remote_versions(limit=limit)
+        cache_ttl_seconds = 60
+        now = time.time()
+        cache = getattr(self, "_installer_versions_cache", None)
+        if (
+            isinstance(cache, dict)
+            and cache.get("versions")
+            and (now - float(cache.get("ts", 0))) < cache_ttl_seconds
+        ):
+            remote_versions = cache["versions"]
+        else:
+            remote_versions = self.fetch_remote_versions(limit=MAX_INSTALLER_PREVIOUS_VERSIONS)
+            if remote_versions:
+                self._installer_versions_cache = {"ts": now, "versions": remote_versions}
+
+        if limit is not None:
+            remote_versions = remote_versions[:limit]
         if remote_versions:
             return remote_versions
         return self.get_local_roblox_versions(limit=limit)
@@ -4300,16 +4315,33 @@ class AccountManagerUI:
             style="Dark.TLabel"
         ).pack(side="left")
 
-        def on_installer_previous_versions_update(*_):
+        installer_versions_after_id = None
+
+        def _apply_installer_previous_versions_setting():
+            nonlocal installer_versions_after_id
+            installer_versions_after_id = None
+
             clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
             if installer_previous_versions_var.get() != clamped:
                 installer_previous_versions_var.set(clamped)
-                return
 
             if self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS) != clamped:
                 self.settings["installer_previous_versions"] = clamped
                 self.save_settings()
                 self.refresh_installer_menu()
+
+        def on_installer_previous_versions_update(*_):
+            nonlocal installer_versions_after_id
+            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
+            if installer_previous_versions_var.get() != clamped:
+                installer_previous_versions_var.set(clamped)
+
+            if installer_versions_after_id is not None:
+                try:
+                    settings_window.after_cancel(installer_versions_after_id)
+                except Exception:
+                    pass
+            installer_versions_after_id = settings_window.after(250, _apply_installer_previous_versions_setting)
 
         installer_versions_spin = ttk.Spinbox(
             installer_versions_row,
