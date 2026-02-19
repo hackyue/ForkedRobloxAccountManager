@@ -57,7 +57,12 @@ class EncryptionSetupUI:
     
     def __init__(self):
         self.result = None
-        self.data_folder = "AccountManagerData"
+        if getattr(sys, "frozen", False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        self.data_folder = os.path.join(base_dir, "AccountManagerData")
         if not os.path.exists(self.data_folder):
             os.makedirs(self.data_folder)
         self.encryption_config = EncryptionConfig(os.path.join(self.data_folder, "encryption_config.json"))

@@ -563,14 +563,61 @@ class AccountManagerUI:
         "robloxplayerlauncher.exe",
     }
 
-    def __init__(self, root, manager):
+    def __init__(self, root, manager, icon_path=None):
         self.root = root
         self.manager = manager
+        self.icon_path = icon_path
         self.APP_VERSION = "2.4.1"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
         self._last_game_name_query_value = None
+
+        self._auto_relaunch_after_id = None
+        self._auto_relaunch_in_progress = False
+        self._auto_update_check_started = False
+        self._auto_update_prompt_shown = False
+
+        self.multi_roblox_handle = None
+        self._pid_account_map = {}
+        self._pid_account_lock = threading.Lock()
+        self._tracked_roblox_exes = {
+            "robloxplayerbeta.exe",
+            "robloxstudiobeta.exe",
+            "robloxplayerlauncher.exe",
+            "robloxstudiolauncherbeta.exe",
+        }
+
+        self.console_output = get_console_output_buffer()
+        self.console_window = ConsoleOutputWindow(self, self.console_output)
+
+        self.account_list_drag_data = {
+            "start_index": None,
+            "drop_index": None,
+            "start_username": None,
+            "start_y": None,
+            "is_dragging": False,
+        }
+        self.account_drop_indicator = None
+
+        self.themable_text_widgets = []
+        self.themable_windows = set()
+
+        self.menu_bar = None
+        self.actions_menu = None
+        self.installer_menu = None
+        self.menu_bar_frame = None
+        self.menu_buttons = []
+        self.version_options = {"Latest Version": None}
+        self.installer_dialog_state = None
+        self._installer_versions_cache = None
+
+        self.global_settings_window = None
+        self.global_settings_values = None
+        self.global_settings_meta = None
+        self.global_settings_xml_names = None
+        self.fastflags_window = None
+        self.instance_manager_window = None
 
         self.style = ttk.Style()
         self.style.theme_use("clam")
@@ -600,39 +647,7 @@ class AccountManagerUI:
             self.root.attributes("-topmost", bool(self.settings.get("enable_topmost", False)))
         except Exception:
             pass
-        self._auto_relaunch_after_id = None
-        self._auto_relaunch_in_progress = False
-        
-        self.multi_roblox_handle = None
-        self.console_output = get_console_output_buffer()
-        self.console_window = ConsoleOutputWindow(self, self.console_output)
-        self._pid_account_map = {}
-        self._pid_account_lock = threading.Lock()
-        self._tracked_roblox_exes = {
-            "robloxplayerbeta.exe",
-            "robloxstudiobeta.exe",
-            "robloxplayerlauncher.exe",
-            "robloxstudiolauncherbeta.exe",
-        }
-        self.account_list_drag_data = {
-            "start_index": None,
-            "drop_index": None,
-            "start_username": None,
-            "start_y": None,
-            "is_dragging": False
-        }
-        self.account_drop_indicator = None
-        self.themable_text_widgets = []
-        self.themable_windows = set()
-
         self.theme_name = self.settings.get("selected_theme", "Synapse Neon")
-        self.menu_bar = None
-        self.actions_menu = None
-        self.installer_menu = None
-        self.menu_bar_frame = None
-        self.menu_buttons = []
-        self.version_options = {"Latest Version": None}
-        self.installer_dialog_state = None
 
         self.apply_theme(self.theme_name, persist=True)
         self.register_toplevel(self.root)
@@ -4743,11 +4758,11 @@ class AccountManagerUI:
         ).pack(fill="x", pady=(0, 0))
 
     def open_instance_manager(self):
-        if platform.system() != "Windows" or not win32gui or not win32process:
+        if platform.system() != "Windows":
             messagebox.showerror("Instance Manager", "This feature is only available on Windows.")
             return
 
-        if hasattr(self, "instance_manager_window") and self.instance_manager_window and self.instance_manager_window.winfo_exists():
+        if self.instance_manager_window and self.instance_manager_window.winfo_exists():
             self.instance_manager_window.deiconify()
             self.instance_manager_window.lift()
             self.instance_manager_window.focus_force()
@@ -5067,7 +5082,7 @@ class AccountManagerUI:
     def open_global_settings_editor(self):
         """Open the Global Settings editor window."""
         # Check if window already exists and focus it
-        if hasattr(self, 'global_settings_window') and self.global_settings_window and self.global_settings_window.winfo_exists():
+        if self.global_settings_window and self.global_settings_window.winfo_exists():
             self.global_settings_window.deiconify()
             self.global_settings_window.lift()
             self.global_settings_window.focus_force()
@@ -5459,7 +5474,7 @@ class AccountManagerUI:
     def open_fastflags_editor(self):
         """Open the FastFlags editor window."""
         # Check if window already exists and focus it
-        if hasattr(self, 'fastflags_window') and self.fastflags_window and self.fastflags_window.winfo_exists():
+        if self.fastflags_window and self.fastflags_window.winfo_exists():
             self.fastflags_window.deiconify()
             self.fastflags_window.lift()
             self.fastflags_window.focus_force()

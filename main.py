@@ -26,6 +26,25 @@ from utils.encryption_setup import setup_encryption
 from utils.ui import AccountManagerUI
 
 
+def get_app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_data_folder():
+    return os.path.join(get_app_base_dir(), "AccountManagerData")
+
+
+def set_windows_app_user_model_id():
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("RobloxAccountManager.App")
+    except Exception:
+        pass
+
+
 def _apply_update_mode(argv):
     pid = None
     source = None
@@ -85,58 +104,76 @@ def _apply_update_mode(argv):
         return 1
 
 
-def setup_icon():
-    icon_path = os.path.join("AccountManagerData", "icon.ico")
+def setup_icon(data_folder):
+    icon_path = os.path.join(data_folder, "icon.ico")
+
+    if not os.path.exists(icon_path):
+        bundled_icon_path = os.path.join(get_app_base_dir(), "icon.ico")
+        if os.path.exists(bundled_icon_path):
+            try:
+                shutil.copyfile(bundled_icon_path, icon_path)
+            except Exception:
+                pass
+
     if not os.path.exists(icon_path):
         try:
-            response = requests.get("https://github.com/hackyue/ForkedRobloxAccountManager/blob/Windows/icon.ico?raw=true")
+            response = requests.get(
+                "https://raw.githubusercontent.com/hackyue/ForkedRobloxAccountManager/Windows/icon.ico",
+                timeout=10,
+            )
             if response.status_code == 200:
-                with open(icon_path, 'wb') as f:
+                with open(icon_path, "wb") as f:
                     f.write(response.content)
-        except:
+        except Exception:
             pass
+
     return icon_path if os.path.exists(icon_path) else None
 
 
 def main():
     """Main application entry point"""
-    password = setup_encryption()
-    
-    data_folder = "AccountManagerData"
-    if not os.path.exists(data_folder):
-        os.makedirs(data_folder)
-    
-    icon_path = setup_icon()
-    
-    encryption_config = EncryptionConfig(os.path.join(data_folder, "encryption_config.json"))
-    
-    if encryption_config.is_encryption_enabled() and encryption_config.get_encryption_method() == 'password':
+    data_folder = get_data_folder()
+    os.makedirs(data_folder, exist_ok=True)
+
+    encryption_config_path = os.path.join(data_folder, "encryption_config.json")
+    encryption_config = EncryptionConfig(encryption_config_path)
+
+    password = None
+    if not encryption_config.is_encryption_enabled() and not encryption_config.is_no_encryption_chosen():
+        password = setup_encryption()
+        encryption_config = EncryptionConfig(encryption_config_path)
+
+    if encryption_config.is_encryption_enabled() and encryption_config.get_encryption_method() == "password":
         if password is None:
             root = tk.Tk()
             root.withdraw()
-            password = simpledialog.askstring("Password Required", "Enter your password to unlock:", show='*')
+            password = simpledialog.askstring("Password Required", "Enter your password to unlock:", show="*")
             root.destroy()
-            
+
             if password is None:
                 messagebox.showerror("Error", "Password is required to access encrypted accounts.")
                 return
-    
+
     try:
         manager = RobloxAccountManager(password=password)
-    except ValueError as e:
+    except ValueError:
         messagebox.showerror("Error", "Password is invalid. Please try again.")
         return
     except Exception as e:
         messagebox.showerror("Error", f"Failed to initialize: {e}")
         return
-    
+
+    icon_path = setup_icon(data_folder)
+
+    set_windows_app_user_model_id()
     root = tk.Tk()
     if icon_path:
         try:
-            root.iconbitmap(icon_path)
-        except:
+            root.iconbitmap(default=icon_path)
+        except Exception:
             pass
-    app = AccountManagerUI(root, manager)
+
+    app = AccountManagerUI(root, manager, icon_path=icon_path)
 
     try:
         root.mainloop()
