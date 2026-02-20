@@ -615,6 +615,7 @@ class AccountManagerUI:
         self._installer_versions_cache = None
         self._http_session = None
         self._http_session_lock = threading.Lock()
+        self._settings_save_after_ids = {}
 
         self.global_settings_window = None
         self.global_settings_values = None
@@ -2230,6 +2231,25 @@ class AccountManagerUI:
         except Exception as e:
             print(f"Failed to save settings: {e}")
 
+    def _schedule_setting_save(self, key, value, delay_ms=250):
+        """Debounce frequent UI setting writes to keep typing responsive."""
+        self.settings[key] = value
+        pending_id = self._settings_save_after_ids.get(key)
+        if pending_id is not None:
+            try:
+                self.root.after_cancel(pending_id)
+            except Exception:
+                pass
+
+        def _commit(setting_key=key):
+            self._settings_save_after_ids.pop(setting_key, None)
+            self.save_settings()
+
+        try:
+            self._settings_save_after_ids[key] = self.root.after(delay_ms, _commit)
+        except Exception:
+            self.save_settings()
+
     def _is_frozen_exe(self):
         try:
             return bool(getattr(sys, "frozen", False)) and os.path.isfile(sys.executable)
@@ -2567,15 +2587,13 @@ class AccountManagerUI:
     def on_place_id_change(self, event=None):
         """Called when place ID changes"""
         place_id = self.place_entry.get().strip()
-        self.settings["last_place_id"] = place_id
-        self.save_settings()
+        self._schedule_setting_save("last_place_id", place_id, delay_ms=250)
         self.update_game_name()
 
     def on_private_server_change(self, event=None):
         """Called when private server ID changes"""
         private_server = self.private_server_entry.get().strip()
-        self.settings["last_private_server"] = private_server
-        self.save_settings()
+        self._schedule_setting_save("last_private_server", private_server, delay_ms=250)
 
     def update_game_name(self):
         """Debounced, non-blocking update of the game name label"""
@@ -2631,11 +2649,7 @@ class AccountManagerUI:
 
     def add_game_to_list(self, place_id, game_name, private_server=""):
         """Add a game to the saved list (max based on settings)"""
-        self.refresh_game_list()
         self.update_game_name()
-        
-
-        self.load_roblox_versions()
         
         for game in self.settings["game_list"]:
             if game["place_id"] == place_id and game.get("private_server", "") == private_server:
@@ -2698,7 +2712,9 @@ class AccountManagerUI:
             self.show_success_message("Game removed from list!")
 
     def _extract_username(self, display_text):
-        return display_text.split(' • ')[0]
+        if " • " in display_text:
+            return display_text.split(" • ", 1)[0]
+        return display_text.split(' â€¢ ', 1)[0]
 
     def refresh_accounts(self, selected_usernames=None):
         """Refresh the account list"""
@@ -2710,6 +2726,9 @@ class AccountManagerUI:
 
         self.account_list.delete(0, tk.END)
         active_group = self._get_active_group()
+        display_items = []
+        username_to_indices = {}
+
         for username, data in self.manager.accounts.items():
             if not isinstance(data, dict):
                 continue
@@ -2724,12 +2743,24 @@ class AccountManagerUI:
                 display_text += f" • [{group}]"
             if note:
                 display_text += f" • {note}"
-            self.account_list.insert(tk.END, display_text)
-            if username in selected_usernames:
-                idx = self.account_list.size() - 1
+
+            idx = len(display_items)
+            display_items.append(display_text)
+            username_to_indices.setdefault(username, []).append(idx)
+
+        if display_items:
+            self.account_list.insert(tk.END, *display_items)
+
+        first_selected_idx = None
+        for username in selected_usernames:
+            for idx in username_to_indices.get(username, []):
                 self.account_list.selection_set(idx)
-                self.account_list.activate(idx)
-    
+                if first_selected_idx is None:
+                    first_selected_idx = idx
+
+        if first_selected_idx is not None:
+            self.account_list.activate(first_selected_idx)
+
     def get_selected_username(self):
         """Get the currently selected username"""
         selection = self.account_list.curselection()
@@ -3654,43 +3685,65 @@ class AccountManagerUI:
                 return
             usernames = [username]
 
-        valid_usernames = []
-        invalid_usernames = []
-
-        for username in usernames:
-            try:
-                is_valid = self.manager.validate_account(username)
-            except Exception:
-                is_valid = False
-            if is_valid:
-                valid_usernames.append(username)
-            else:
-                invalid_usernames.append(username)
-
-        if len(usernames) == 1:
-            if valid_usernames:
-                messagebox.showinfo("Validation", f"Account '{usernames[0]}' is valid!")
-            else:
-                messagebox.showwarning("Validation", f"Account '{usernames[0]}' is invalid or expired.")
+        if getattr(self, "_validation_in_progress", False):
+            messagebox.showinfo("Validation", "Validation is already running.")
             return
 
-        lines = [
-            f"Validated {len(usernames)} account(s).",
-            "",
-            f"Valid: {len(valid_usernames)}",
-            f"Invalid/Expired: {len(invalid_usernames)}",
-        ]
+        self._validation_in_progress = True
+        try:
+            self.root.config(cursor="watch")
+        except Exception:
+            pass
 
-        if valid_usernames:
-            lines.extend(["", "Valid accounts:", *valid_usernames])
-        if invalid_usernames:
-            lines.extend(["", "Invalid/Expired accounts:", *invalid_usernames])
+        def worker(selected_usernames):
+            valid_usernames = []
+            invalid_usernames = []
 
-        message = "\n".join(lines)
-        if invalid_usernames:
-            messagebox.showwarning("Validation", message)
-        else:
-            messagebox.showinfo("Validation", message)
+            for uname in selected_usernames:
+                try:
+                    is_valid = self.manager.validate_account(uname)
+                except Exception:
+                    is_valid = False
+                if is_valid:
+                    valid_usernames.append(uname)
+                else:
+                    invalid_usernames.append(uname)
+
+            def done():
+                self._validation_in_progress = False
+                try:
+                    self.root.config(cursor="")
+                except Exception:
+                    pass
+
+                if len(selected_usernames) == 1:
+                    if valid_usernames:
+                        messagebox.showinfo("Validation", f"Account '{selected_usernames[0]}' is valid!")
+                    else:
+                        messagebox.showwarning("Validation", f"Account '{selected_usernames[0]}' is invalid or expired.")
+                    return
+
+                lines = [
+                    f"Validated {len(selected_usernames)} account(s).",
+                    "",
+                    f"Valid: {len(valid_usernames)}",
+                    f"Invalid/Expired: {len(invalid_usernames)}",
+                ]
+
+                if valid_usernames:
+                    lines.extend(["", "Valid accounts:", *valid_usernames])
+                if invalid_usernames:
+                    lines.extend(["", "Invalid/Expired accounts:", *invalid_usernames])
+
+                message = "\n".join(lines)
+                if invalid_usernames:
+                    messagebox.showwarning("Validation", message)
+                else:
+                    messagebox.showinfo("Validation", message)
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, args=(list(usernames),), daemon=True).start()
     
     def edit_account_note(self):
         """Edit note for the selected account(s)"""
@@ -5867,3 +5920,4 @@ class AccountManagerUI:
         y = (self.fastflags_window.winfo_screenheight() // 2) - (height // 2)
         self.fastflags_window.geometry(f"{width}x{height}+{x}+{y}")
         self.fastflags_window.deiconify()
+
