@@ -19,6 +19,8 @@ import atexit
 import platform
 import time
 import subprocess
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from datetime import datetime
 import tkinter as tk
@@ -611,6 +613,8 @@ class AccountManagerUI:
         self.version_options = {"Latest Version": None}
         self.installer_dialog_state = None
         self._installer_versions_cache = None
+        self._http_session = None
+        self._http_session_lock = threading.Lock()
 
         self.global_settings_window = None
         self.global_settings_values = None
@@ -2078,19 +2082,25 @@ class AccountManagerUI:
                 continue
 
             try:
-                entries = [
-                    os.path.join(base_path, d)
-                    for d in os.listdir(base_path)
-                    if os.path.isdir(os.path.join(base_path, d))
-                ]
-                entries.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+                entries = []
+                with os.scandir(base_path) as iterator:
+                    for entry in iterator:
+                        try:
+                            if not entry.is_dir():
+                                continue
+                            stat = entry.stat()
+                        except OSError:
+                            continue
+                        entries.append((float(getattr(stat, "st_mtime", 0.0)), entry.path, entry.name))
+
+                entries.sort(key=lambda item: item[0], reverse=True)
 
                 if limit is not None:
                     entries = entries[:limit]
 
-                for idx, path in enumerate(entries):
-                    label = f"[{source['name']}] {os.path.basename(path)}"
-                    version_name = os.path.basename(path)
+                for idx, entry in enumerate(entries):
+                    _, path, version_name = entry
+                    label = f"[{source['name']}] {version_name}"
                     versions.append({
                         "label": label,
                         "path": path,
@@ -2106,9 +2116,10 @@ class AccountManagerUI:
         """Fetch Roblox version history from Roblox CDN (LIVE channel)."""
         history_url = "https://setup.rbxcdn.com/DeployHistory.txt"
         versions = []
+        seen_versions = set()
 
         try:
-            response = requests.get(history_url, timeout=5)
+            response = self._get_http_session().get(history_url, timeout=5)
             response.raise_for_status()
         except Exception as exc:
             print(f"Failed to fetch remote Roblox versions: {exc}")
@@ -2125,14 +2136,37 @@ class AccountManagerUI:
             if not match:
                 continue
             version = match.group(0)
-            if any(entry["version"] == version for entry in versions):
+            if version in seen_versions:
                 continue
+            seen_versions.add(version)
             status = "LIVE" if not versions else "PAST"
             versions.append({"version": version, "status": status})
             if limit and len(versions) >= limit:
                 break
 
         return versions
+
+    def _get_http_session(self):
+        """Lazily initialize a shared HTTP session with retry/backoff."""
+        if self._http_session is not None:
+            return self._http_session
+
+        with self._http_session_lock:
+            if self._http_session is None:
+                session = requests.Session()
+                retry = Retry(
+                    total=2,
+                    backoff_factor=0.35,
+                    status_forcelist=(429, 500, 502, 503, 504),
+                    allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]),
+                )
+                adapter = HTTPAdapter(pool_connections=12, pool_maxsize=12, max_retries=retry)
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+                session.headers.update({"User-Agent": "FRAM"})
+                self._http_session = session
+
+        return self._http_session
 
     def get_available_roblox_versions(self, limit=None):
         """Get Roblox versions preferring remote history, falling back to local folders."""
@@ -2232,7 +2266,7 @@ class AccountManagerUI:
                     "Accept": "application/vnd.github+json",
                     "User-Agent": "FRAM",
                 }
-                response = requests.get(api_url, headers=headers, timeout=12)
+                response = self._get_http_session().get(api_url, headers=headers, timeout=12)
                 response.raise_for_status()
                 release = response.json()
 
@@ -2426,7 +2460,7 @@ class AccountManagerUI:
 
                 headers = {"User-Agent": "FRAM"}
                 hasher = hashlib.sha256()
-                with requests.get(download_url, headers=headers, stream=True, timeout=60) as resp:
+                with self._get_http_session().get(download_url, headers=headers, stream=True, timeout=60) as resp:
                     resp.raise_for_status()
                     total_bytes = None
                     try:
@@ -3962,9 +3996,15 @@ class AccountManagerUI:
         threading.Thread(target=worker, args=(usernames, launch_delay, on_done_callback), daemon=True).start()
 
     def _get_running_tracked_roblox_pid_set(self):
-        pid_set = set()
+        return set(self._query_tasklist_pid_map(getattr(self, "_tracked_roblox_exes", set())).keys())
 
-        for exe in sorted(getattr(self, "_tracked_roblox_exes", [])):
+    def _query_tasklist_pid_map(self, executables):
+        """Return pid->image_name for the provided executable names via tasklist."""
+        pid_to_image = {}
+        if not executables:
+            return pid_to_image
+
+        for exe in sorted({str(item).strip().lower() for item in executables if item}):
             try:
                 result = subprocess.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/FO", "CSV", "/NH"],
@@ -3977,9 +4017,7 @@ class AccountManagerUI:
                 continue
 
             stdout = (result.stdout or "").strip()
-            if not stdout:
-                continue
-            if stdout.lower().startswith("info:"):
+            if not stdout or stdout.lower().startswith("info:"):
                 continue
 
             try:
@@ -3990,15 +4028,16 @@ class AccountManagerUI:
             for row in rows:
                 if not row or len(row) < 2:
                     continue
+                image_name = (row[0] or "").strip().strip('"')
                 pid_text = (row[1] or "").strip().strip('"')
                 try:
                     pid_value = int(pid_text)
                 except Exception:
                     continue
                 if pid_value > 0:
-                    pid_set.add(pid_value)
+                    pid_to_image[pid_value] = image_name
 
-        return pid_set
+        return pid_to_image
 
     def _assign_new_pids_to_account(self, username, before_pids, after_pids):
         if not username:
@@ -4934,41 +4973,7 @@ class AccountManagerUI:
             return candidates[0]
 
         def get_running_roblox_pids():
-            pid_to_image = {}
-            for exe in sorted(target_exes):
-                try:
-                    result = subprocess.run(
-                        ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/FO", "CSV", "/NH"],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace"
-                    )
-                except Exception:
-                    continue
-
-                stdout = (result.stdout or "").strip()
-                if not stdout:
-                    continue
-                if stdout.lower().startswith("info:"):
-                    continue
-
-                try:
-                    rows = list(csv.reader(io.StringIO(stdout)))
-                except Exception:
-                    continue
-                for row in rows:
-                    if not row or len(row) < 2:
-                        continue
-                    image_name = (row[0] or "").strip().strip('"')
-                    pid_text = (row[1] or "").strip().strip('"')
-                    try:
-                        pid_value = int(pid_text)
-                    except Exception:
-                        continue
-                    if pid_value > 0:
-                        pid_to_image[pid_value] = image_name
-            return pid_to_image
+            return self._query_tasklist_pid_map(target_exes)
 
         def refresh_instances():
             state["pid_to_hwnd"].clear()
