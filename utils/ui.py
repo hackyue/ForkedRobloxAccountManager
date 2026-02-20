@@ -5543,8 +5543,8 @@ class AccountManagerUI:
 
         self.global_settings_window = tk.Toplevel(self.root)
         self.global_settings_window.title("Roblox Global Settings Editor")
-        self.global_settings_window.geometry("500x600")
-        self.global_settings_window.minsize(450, 500)
+        self.global_settings_window.geometry("980x700")
+        self.global_settings_window.minsize(860, 560)
         self.global_settings_window.configure(bg=self.BG_DARK)
         self.global_settings_window.resizable(True, True)
         
@@ -5592,10 +5592,14 @@ class AccountManagerUI:
         self.global_settings_values = {}
         self.global_settings_xml_names = {}
         self.global_settings_meta = {}
+        original_values = {}
+        dirty_keys = set()
 
         selected_setting_var = tk.StringVar(value="")
         editor_value_str = tk.StringVar(value="")
         editor_value_bool = tk.BooleanVar(value=False)
+        modified_only_var = tk.BooleanVar(value=False)
+        status_var = tk.StringVar(value="Ready.")
 
         xml_tree = None
         xml_root = None
@@ -5605,20 +5609,32 @@ class AccountManagerUI:
         search_var = tk.StringVar(value="")
         search_frame = ttk.Frame(list_frame, style="Dark.TFrame")
         search_frame.pack(fill="x", pady=(0, 6))
-        ttk.Entry(search_frame, textvariable=search_var, style="Dark.TEntry").pack(fill="x")
+        search_frame.columnconfigure(0, weight=1)
+        search_entry = ttk.Entry(search_frame, textvariable=search_var, style="Dark.TEntry")
+        search_entry.grid(row=0, column=0, sticky="ew")
+        ttk.Checkbutton(
+            search_frame,
+            text="Modified Only",
+            variable=modified_only_var,
+            style="Dark.TCheckbutton",
+        ).grid(row=0, column=1, sticky="w", padx=(8, 0))
 
         tree = ttk.Treeview(
             list_frame,
-            columns=("setting", "value"),
+            columns=("setting", "type", "value", "status"),
             show="headings",
             height=18,
             selectmode="browse",
             style="Dark.Treeview",
         )
         tree.heading("setting", text="Setting")
+        tree.heading("type", text="Type")
         tree.heading("value", text="Value")
-        tree.column("setting", width=170, anchor="w")
-        tree.column("value", width=90, anchor="w")
+        tree.heading("status", text="Status")
+        tree.column("setting", width=230, anchor="w")
+        tree.column("type", width=70, anchor="w")
+        tree.column("value", width=200, anchor="w")
+        tree.column("status", width=90, anchor="w")
         tree.pack(side="left", fill="both", expand=True)
 
         list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
@@ -5637,6 +5653,7 @@ class AccountManagerUI:
             wraplength=260
         )
         detail_desc.pack(anchor="w", pady=(2, 10))
+        ttk.Label(detail_frame, textvariable=status_var, style="Dark.TLabel").pack(anchor="w", pady=(0, 10))
 
         editor_container = ttk.Frame(detail_frame, style="Dark.TFrame")
         editor_container.pack(fill="x")
@@ -5684,12 +5701,30 @@ class AccountManagerUI:
             for row in tree.get_children():
                 tree.delete(row)
 
+            shown = 0
             for item in settings_def:
                 key = item["key"]
-                if query and query not in key.lower():
-                    continue
                 value = self.global_settings_values.get(key, "")
-                tree.insert("", "end", iid=key, values=(key, value))
+                value_text = str(value)
+                type_text = item.get("type", "string")
+                is_modified = str(value_text) != str(original_values.get(key, ""))
+                if modified_only_var.get() and (not is_modified):
+                    continue
+                if query:
+                    haystack = f"{key} {type_text} {value_text}".lower()
+                    if query not in haystack:
+                        continue
+                shown += 1
+                tree.insert(
+                    "",
+                    "end",
+                    iid=key,
+                    values=(key, type_text, value_text, "Modified" if is_modified else ""),
+                )
+
+            status_var.set(
+                f"Settings: {shown}/{len(settings_def)} shown | Modified: {len(dirty_keys)}"
+            )
 
             sel = tree.selection()
             if not sel:
@@ -5698,6 +5733,14 @@ class AccountManagerUI:
                     tree.selection_set(children[0])
                     tree.focus(children[0])
                     on_select_setting()
+                else:
+                    selected_setting_var.set("")
+                    detail_title.configure(text="")
+                    detail_desc.configure(text="")
+                    editor_value_str.set("")
+                    editor_value_bool.set(False)
+                    set_editor_mode("text")
+                    return
 
         # Parse and load settings
         def load_global_settings():
@@ -5758,6 +5801,9 @@ class AccountManagerUI:
                     else:
                         current = read_value_from_xml(xml_root, item)
                     self.global_settings_values[item["key"]] = current
+                original_values.clear()
+                original_values.update(self.global_settings_values)
+                dirty_keys.clear()
 
                 refresh_tree_values()
 
@@ -5795,21 +5841,71 @@ class AccountManagerUI:
             refresh_tree_values()
 
         search_var.trace_add("write", _on_search_change)
+        modified_only_var.trace_add("write", _on_search_change)
+
+        def normalize_value_for_type(type_name, value_str):
+            t = (type_name or "").lower()
+            v = (value_str or "").strip()
+            if t == "bool":
+                return "true" if v.lower() in {"1", "true", "yes", "on"} else "false"
+            if t in {"int", "int64", "token"}:
+                if v == "":
+                    return "0"
+                int(v)
+                return v
+            if t == "float":
+                if v == "":
+                    return "0"
+                float(v)
+                return v
+            return v
 
         def apply_current_edit():
             key = selected_setting_var.get()
             if not key:
                 return
             meta = self.global_settings_meta.get(key, {})
-            if meta.get("type") == "bool":
-                self.global_settings_values[key] = "true" if bool(editor_value_bool.get()) else "false"
+            type_name = meta.get("type", "string")
+            try:
+                if type_name == "bool":
+                    normalized = "true" if bool(editor_value_bool.get()) else "false"
+                else:
+                    normalized = normalize_value_for_type(type_name, editor_value_str.get())
+            except ValueError:
+                messagebox.showerror("Invalid Value", f"Value is not valid for type '{type_name}'.")
+                return
+
+            self.global_settings_values[key] = normalized
+            if str(normalized) != str(original_values.get(key, "")):
+                dirty_keys.add(key)
             else:
-                self.global_settings_values[key] = (editor_value_str.get() or "").strip()
+                dirty_keys.discard(key)
+
             refresh_tree_values()
             tree.selection_set(key)
             tree.focus(key)
 
-        ttk.Button(detail_frame, text="Apply", style="Dark.TButton", command=apply_current_edit).pack(fill="x", pady=(10, 0))
+        def revert_current_edit():
+            key = selected_setting_var.get()
+            if not key:
+                return
+            self.global_settings_values[key] = original_values.get(key, "")
+            dirty_keys.discard(key)
+            refresh_tree_values()
+            tree.selection_set(key)
+            tree.focus(key)
+            on_select_setting()
+
+        detail_button_row = ttk.Frame(detail_frame, style="Dark.TFrame")
+        detail_button_row.pack(fill="x", pady=(10, 0))
+        detail_button_row.columnconfigure(0, weight=1)
+        detail_button_row.columnconfigure(1, weight=1)
+        ttk.Button(detail_button_row, text="Apply", style="Dark.TButton", command=apply_current_edit).grid(
+            row=0, column=0, sticky="ew", padx=(0, 4)
+        )
+        ttk.Button(detail_button_row, text="Revert", style="Dark.TButton", command=revert_current_edit).grid(
+            row=0, column=1, sticky="ew", padx=(4, 0)
+        )
 
         # Save the settings
         def save_global_settings():
@@ -5886,15 +5982,34 @@ class AccountManagerUI:
                 except Exception as e:
                     print(f"Warning: Could not set file as read-only: {e}")
                 
+                original_values.clear()
+                original_values.update(self.global_settings_values)
+                dirty_keys.clear()
+                refresh_tree_values()
                 messagebox.showinfo("Success", f"Global settings saved successfully!\n\nBackup created at: {global_settings_path}.backup\n\nFile is now read-only.")
             except Exception as e:
                 messagebox.showerror("Error Saving Settings", f"Failed to save global settings: {str(e)}")
 
         # Reset to defaults
         def reset_to_defaults():
-            if messagebox.askyesno("Confirm Reset", "This will reset all settings to their default values. Continue?"):
-                load_global_settings()
-                messagebox.showinfo("Reset Complete", "Settings have been reset to defaults. Click Save to apply.")
+            if messagebox.askyesno("Confirm Reset", "Set all loaded values to defaults?\n\nClick Save to write changes."):
+                for item in settings_def:
+                    key = item["key"]
+                    item_type = item.get("type", "string")
+                    if item_type == "bool":
+                        self.global_settings_values[key] = "false"
+                    elif item_type in {"int", "int64", "token", "float"}:
+                        self.global_settings_values[key] = "0"
+                    else:
+                        self.global_settings_values[key] = ""
+
+                    if str(self.global_settings_values[key]) != str(original_values.get(key, "")):
+                        dirty_keys.add(key)
+                    else:
+                        dirty_keys.discard(key)
+
+                refresh_tree_values()
+                messagebox.showinfo("Reset Complete", "Values reset to defaults. Click Save to apply.")
 
         # Button frame
         button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
@@ -5916,6 +6031,13 @@ class AccountManagerUI:
 
         ttk.Button(
             button_frame,
+            text="Reload",
+            style="Dark.TButton",
+            command=load_global_settings
+        ).pack(side="left", fill="x", expand=True, padx=(5, 0))
+
+        ttk.Button(
+            button_frame,
             text="Close",
             style="Dark.TButton",
             command=self.global_settings_window.destroy
@@ -5923,6 +6045,9 @@ class AccountManagerUI:
 
         # Load initial settings
         load_global_settings()
+        self.global_settings_window.bind("<Control-f>", lambda _evt: (search_entry.focus_set(), "break")[1])
+        self.global_settings_window.bind("<Control-s>", lambda _evt: (save_global_settings(), "break")[1])
+        self.global_settings_window.bind("<Escape>", lambda _evt: (search_var.set(""), "break")[1])
 
     def open_fastflags_editor(self):
         """Open the FastFlags editor window."""
