@@ -4342,16 +4342,35 @@ class AccountManagerUI:
                 try:
                     server_job_id = ""
                     if randomize_jobs and not psid:
-                        server_job_id = RobloxAPI.get_random_public_server_job_id(pid) or ""
+                        max_random_job_attempts = 3
+                        for attempt in range(1, max_random_job_attempts + 1):
+                            server_job_id = RobloxAPI.get_random_public_server_job_id(pid) or ""
+                            if server_job_id:
+                                break
+                            if attempt < max_random_job_attempts:
+                                time.sleep(0.6 * attempt)
+                        if not server_job_id:
+                            print("[INFO] Random public server unavailable; launching without randomized job ID.")
                     before_pids = self._get_running_tracked_roblox_pid_set()
-                    if self.manager.launch_roblox(
+                    launched = self.manager.launch_roblox(
                         uname,
                         pid,
                         psid,
                         ver,
                         enable_debug=debug_flag,
                         server_job_id=server_job_id
-                    ):
+                    )
+                    if (not launched) and server_job_id and randomize_jobs and not psid:
+                        print("[INFO] Random job ID launch failed; retrying with default launch.")
+                        launched = self.manager.launch_roblox(
+                            uname,
+                            pid,
+                            psid,
+                            ver,
+                            enable_debug=debug_flag,
+                            server_job_id=""
+                        )
+                    if launched:
                         success_count += 1
                     time.sleep(0.8)
                     after_pids = self._get_running_tracked_roblox_pid_set()

@@ -234,7 +234,36 @@ class RobloxAPI:
                 if cursor:
                     params["cursor"] = cursor
 
-                response = session.get(url, params=params, timeout=8)
+                response = None
+                page_ok = False
+                max_attempts = 4
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        response = session.get(url, params=params, timeout=8)
+                    except requests.exceptions.RequestException as exc:
+                        if attempt == max_attempts:
+                            print(f"[WARNING] Failed to fetch public servers for place {place_id_str}: {exc}")
+                            return None
+                        time.sleep(min(2.0 * attempt, 6.0))
+                        continue
+
+                    if response.status_code != 429:
+                        page_ok = True
+                        break
+
+                    retry_after = str(response.headers.get("Retry-After") or "").strip()
+                    delay_seconds = 0
+                    if retry_after.isdigit():
+                        delay_seconds = int(retry_after)
+                    if delay_seconds <= 0:
+                        delay_seconds = min(2 * attempt, 8)
+                    if attempt < max_attempts:
+                        time.sleep(delay_seconds)
+
+                if not page_ok or response is None:
+                    # Treat rate limiting as a soft failure (quietly skip randomization for this launch).
+                    return None
+
                 response.raise_for_status()
                 payload = response.json() if response.content else {}
                 servers = payload.get("data") or []
