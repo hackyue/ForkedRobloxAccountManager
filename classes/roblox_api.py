@@ -8,10 +8,13 @@ import platform
 import time
 import random
 import subprocess
+import threading
 import requests
 from pathlib import Path
 
 from urllib.parse import quote
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 
@@ -19,6 +22,41 @@ class RobloxAPI:
     """Handles all Roblox API interactions"""
 
     _protocol_handler_missing_warned = False
+    _http_session = None
+    _http_session_lock = threading.Lock()
+
+    @staticmethod
+    def _get_http_session():
+        """Shared session for non-authenticated GET calls to reuse TCP connections."""
+        if RobloxAPI._http_session is not None:
+            return RobloxAPI._http_session
+
+        with RobloxAPI._http_session_lock:
+            if RobloxAPI._http_session is None:
+                session = requests.Session()
+                retry = Retry(
+                    total=2,
+                    backoff_factor=0.35,
+                    status_forcelist=(429, 500, 502, 503, 504),
+                    allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]),
+                )
+                adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+                session.headers.update({
+                    "User-Agent": "Roblox/WinInet",
+                })
+                RobloxAPI._http_session = session
+
+        return RobloxAPI._http_session
+
+    @staticmethod
+    def _format_token_preview(cookie):
+        if not cookie:
+            return "(No token found)"
+        if len(cookie) > 60:
+            return f"{cookie[:50]}...{cookie[-10:]}"
+        return cookie
     
     @staticmethod
     def _normalize_roblosecurity_cookie(cookie):
@@ -93,11 +131,13 @@ class RobloxAPI:
         """Get username using Roblox API"""
         try:
             roblosecurity_cookie = RobloxAPI._normalize_roblosecurity_cookie(roblosecurity_cookie)
+            if not roblosecurity_cookie:
+                return "Unknown"
             headers = {
                 'Cookie': f'.ROBLOSECURITY={roblosecurity_cookie}'
             }
             
-            response = requests.get(
+            response = RobloxAPI._get_http_session().get(
                 'https://users.roblox.com/v1/users/authenticated',
                 headers=headers,
                 timeout=10
@@ -123,8 +163,9 @@ class RobloxAPI:
             return None
 
         try:
+            session = RobloxAPI._get_http_session()
             place_url = f"https://apis.roblox.com/universes/v1/places/{place_id_str}/universe"
-            place_response = requests.get(place_url, timeout=5)
+            place_response = session.get(place_url, timeout=5)
             place_response.raise_for_status()
 
             place_data = place_response.json()
@@ -132,8 +173,11 @@ class RobloxAPI:
             if not universe_id:
                 return None
 
-            game_url = f"https://games.roblox.com/v1/games?universeIds={universe_id}"
-            game_response = requests.get(game_url, timeout=5)
+            game_response = session.get(
+                "https://games.roblox.com/v1/games",
+                params={"universeIds": universe_id},
+                timeout=5,
+            )
             game_response.raise_for_status()
 
             game_data = game_response.json()
@@ -160,15 +204,17 @@ class RobloxAPI:
         pages_fetched = 0
 
         try:
+            session = RobloxAPI._get_http_session()
             while pages_fetched < max_pages:
-                url = (
-                    f"https://games.roblox.com/v1/games/{place_id_str}/servers/Public"
-                    f"?sortOrder=Asc&limit=100"
-                )
+                url = f"https://games.roblox.com/v1/games/{place_id_str}/servers/Public"
+                params = {
+                    "sortOrder": "Asc",
+                    "limit": 100,
+                }
                 if cursor:
-                    url += f"&cursor={quote(cursor, safe='')}"
+                    params["cursor"] = cursor
 
-                response = requests.get(url, timeout=8)
+                response = session.get(url, params=params, timeout=8)
                 response.raise_for_status()
                 payload = response.json() if response.content else {}
                 servers = payload.get("data") or []
@@ -437,6 +483,7 @@ class RobloxAPI:
         print("[SUCCESS] Got authentication ticket!")
 
         auth_ticket_encoded = quote(auth_ticket, safe="")
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         
 
         launcher_exe = None
@@ -622,7 +669,6 @@ class RobloxAPI:
                     _launch_with_launcher(url, "Roblox Home")
                 elif using_local_install:
                     try:
-                        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                         subprocess.Popen(
                             [roblox_exe, url],
                             cwd=effective_path,
@@ -638,7 +684,6 @@ class RobloxAPI:
                             "-a", "https://www.roblox.com/Login/Negotiate.ashx",
                             "-t", auth_ticket,
                         ]
-                        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                         subprocess.Popen(
                             launch_args,
                             cwd=effective_path,
@@ -700,7 +745,6 @@ class RobloxAPI:
             else:
                 if using_local_install:
                     try:
-                        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                         subprocess.Popen(
                             [roblox_exe, url],
                             cwd=effective_path,
@@ -726,7 +770,6 @@ class RobloxAPI:
                         "-t", auth_ticket,
                         "-j", place_launch_url,
                     ]
-                    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                     subprocess.Popen(
                         launch_args,
                         cwd=effective_path,
@@ -751,11 +794,12 @@ class RobloxAPI:
     def validate_account(username, cookie):
         """Validate if an account's cookie is still valid and show detailed token info"""
         try:
+            normalized_cookie = RobloxAPI._normalize_roblosecurity_cookie(cookie)
             headers = {
-                'Cookie': f'.ROBLOSECURITY={cookie}'
+                'Cookie': f'.ROBLOSECURITY={normalized_cookie}'
             }
             
-            response = requests.get(
+            response = RobloxAPI._get_http_session().get(
                 'https://users.roblox.com/v1/users/authenticated',
                 headers=headers,
                 timeout=10
@@ -768,15 +812,8 @@ class RobloxAPI:
             print(f"{'='*60}")
             print(f"Valid: {'Yes' if is_valid else 'No'}")
             
-            if cookie:
-                if len(cookie) > 60:
-                    token_preview = f"{cookie[:50]}...{cookie[-10:]}"
-                else:
-                    token_preview = cookie
-                print(f"Token: {token_preview}")
-                print(f"Token Length: {len(cookie)} characters")
-            else:
-                print("Token: (No token found)")
+            print(f"Token: {RobloxAPI._format_token_preview(normalized_cookie)}")
+            print(f"Token Length: {len(normalized_cookie)} characters")
             
             if is_valid and response.status_code == 200:
                 try:
@@ -803,12 +840,7 @@ class RobloxAPI:
             print(f"ACCOUNT VALIDATION: {username}")
             print(f"{'='*60}")
             print(f"Valid: No")
-            if cookie:
-                if len(cookie) > 60:
-                    token_preview = f"{cookie[:50]}...{cookie[-10:]}"
-                else:
-                    token_preview = cookie
-                print(f"Token: {token_preview}")
+            print(f"Token: {RobloxAPI._format_token_preview(cookie)}")
             print(f"Error: {str(e)}")
             print(f"{'='*60}")
             return False
