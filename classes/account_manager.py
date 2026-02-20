@@ -16,6 +16,14 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
+try:
+    from selenium.webdriver.firefox.service import Service as FirefoxService
+    from selenium.webdriver.firefox.options import Options as FirefoxOptions
+    from webdriver_manager.firefox import GeckoDriverManager
+except Exception:
+    FirefoxService = None
+    FirefoxOptions = None
+    GeckoDriverManager = None
 
 from .encryption import HardwareEncryption, PasswordEncryption, EncryptionConfig
 from .roblox_api import RobloxAPI
@@ -130,7 +138,7 @@ class RobloxAccountManager:
         self.save_accounts()
 
     def create_temp_profile(self):
-        """Create a temporary Chrome profile directory"""
+        """Create a temporary browser profile directory"""
         self.temp_profile_dir = tempfile.mkdtemp(prefix="roblox_login_")
         return self.temp_profile_dir
     
@@ -142,10 +150,68 @@ class RobloxAccountManager:
             except:
                 pass
 
-    def setup_chrome_driver(self):
-        """Setup Chrome driver with maximum speed optimizations"""
+    def _is_browser_installed(self, browser_name):
+        """Best-effort check for local browser executable presence."""
+        name = (browser_name or "").strip().lower()
+        if name not in {"chrome", "firefox"}:
+            return False
+        if name == "firefox" and (FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None):
+            return False
+
+        try:
+            candidates = []
+            pf = os.environ.get("ProgramFiles")
+            pfx86 = os.environ.get("ProgramFiles(x86)")
+            localapp = os.environ.get("LOCALAPPDATA")
+            appdata = os.environ.get("APPDATA")
+
+            if name == "chrome":
+                if pf:
+                    candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
+                if pfx86:
+                    candidates.append(os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"))
+                if localapp:
+                    candidates.append(os.path.join(localapp, "Google", "Chrome", "Application", "chrome.exe"))
+            elif name == "firefox":
+                if pf:
+                    candidates.append(os.path.join(pf, "Mozilla Firefox", "firefox.exe"))
+                if pfx86:
+                    candidates.append(os.path.join(pfx86, "Mozilla Firefox", "firefox.exe"))
+                if localapp:
+                    candidates.append(os.path.join(localapp, "Mozilla Firefox", "firefox.exe"))
+                if appdata:
+                    candidates.append(os.path.join(appdata, "Mozilla", "Firefox", "firefox.exe"))
+
+            for path in candidates:
+                if path and os.path.exists(path):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def has_supported_browser(self):
+        return self._is_browser_installed("chrome") or self._is_browser_installed("firefox")
+
+    def get_available_browsers(self):
+        available = []
+        if self._is_browser_installed("chrome"):
+            available.append("chrome")
+        if self._is_browser_installed("firefox"):
+            available.append("firefox")
+        return available
+
+    def _get_browser_preference_order(self, preferred_browser=None):
+        preferred = (preferred_browser or "").strip().lower()
+        if preferred in {"chrome", "firefox"}:
+            if preferred == "firefox":
+                return ["firefox", "chrome"]
+            return ["chrome", "firefox"]
+        return ["chrome", "firefox"]
+
+    def _setup_chrome_driver(self):
+        """Setup Chrome driver with speed-oriented options."""
         profile_dir = self.create_temp_profile()
-        
+
         chrome_options = Options()
         chrome_options.add_argument(f"--user-data-dir={profile_dir}")
         chrome_options.add_argument("--no-first-run")
@@ -183,29 +249,97 @@ class RobloxAccountManager:
         chrome_options.add_argument("--disable-component-update")
         chrome_options.add_argument("--disable-background-networking")
         chrome_options.add_argument("--aggressive-cache-discard")
-        
+
+        service = Service(
+            ChromeDriverManager().install(),
+            log_path=os.devnull
+        )
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         try:
-            service = Service(
-                ChromeDriverManager().install(),
-                log_path=os.devnull
-            )
-            
-            original_stderr = sys.stderr
-            sys.stderr = open(os.devnull, 'w')
-            
-            driver = webdriver.Chrome(service=service, options=chrome_options)
             driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-            sys.stderr.close()
+        except Exception:
+            pass
+        return driver
+
+    def _setup_firefox_driver(self):
+        """Setup Firefox driver with compatible performance options."""
+        if FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None:
+            raise RuntimeError("Firefox Selenium support is unavailable in this environment.")
+
+        profile_dir = self.create_temp_profile()
+
+        firefox_options = FirefoxOptions()
+        firefox_options.add_argument("-profile")
+        firefox_options.add_argument(profile_dir)
+        firefox_options.set_preference("dom.webdriver.enabled", False)
+        firefox_options.set_preference("useAutomationExtension", False)
+        firefox_options.set_preference("toolkit.telemetry.reportingpolicy.firstRun", False)
+        firefox_options.set_preference("datareporting.healthreport.uploadEnabled", False)
+        firefox_options.set_preference("browser.startup.homepage_override.mstone", "ignore")
+        firefox_options.set_preference("browser.shell.checkDefaultBrowser", False)
+        firefox_options.set_preference("app.update.auto", False)
+        firefox_options.set_preference("app.update.enabled", False)
+
+        service = FirefoxService(GeckoDriverManager().install(), log_output=os.devnull)
+        return webdriver.Firefox(service=service, options=firefox_options)
+
+    def setup_browser_driver(self, preferred_browser=None):
+        """
+        Setup a Selenium driver using supported browsers.
+        Returns (driver, browser_name) or (None, None) on failure.
+        """
+        original_stderr = sys.stderr
+        stderr_devnull = None
+        attempted = []
+        try:
+            stderr_devnull = open(os.devnull, "w")
+            sys.stderr = stderr_devnull
+
+            for browser_name in self._get_browser_preference_order(preferred_browser):
+                try:
+                    if not self._is_browser_installed(browser_name):
+                        continue
+                    if browser_name == "chrome":
+                        driver = self._setup_chrome_driver()
+                    else:
+                        driver = self._setup_firefox_driver()
+                    return driver, browser_name
+                except Exception as exc:
+                    attempted.append((browser_name, str(exc)))
+                    self.cleanup_temp_profile()
+
+            for browser_name in self._get_browser_preference_order(preferred_browser):
+                try:
+                    if browser_name == "chrome":
+                        driver = self._setup_chrome_driver()
+                    else:
+                        driver = self._setup_firefox_driver()
+                    return driver, browser_name
+                except Exception as exc:
+                    attempted.append((browser_name, str(exc)))
+                    self.cleanup_temp_profile()
+        finally:
             sys.stderr = original_stderr
-            
-            return driver
-        except Exception as e:
-            if 'original_stderr' in locals():
-                sys.stderr = original_stderr
-            print(f"Error setting up Chrome driver: {e}")
-            print("Please make sure Google Chrome is installed on your system")
-            return None
+            if stderr_devnull is not None:
+                try:
+                    stderr_devnull.close()
+                except Exception:
+                    pass
+
+        if attempted:
+            details = ", ".join([f"{name}: {err}" for name, err in attempted])
+            print(f"Error setting up browser driver: {details}")
+        else:
+            print("Error setting up browser driver: no supported browser available.")
+        print("Please make sure Google Chrome or Mozilla Firefox is installed.")
+        return None, None
+
+    def setup_chrome_driver(self):
+        """
+        Backward-compatible wrapper that now supports fallback to Firefox.
+        """
+        driver, _browser = self.setup_browser_driver(preferred_browser="chrome")
+        return driver
     
     def wait_for_login(self, driver, timeout=300):
         """
@@ -423,7 +557,7 @@ class RobloxAccountManager:
             print(f"Error extracting user info: {e}")
             return None, None
     
-    def add_account(self, amount=1, website="https://www.roblox.com/login", javascript=""):
+    def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", preferred_browser="auto"):
         """
         Add accounts through browser login with optional Javascript execution
         amount: number of browser instances to open (max 10)
@@ -440,10 +574,11 @@ class RobloxAccountManager:
         try:
             print(f"Launching {amount} browser instance(s)...")
             
+            preferred = None if str(preferred_browser or "auto").strip().lower() == "auto" else str(preferred_browser).strip().lower()
             for i in range(amount):
-                driver = self.setup_chrome_driver()
+                driver, browser_name = self.setup_browser_driver(preferred_browser=preferred)
                 if not driver:
-                    print(f"[ERROR] Failed to setup Chrome driver for instance {i + 1}")
+                    print(f"[ERROR] Failed to setup browser driver for instance {i + 1}")
                     continue
                 
                 window_width = 500
@@ -467,7 +602,7 @@ class RobloxAccountManager:
                 drivers.append(driver)
                 
                 try:
-                    print(f"Opening {website} (instance {i + 1}/{amount})...")
+                    print(f"Opening {website} in {browser_name.capitalize()} (instance {i + 1}/{amount})...")
                     driver.get(website)
                     
                     if javascript:
@@ -542,7 +677,7 @@ class RobloxAccountManager:
                     pass
             return False
 
-    def add_accounts_from_credentials(self, credentials, timeout_per_account=120):
+    def add_accounts_from_credentials(self, credentials, timeout_per_account=120, preferred_browser="auto"):
         if not credentials:
             return 0
 
@@ -569,13 +704,15 @@ class RobloxAccountManager:
 
                 print(f"Launching credential login {idx}/{len(credentials)}...")
 
-                driver = self.setup_chrome_driver()
+                preferred = None if str(preferred_browser or "auto").strip().lower() == "auto" else str(preferred_browser).strip().lower()
+                driver, browser_name = self.setup_browser_driver(preferred_browser=preferred)
                 if not driver:
-                    print(f"[ERROR] Failed to setup Chrome driver for credential {idx}")
+                    print(f"[ERROR] Failed to setup browser driver for credential {idx}")
                     continue
 
                 driver.set_window_size(500, 650)
                 driver.get("https://www.roblox.com/login")
+                print(f"Credential login {idx}/{len(credentials)} using {browser_name.capitalize()}.")
 
                 username_input = first_present(driver, [
                     (By.ID, "login-username"),
@@ -716,8 +853,8 @@ class RobloxAccountManager:
         
         return RobloxAPI.validate_account(username, cookie)
     
-    def launch_home(self, username):
-        """Launch Chrome to Roblox home with account logged in"""
+    def launch_home(self, username, preferred_browser="auto"):
+        """Launch browser to Roblox home with account logged in (Chrome/Firefox)."""
         if username not in self.accounts:
             print(f"[ERROR] Account '{username}' not found")
             return False
@@ -725,36 +862,12 @@ class RobloxAccountManager:
         cookie = self.accounts[username]['cookie']
         
         try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.service import Service
-            from selenium.webdriver.chrome.options import Options
-            from webdriver_manager.chrome import ChromeDriverManager
-            
-            print(f"Launching Chrome for {username}...")
-            
-            chrome_options = Options()
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            
-            chrome_options.add_argument("--log-level=3")
-            chrome_options.add_argument("--silent")
-            chrome_options.add_argument("--disable-logging")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-usb")
-            chrome_options.add_argument("--disable-device-discovery-notifications")
-            
-            original_stderr = sys.stderr
-            sys.stderr = open(os.devnull, 'w')
-            
-            service = Service(ChromeDriverManager().install(), log_path=os.devnull)
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-            sys.stderr.close()
-            sys.stderr = original_stderr
-            
+            preferred = None if str(preferred_browser or "auto").strip().lower() == "auto" else str(preferred_browser).strip().lower()
+            driver, browser_name = self.setup_browser_driver(preferred_browser=preferred)
+            if not driver:
+                return False
+            print(f"Launching {browser_name.capitalize()} for {username}...")
+
             driver.get("https://www.roblox.com/")
             
             driver.add_cookie({
@@ -768,13 +881,11 @@ class RobloxAccountManager:
             
             driver.get("https://www.roblox.com/home")
             
-            print(f"[SUCCESS] Chrome launched with {username} logged in!")
+            print(f"[SUCCESS] {browser_name.capitalize()} launched with {username} logged in!")
             return True
             
         except Exception as e:
-            if 'original_stderr' in locals():
-                sys.stderr = original_stderr
-            print(f"[ERROR] Failed to launch Chrome: {e}")
+            print(f"[ERROR] Failed to launch browser: {e}")
             return False
 
     def launch_home_app(self, username, version=None, enable_debug=False):

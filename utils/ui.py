@@ -900,6 +900,7 @@ class AccountManagerUI:
             "auto_relaunch_group": "",
             "auto_update_enabled": True,
             "installer_previous_versions": MIN_INSTALLER_PREVIOUS_VERSIONS,
+            "browser_preference": "auto",
         }
 
         try:
@@ -918,6 +919,10 @@ class AccountManagerUI:
         self.settings["installer_previous_versions"] = clamp_installer_previous_versions(
             self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)
         )
+        browser_pref = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
+        if browser_pref not in {"auto", "chrome", "firefox"}:
+            browser_pref = "auto"
+        self.settings["browser_preference"] = browser_pref
 
         self._ensure_auto_arrange_scope_valid()
         if self.settings.get("enable_multi_roblox", False):
@@ -964,6 +969,13 @@ class AccountManagerUI:
     def _get_multi_launch_delay(self):
         """Return the current launch delay, clamped to the supported range."""
         return clamp_multi_launch_delay(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS))
+
+    def _get_preferred_browser(self):
+        """Return browser automation preference: auto, chrome, or firefox."""
+        value = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
+        if value not in {"auto", "chrome", "firefox"}:
+            return "auto"
+        return value
 
     def _focus_main_window(self):
         try:
@@ -2601,18 +2613,33 @@ class AccountManagerUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def is_chrome_installed(self):
-        """Best-effort check to see if Google Chrome is installed (Windows)."""
+        """
+        Backward-compatible wrapper.
+        Returns True when at least one supported browser (Chrome/Firefox) is available.
+        """
+        try:
+            if hasattr(self, "manager") and hasattr(self.manager, "has_supported_browser"):
+                return bool(self.manager.has_supported_browser())
+        except Exception:
+            pass
+
+        # Fallback local check
         try:
             candidates = []
-            pf = os.environ.get('ProgramFiles')
-            pfx86 = os.environ.get('ProgramFiles(x86)')
-            localapp = os.environ.get('LOCALAPPDATA')
+            pf = os.environ.get("ProgramFiles")
+            pfx86 = os.environ.get("ProgramFiles(x86)")
+            localapp = os.environ.get("LOCALAPPDATA")
+
             if pf:
-                candidates.append(os.path.join(pf, 'Google', 'Chrome', 'Application', 'chrome.exe'))
+                candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
+                candidates.append(os.path.join(pf, "Mozilla Firefox", "firefox.exe"))
             if pfx86:
-                candidates.append(os.path.join(pfx86, 'Google', 'Chrome', 'Application', 'chrome.exe'))
+                candidates.append(os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"))
+                candidates.append(os.path.join(pfx86, "Mozilla Firefox", "firefox.exe"))
             if localapp:
-                candidates.append(os.path.join(localapp, 'Google', 'Chrome', 'Application', 'chrome.exe'))
+                candidates.append(os.path.join(localapp, "Google", "Chrome", "Application", "chrome.exe"))
+                candidates.append(os.path.join(localapp, "Mozilla Firefox", "firefox.exe"))
+
             for path in candidates:
                 if path and os.path.exists(path):
                     return True
@@ -2997,9 +3024,9 @@ class AccountManagerUI:
         """
         if not self.is_chrome_installed():
             messagebox.showwarning(
-                "Google Chrome Required",
-                "Add Account requires Google Chrome to be installed.\n"
-                "Please install Google Chrome and try again."
+                "Browser Required",
+                "Add Account requires Google Chrome or Mozilla Firefox to be installed.\n"
+                "Please install one of them and try again."
             )
             return
 
@@ -3010,7 +3037,12 @@ class AccountManagerUI:
             Thread function to add account without blocking UI
             """
             try:
-                success = self.manager.add_account(1, "https://www.roblox.com/login", "")
+                success = self.manager.add_account(
+                    1,
+                    "https://www.roblox.com/login",
+                    "",
+                    preferred_browser=self._get_preferred_browser(),
+                )
                 self.root.after(
                     0,
                     lambda: self._add_account_complete(success)
@@ -3224,7 +3256,10 @@ class AccountManagerUI:
 
             def worker(parsed_credentials):
                 try:
-                    success_count = self.manager.add_accounts_from_credentials(parsed_credentials)
+                    success_count = self.manager.add_accounts_from_credentials(
+                        parsed_credentials,
+                        preferred_browser=self._get_preferred_browser(),
+                    )
                     if success_count > 0:
                         self.root.after(0, lambda: [
                             self.refresh_accounts(),
@@ -3263,7 +3298,7 @@ class AccountManagerUI:
 
     def javascript_import(self):
         """
-        Launch multiple Chrome instances with custom Javascript execution
+        Launch multiple browser instances with custom Javascript execution
         """
         amount_window = tk.Toplevel(self.root)
         amount_window.title("Javascript Import - Amount")
@@ -3408,7 +3443,12 @@ class AccountManagerUI:
             Thread function to add account without blocking UI
             """
             try:
-                success = self.manager.add_account(amount, website, javascript)
+                success = self.manager.add_account(
+                    amount,
+                    website,
+                    javascript,
+                    preferred_browser=self._get_preferred_browser(),
+                )
                 
                 if success:
                     self.root.after(0, lambda: [
@@ -3977,12 +4017,12 @@ class AccountManagerUI:
             return False
 
     def launch_home(self):
-        """Launch Chrome to Roblox home with the selected account(s) logged in (non-blocking)"""
+        """Launch browser to Roblox home with the selected account(s) logged in (non-blocking)"""
         if not self.is_chrome_installed():
             messagebox.showwarning(
-                "Google Chrome Required",
-                "Launching browser requires Google Chrome to be installed.\n"
-                "Please install Google Chrome and try again."
+                "Browser Required",
+                "Launching browser requires Google Chrome or Mozilla Firefox to be installed.\n"
+                "Please install one of them and try again."
             )
             return
 
@@ -3993,7 +4033,7 @@ class AccountManagerUI:
             if len(usernames) >= 3:
                 confirm = messagebox.askyesno(
                     "Confirm Launch",
-                    f"Are you sure you want to launch {len(usernames)} browser windows?\n\nThis will open multiple Chrome instances."
+                    f"Are you sure you want to launch {len(usernames)} browser windows?\n\nThis will open multiple browser instances."
                 )
                 if not confirm:
                     return
@@ -4009,7 +4049,7 @@ class AccountManagerUI:
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
-                    if self.manager.launch_home(uname):
+                    if self.manager.launch_home(uname, preferred_browser=self._get_preferred_browser()):
                         success_count += 1
                 except Exception as e:
                     print(f"Failed to launch browser for {uname}: {e}")
@@ -4374,6 +4414,7 @@ class AccountManagerUI:
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
         auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update_enabled", True))
         theme_var = tk.StringVar(value=self.settings.get("selected_theme", self.theme_name))
+        browser_preference_var = tk.StringVar(value=self._get_preferred_browser())
         custom_launcher_var = tk.BooleanVar(value=self.settings.get("enable_custom_launcher", False))
         custom_launcher_path_var = tk.StringVar(value=self.settings.get("custom_launcher_path", ""))
         custom_launcher_player_var = tk.BooleanVar(value=self.settings.get("custom_launcher_requires_player", False))
@@ -4702,6 +4743,34 @@ class AccountManagerUI:
             self.apply_theme(selected_theme)
 
         theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
+
+        browser_card = create_settings_card(general_tab, "Browser Automation")
+        browser_value_to_label = {
+            "auto": "Auto (Chrome first, then Firefox)",
+            "chrome": "Chrome only",
+            "firefox": "Firefox only",
+        }
+        browser_label_to_value = {label: value for value, label in browser_value_to_label.items()}
+        browser_pref_label_var = tk.StringVar(
+            value=browser_value_to_label.get(browser_preference_var.get(), browser_value_to_label["auto"])
+        )
+        browser_combo = ttk.Combobox(
+            browser_card,
+            values=list(browser_value_to_label.values()),
+            textvariable=browser_pref_label_var,
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        browser_combo.pack(fill="x", pady=(0, 4))
+
+        def on_browser_preference_change(_=None):
+            selected_label = (browser_combo.get() or "").strip()
+            selected_value = browser_label_to_value.get(selected_label, "auto")
+            browser_preference_var.set(selected_value)
+            self.settings["browser_preference"] = selected_value
+            self.save_settings()
+
+        browser_combo.bind("<<ComboboxSelected>>", on_browser_preference_change)
 
         auto_arrange_card = create_settings_card(general_tab, "Client Window Arrangement")
 

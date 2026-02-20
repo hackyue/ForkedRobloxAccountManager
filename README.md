@@ -49,7 +49,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 4. Double-click to run - that's it! yippie
 
 **Requirements:**
-- **Google Chrome browser**
+- **Google Chrome or Mozilla Firefox**
 - **Windows**
 
 > ⚠️ Windows Defender may flag the EXE as untrusted since it's not signed. Click "More info" → "Run anyway" to proceed.
@@ -65,7 +65,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 
 **Requirements:**
 - **Python 3.7+**
-- **Google Chrome browser**
+- **Google Chrome or Mozilla Firefox**
 - **Windows**
 
 1. **Clone the repository**
@@ -89,7 +89,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 The following Python packages are required:
 - `selenium` - Browser automation
 - `requests` - HTTP requests for account validation and game info
-- `webdriver-manager` - Automatic ChromeDriver management
+- `webdriver-manager` - Automatic ChromeDriver/GeckoDriver management
 - `pycryptodome` - Encryption and cookie handling
 - `pywin32` - Windows API access for Multi Roblox feature
 
