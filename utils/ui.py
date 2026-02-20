@@ -1961,25 +1961,87 @@ class AccountManagerUI:
     def load_roblox_versions(self):
         """Load available Roblox versions from standard and custom folders."""
         try:
+            current_selection = self.version_var.get() if hasattr(self, "version_var") else "Latest Version"
             local_versions = self.get_local_roblox_versions()
             display_values = ["Latest Version"]
             self.version_options = {"Latest Version": None}
+            seen_paths = set()
 
             for entry in local_versions:
                 label = entry.get("label")
                 path = entry.get("path")
                 if not label or not path:
                     continue
+                normalized_path = os.path.normcase(os.path.normpath(path))
+                if normalized_path in seen_paths:
+                    continue
+                seen_paths.add(normalized_path)
                 display_values.append(label)
                 self.version_options[label] = path
 
+            custom_entry = self._get_custom_roblox_player_entry()
+            if custom_entry:
+                custom_label = custom_entry["label"]
+                custom_path = custom_entry["path"]
+                normalized_custom = os.path.normcase(os.path.normpath(custom_path))
+                if normalized_custom not in seen_paths:
+                    display_values.append(custom_label)
+                    self.version_options[custom_label] = custom_path
+
             self.version_dropdown["values"] = display_values or ["Latest Version"]
+            if current_selection in self.version_options:
+                self.version_var.set(current_selection)
+            elif current_selection in (display_values or []):
+                self.version_var.set(current_selection)
+            else:
+                self.version_var.set("Latest Version")
         except Exception as e:
             print(f"Error loading Roblox versions: {e}")
             self.version_options = {"Latest Version": None}
             self.version_dropdown["values"] = ["Latest Version"]
+            self.version_var.set("Latest Version")
 
         self.refresh_installer_menu()
+
+    def _get_custom_roblox_player_entry(self):
+        """Return a normalized custom Roblox executable entry for the version dropdown."""
+        raw_path = (self.settings.get("custom_roblox_player_path") or "").strip()
+        if not raw_path:
+            return None
+
+        expanded_path = os.path.expandvars(raw_path)
+        normalized_path = os.path.normpath(expanded_path)
+        if not os.path.isfile(normalized_path):
+            return None
+
+        exe_name = os.path.basename(normalized_path).lower()
+        if exe_name not in self.ROBLOX_CLIENT_EXECUTABLES:
+            return None
+
+        parent_name = os.path.basename(os.path.dirname(normalized_path)) or "Custom"
+        label = f"[Custom] {parent_name} - {os.path.basename(normalized_path)}"
+        return {
+            "label": label,
+            "path": normalized_path,
+        }
+
+    def _select_version_by_path(self, path):
+        if not path:
+            return
+        try:
+            normalized_target = os.path.normcase(os.path.normpath(path))
+        except Exception:
+            return
+        for label, option_path in self.version_options.items():
+            if not option_path:
+                continue
+            try:
+                normalized_option = os.path.normcase(os.path.normpath(option_path))
+            except Exception:
+                continue
+            if normalized_option == normalized_target:
+                self.version_var.set(label)
+                return
 
     def _collect_version_sources(self):
         """Return a deduplicated list of version sources (standard + custom)."""
@@ -3861,10 +3923,6 @@ class AccountManagerUI:
 
         selected_version_label = self.version_var.get()
         version_path = self.version_options.get(selected_version_label)
-        if not version_path:
-            custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
-            if custom_player_path:
-                version_path = custom_player_path
 
         def worker(selected_usernames, delay_seconds, done_callback):
             success_count = 0
@@ -3990,10 +4048,6 @@ class AccountManagerUI:
 
         selected_version_label = self.version_var.get()
         version_path = self.version_options.get(selected_version_label)
-        if not version_path:
-            custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
-            if custom_player_path:
-                version_path = custom_player_path
 
         if not game_id:
             messagebox.showwarning("Missing Information", "Please enter a Place ID.")
@@ -4583,6 +4637,10 @@ class AccountManagerUI:
             self.settings["custom_roblox_player_path"] = value
             custom_roblox_player_path_var.set(value)
             self.save_settings()
+            if hasattr(self, "version_dropdown") and hasattr(self, "version_var"):
+                self.load_roblox_versions()
+                if value:
+                    self._select_version_by_path(value)
 
         def browse_custom_player_path():
             path = filedialog.askopenfilename(
@@ -5039,10 +5097,6 @@ class AccountManagerUI:
             debug_enabled = self.settings.get("enable_debug_logging", False)
             selected_version_label = self.version_var.get() if hasattr(self, "version_var") else ""
             version_path = self.version_options.get(selected_version_label) if hasattr(self, "version_options") else None
-            if not version_path:
-                custom_player_path = (self.settings.get("custom_roblox_player_path") or "").strip()
-                if custom_player_path:
-                    version_path = custom_player_path
 
             def worker():
                 try:
