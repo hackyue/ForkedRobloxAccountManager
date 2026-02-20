@@ -4322,7 +4322,7 @@ class AccountManagerUI:
         ).pack(anchor="w")
         ttk.Label(
             main_frame,
-            text="Tune interface behavior, Roblox launch options, and automation.",
+            text="Manage app preferences, Roblox launch behavior, and automation tools.",
             style="Dark.TLabel",
             font=("Segoe UI", 9),
             foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
@@ -4440,16 +4440,54 @@ class AccountManagerUI:
         content_frame.grid_rowconfigure(0, weight=1)
         content_frame.grid_columnconfigure(0, weight=1)
 
+        tab_scroll_state = {}
+
         def create_tab_frame(tab_name):
-            frame = ttk.Frame(content_frame, style="Dark.TFrame")
-            frame.grid(row=0, column=0, sticky="nsew")
-            tabs[tab_name] = frame
+            tab_container = ttk.Frame(content_frame, style="Dark.TFrame")
+            tab_container.grid(row=0, column=0, sticky="nsew")
+            tab_container.grid_rowconfigure(0, weight=1)
+            tab_container.grid_columnconfigure(0, weight=1)
+
+            canvas = tk.Canvas(
+                tab_container,
+                bg=self.BG_DARK,
+                highlightthickness=0,
+                bd=0,
+            )
+            v_scroll = ttk.Scrollbar(tab_container, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=v_scroll.set)
+
+            canvas.grid(row=0, column=0, sticky="nsew")
+            v_scroll.grid(row=0, column=1, sticky="ns")
+
+            frame = ttk.Frame(canvas, style="Dark.TFrame")
+            canvas_window = canvas.create_window((0, 0), window=frame, anchor="nw")
+
+            def _sync_scrollregion(_evt=None):
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+
+            def _on_canvas_resize(_evt=None):
+                try:
+                    required_width = max(frame.winfo_reqwidth(), canvas.winfo_width())
+                    canvas.itemconfigure(canvas_window, width=required_width)
+                except Exception:
+                    pass
+                _sync_scrollregion()
+
+            frame.bind("<Configure>", _sync_scrollregion)
+            canvas.bind("<Configure>", _on_canvas_resize)
+
+            tab_scroll_state[tab_name] = {"canvas": canvas}
+            tabs[tab_name] = tab_container
             return frame
 
-        create_tab_button("General", "general")
+        create_tab_button("Experience", "general")
         create_tab_button("Roblox", "roblox")
         create_tab_button("Automation", "automation")
-        create_tab_button("Advanced", "advanced")
+        create_tab_button("Tools", "advanced")
 
         general_tab = create_tab_frame("general")
         roblox_tab = create_tab_frame("roblox")
@@ -4485,7 +4523,7 @@ class AccountManagerUI:
             body.pack(fill="x", padx=10, pady=(8, 10))
             return body
 
-        interface_card = create_settings_card(general_tab, "Interface & Notifications")
+        interface_card = create_settings_card(general_tab, "Interface & Notifications", "Behavior and interaction preferences")
 
         ttk.Checkbutton(
             interface_card,
@@ -4511,14 +4549,14 @@ class AccountManagerUI:
             command=auto_save_setting("disable_success_popups", disable_success_var)
         ).pack(anchor="w", pady=2)
 
-        installer_versions_frame = create_settings_card(general_tab, "Roblox Installer")
+        installer_versions_frame = create_settings_card(general_tab, "Installer", "Version list and update visibility")
 
         installer_versions_row = ttk.Frame(installer_versions_frame, style="Dark.TFrame")
         installer_versions_row.pack(fill="x")
 
         ttk.Label(
             installer_versions_row,
-            text="Previous versions to show",
+            text="Previous versions visible",
             style="Dark.TLabel"
         ).pack(side="left")
 
@@ -4565,7 +4603,7 @@ class AccountManagerUI:
         installer_versions_spin.bind("<FocusOut>", lambda _: on_installer_previous_versions_update())
         installer_versions_spin.bind("<Return>", lambda _: on_installer_previous_versions_update())
 
-        updates_card = create_settings_card(general_tab, "Updates")
+        updates_card = create_settings_card(general_tab, "App Updates", "Automatic update checks")
 
         ttk.Checkbutton(
             updates_card,
@@ -4596,7 +4634,7 @@ class AccountManagerUI:
 
         theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
 
-        auto_arrange_card = create_settings_card(general_tab, "Auto-Arrange Clients")
+        auto_arrange_card = create_settings_card(general_tab, "Client Window Arrangement")
 
         if self._has_multiple_monitors():
             scope_display_map = {
@@ -4634,7 +4672,7 @@ class AccountManagerUI:
                 wraplength=320
             ).pack(anchor="w", pady=(0, 4))
 
-        roblox_client_card = create_settings_card(roblox_tab, "Roblox Client")
+        roblox_client_card = create_settings_card(roblox_tab, "Launch Rules")
 
         ttk.Checkbutton(
             roblox_client_card,
@@ -4667,12 +4705,12 @@ class AccountManagerUI:
 
         ttk.Button(
             roblox_client_card,
-            text="Global Settings",
+            text="Open Client Global Settings",
             style="Dark.TButton",
             command=open_global_settings_and_close_settings
         ).pack(fill="x", pady=(8, 0))
 
-        custom_frame = create_settings_card(roblox_tab, "Launch Behavior")
+        custom_frame = create_settings_card(roblox_tab, "Launch Timing & Executable")
 
         ttk.Label(
             custom_frame,
@@ -4719,7 +4757,7 @@ class AccountManagerUI:
 
         ttk.Label(
             custom_frame,
-            text="Custom RobloxPlayer",
+            text="Custom Roblox Player",
             style="Dark.TLabel",
             font=("Segoe UI", 10, "bold")
         ).pack(anchor="w", pady=(10, 2))
@@ -4858,12 +4896,12 @@ class AccountManagerUI:
 
         ttk.Button(
             auto_relaunch_card,
-            text="Run Auto Relaunch Now",
+            text="Run Auto Relaunch",
             style="Dark.TButton",
             command=self._auto_relaunch_run_once
         ).pack(fill="x", pady=(10, 0))
 
-        logging_card = create_settings_card(advanced_tab, "Logging")
+        logging_card = create_settings_card(advanced_tab, "Diagnostics")
 
         ttk.Checkbutton(
             logging_card,
@@ -4877,7 +4915,7 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_instance_manager()
 
-        tools_card = create_settings_card(advanced_tab, "Tools")
+        tools_card = create_settings_card(advanced_tab, "Utilities")
 
         ttk.Button(
             tools_card,
@@ -4892,7 +4930,7 @@ class AccountManagerUI:
 
         ttk.Button(
             tools_card,
-            text="FastFlags Editor",
+            text="Fast Flags Editor",
             style="Dark.TButton",
             command=open_fastflags_and_close_settings
         ).pack(fill="x", pady=(0, 0))
@@ -4916,7 +4954,7 @@ class AccountManagerUI:
 
         ttk.Button(
             footer_frame,
-            text="Console Output",
+            text="Open Console",
             style="Dark.TButton",
             command=self.open_console_output
         ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
