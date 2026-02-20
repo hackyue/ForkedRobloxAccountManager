@@ -4302,7 +4302,7 @@ class AccountManagerUI:
         settings_window.withdraw()
         settings_window.title("Settings")
         settings_window.configure(bg=self.BG_DARK)
-        settings_window.resizable(False, False)
+        settings_window.resizable(True, True)
         
         settings_window.transient(self.root)
         settings_window.grab_set()
@@ -4313,6 +4313,20 @@ class AccountManagerUI:
         
         main_frame = ttk.Frame(settings_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=15)
+
+        ttk.Label(
+            main_frame,
+            text="Settings",
+            style="Dark.TLabel",
+            font=("Segoe UI", 14, "bold")
+        ).pack(anchor="w")
+        ttk.Label(
+            main_frame,
+            text="Tune interface behavior, Roblox launch options, and automation.",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+        ).pack(anchor="w", pady=(2, 10))
         
         topmost_var = tk.BooleanVar(value=self.settings.get("enable_topmost", False))
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
@@ -4424,6 +4438,7 @@ class AccountManagerUI:
         content_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         content_frame.pack(fill="both", expand=True)
         content_frame.grid_rowconfigure(0, weight=1)
+        content_frame.grid_columnconfigure(0, weight=1)
 
         def create_tab_frame(tab_name):
             frame = ttk.Frame(content_frame, style="Dark.TFrame")
@@ -4441,15 +4456,39 @@ class AccountManagerUI:
         automation_tab = create_tab_frame("automation")
         advanced_tab = create_tab_frame("advanced")
 
-        ttk.Label(
-            general_tab,
-            text="Interface & Notifications",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(0, 6))
+        def create_settings_card(parent, title, subtitle=""):
+            outer = tk.Frame(
+                parent,
+                bg=self.BG_MID,
+                highlightbackground=self.BORDER_COLOR,
+                highlightthickness=1,
+                bd=0,
+            )
+            outer.pack(fill="x", pady=(0, 10))
+            header = tk.Frame(outer, bg=self.BG_MID)
+            header.pack(fill="x", padx=10, pady=(8, 0))
+            ttk.Label(
+                header,
+                text=title,
+                style="Dark.TLabel",
+                font=("Segoe UI", 11, "bold")
+            ).pack(anchor="w")
+            if subtitle:
+                ttk.Label(
+                    header,
+                    text=subtitle,
+                    style="Dark.TLabel",
+                    font=("Segoe UI", 9),
+                    foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888"
+                ).pack(anchor="w", pady=(2, 0))
+            body = ttk.Frame(outer, style="Dark.TFrame")
+            body.pack(fill="x", padx=10, pady=(8, 10))
+            return body
+
+        interface_card = create_settings_card(general_tab, "Interface & Notifications")
 
         ttk.Checkbutton(
-            general_tab,
+            interface_card,
             text="Enable Topmost",
             variable=topmost_var,
             style="Dark.TCheckbutton",
@@ -4457,7 +4496,7 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
-            general_tab,
+            interface_card,
             text="Multi Select (Ctrl + Click)",
             variable=multi_select_var,
             style="Dark.TCheckbutton",
@@ -4465,22 +4504,14 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
-            general_tab,
+            interface_card,
             text="Disable Success Popups",
             variable=disable_success_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("disable_success_popups", disable_success_var)
         ).pack(anchor="w", pady=2)
 
-        installer_versions_frame = ttk.Frame(general_tab, style="Dark.TFrame")
-        installer_versions_frame.pack(fill="x", pady=(10, 0))
-
-        ttk.Label(
-            installer_versions_frame,
-            text="Roblox Installer",
-            style="Dark.TLabel",
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(0, 2))
+        installer_versions_frame = create_settings_card(general_tab, "Roblox Installer")
 
         installer_versions_row = ttk.Frame(installer_versions_frame, style="Dark.TFrame")
         installer_versions_row.pack(fill="x")
@@ -4534,30 +4565,20 @@ class AccountManagerUI:
         installer_versions_spin.bind("<FocusOut>", lambda _: on_installer_previous_versions_update())
         installer_versions_spin.bind("<Return>", lambda _: on_installer_previous_versions_update())
 
-        ttk.Label(
-            general_tab,
-            text="Updates",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(10, 6))
+        updates_card = create_settings_card(general_tab, "Updates")
 
         ttk.Checkbutton(
-            general_tab,
+            updates_card,
             text="Enable Auto Updates",
             variable=auto_update_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("auto_update_enabled", auto_update_var)
         ).pack(anchor="w", pady=2)
 
-        ttk.Label(
-            general_tab,
-            text="Theme",
-            style="Dark.TLabel",
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(10, 2))
+        theme_card = create_settings_card(general_tab, "Theme")
 
         theme_combo = ttk.Combobox(
-            general_tab,
+            theme_card,
             values=list(THEMES.keys()),
             textvariable=theme_var,
             state="readonly",
@@ -4575,12 +4596,7 @@ class AccountManagerUI:
 
         theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
 
-        ttk.Label(
-            general_tab,
-            text="Auto-Arrange applies to",
-            style="Dark.TLabel",
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(10, 2))
+        auto_arrange_card = create_settings_card(general_tab, "Auto-Arrange Clients")
 
         if self._has_multiple_monitors():
             scope_display_map = {
@@ -4592,7 +4608,7 @@ class AccountManagerUI:
             selected_label = scope_display_map.get(auto_arrange_scope_var.get(), scope_display_map["both"])
 
             scope_combo = ttk.Combobox(
-                general_tab,
+                auto_arrange_card,
                 values=list(scope_display_map.values()),
                 state="readonly",
                 style="Dark.TCombobox"
@@ -4612,21 +4628,16 @@ class AccountManagerUI:
             self.settings["auto_arrange_scope"] = "primary"
             auto_arrange_scope_var.set("primary")
             ttk.Label(
-                general_tab,
+                auto_arrange_card,
                 text="Only one monitor detected. Auto-arrange will use the available screen.",
                 style="Dark.TLabel",
                 wraplength=320
             ).pack(anchor="w", pady=(0, 4))
 
-        ttk.Label(
-            roblox_tab,
-            text="Roblox Client",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(0, 6))
+        roblox_client_card = create_settings_card(roblox_tab, "Roblox Client")
 
         ttk.Checkbutton(
-            roblox_tab,
+            roblox_client_card,
             text="Confirm Before Launch",
             variable=confirm_launch_var,
             style="Dark.TCheckbutton",
@@ -4634,7 +4645,7 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
-            roblox_tab,
+            roblox_client_card,
             text="Enable Multi Roblox",
             variable=multi_roblox_var,
             style="Dark.TCheckbutton",
@@ -4642,14 +4653,12 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
-            roblox_tab,
+            roblox_client_card,
             text="Randomize Server Job IDs",
             variable=randomize_job_id_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("randomize_server_job_ids", randomize_job_id_var)
         ).pack(anchor="w", pady=2)
-
-        ttk.Label(roblox_tab, text="", style="Dark.TLabel").pack(pady=5)
 
         def open_global_settings_and_close_settings():
             """Open Global Settings editor and close settings window"""
@@ -4657,14 +4666,13 @@ class AccountManagerUI:
             self.open_global_settings_editor()
 
         ttk.Button(
-            roblox_tab,
+            roblox_client_card,
             text="Global Settings",
             style="Dark.TButton",
             command=open_global_settings_and_close_settings
-        ).pack(fill="x", pady=(10, 2))
+        ).pack(fill="x", pady=(8, 0))
 
-        custom_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
-        custom_frame.pack(fill="x", pady=(0, 6))
+        custom_frame = create_settings_card(roblox_tab, "Launch Behavior")
 
         ttk.Label(
             custom_frame,
@@ -4710,13 +4718,13 @@ class AccountManagerUI:
         delay_var.trace_add("write", on_delay_var_change)
 
         ttk.Label(
-            roblox_tab,
+            custom_frame,
             text="Custom RobloxPlayer",
             style="Dark.TLabel",
             font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(12, 2))
+        ).pack(anchor="w", pady=(10, 2))
 
-        custom_player_frame = ttk.Frame(roblox_tab, style="Dark.TFrame")
+        custom_player_frame = ttk.Frame(custom_frame, style="Dark.TFrame")
         custom_player_frame.pack(fill="x", pady=(0, 6))
         custom_player_frame.columnconfigure(0, weight=1)
         custom_player_entry = ttk.Entry(custom_player_frame, style="Dark.TEntry", textvariable=custom_roblox_player_path_var)
@@ -4799,22 +4807,17 @@ class AccountManagerUI:
             else:
                 self._auto_relaunch_stop()
 
-        ttk.Label(
-            automation_tab,
-            text="Auto Relaunch",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(0, 6))
+        auto_relaunch_card = create_settings_card(automation_tab, "Auto Relaunch")
 
         ttk.Checkbutton(
-            automation_tab,
+            auto_relaunch_card,
             text="Enable Auto Relaunch",
             variable=auto_relaunch_enabled_var,
             style="Dark.TCheckbutton",
             command=on_auto_relaunch_update
         ).pack(anchor="w", pady=2)
 
-        interval_frame = ttk.Frame(automation_tab, style="Dark.TFrame")
+        interval_frame = ttk.Frame(auto_relaunch_card, style="Dark.TFrame")
         interval_frame.pack(fill="x", pady=(4, 0))
 
         ttk.Label(interval_frame, text="Interval (minutes)", style="Dark.TLabel").pack(side="left")
@@ -4838,7 +4841,7 @@ class AccountManagerUI:
         if auto_relaunch_group_var.get() not in groups:
             auto_relaunch_group_var.set("")
 
-        group_frame = ttk.Frame(automation_tab, style="Dark.TFrame")
+        group_frame = ttk.Frame(auto_relaunch_card, style="Dark.TFrame")
         group_frame.pack(fill="x", pady=(6, 0))
         ttk.Label(group_frame, text="Group", style="Dark.TLabel").pack(side="left")
 
@@ -4854,21 +4857,16 @@ class AccountManagerUI:
         auto_relaunch_group_combo.bind("<<ComboboxSelected>>", lambda _=None: on_auto_relaunch_update())
 
         ttk.Button(
-            automation_tab,
+            auto_relaunch_card,
             text="Run Auto Relaunch Now",
             style="Dark.TButton",
             command=self._auto_relaunch_run_once
         ).pack(fill="x", pady=(10, 0))
 
-        ttk.Label(
-            advanced_tab,
-            text="Logging",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(0, 6))
+        logging_card = create_settings_card(advanced_tab, "Logging")
 
         ttk.Checkbutton(
-            advanced_tab,
+            logging_card,
             text="Enable Debug Logging",
             variable=debug_var,
             style="Dark.TCheckbutton",
@@ -4879,15 +4877,10 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_instance_manager()
 
-        ttk.Label(
-            advanced_tab,
-            text="Instance Manager",
-            style="Dark.TLabel",
-            font=("Segoe UI", 11, "bold")
-        ).pack(anchor="w", pady=(12, 6))
+        tools_card = create_settings_card(advanced_tab, "Tools")
 
         ttk.Button(
-            advanced_tab,
+            tools_card,
             text="Instance Manager",
             style="Dark.TButton",
             command=open_instance_manager_and_close_settings
@@ -4898,17 +4891,17 @@ class AccountManagerUI:
             self.open_fastflags_editor()
 
         ttk.Button(
-            advanced_tab,
+            tools_card,
             text="FastFlags Editor",
             style="Dark.TButton",
             command=open_fastflags_and_close_settings
-        ).pack(fill="x", pady=(10, 0))
+        ).pack(fill="x", pady=(0, 0))
 
         set_active_tab("general")
         padding_w = 40
         padding_h = 40
-        min_w = 420
-        min_h = 460
+        min_w = 760
+        min_h = 620
         req_w = settings_window.winfo_reqwidth() + padding_w
         req_h = settings_window.winfo_reqheight() + padding_h
         final_w = max(req_w, min_w)
@@ -4916,19 +4909,24 @@ class AccountManagerUI:
         self._center_window(settings_window, final_w, final_h)
         settings_window.deiconify()
 
+        footer_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        footer_frame.pack(fill="x", pady=(8, 0))
+        footer_frame.columnconfigure(0, weight=1)
+        footer_frame.columnconfigure(1, weight=1)
+
         ttk.Button(
-            main_frame,
+            footer_frame,
             text="Console Output",
             style="Dark.TButton",
             command=self.open_console_output
-        ).pack(fill="x", pady=(6, 4))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
         ttk.Button(
-            main_frame,
+            footer_frame,
             text="Close",
             style="Dark.TButton",
             command=settings_window.destroy
-        ).pack(fill="x", pady=(0, 0))
+        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     def open_instance_manager(self):
         if platform.system() != "Windows":
