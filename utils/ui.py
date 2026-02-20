@@ -4133,38 +4133,43 @@ class AccountManagerUI:
         if not executables:
             return pid_to_image
 
-        for exe in sorted({str(item).strip().lower() for item in executables if item}):
+        target_exes = {str(item).strip().lower() for item in executables if item}
+        if not target_exes:
+            return pid_to_image
+
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except Exception:
+            return pid_to_image
+
+        stdout = (result.stdout or "").strip()
+        if not stdout or stdout.lower().startswith("info:"):
+            return pid_to_image
+
+        try:
+            rows = csv.reader(io.StringIO(stdout))
+        except Exception:
+            return pid_to_image
+
+        for row in rows:
+            if not row or len(row) < 2:
+                continue
+            image_name = (row[0] or "").strip().strip('"')
+            if not image_name or image_name.lower() not in target_exes:
+                continue
+            pid_text = (row[1] or "").strip().strip('"')
             try:
-                result = subprocess.run(
-                    ["tasklist", "/FI", f"IMAGENAME eq {exe}", "/FO", "CSV", "/NH"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
+                pid_value = int(pid_text)
             except Exception:
                 continue
-
-            stdout = (result.stdout or "").strip()
-            if not stdout or stdout.lower().startswith("info:"):
-                continue
-
-            try:
-                rows = list(csv.reader(io.StringIO(stdout)))
-            except Exception:
-                continue
-
-            for row in rows:
-                if not row or len(row) < 2:
-                    continue
-                image_name = (row[0] or "").strip().strip('"')
-                pid_text = (row[1] or "").strip().strip('"')
-                try:
-                    pid_value = int(pid_text)
-                except Exception:
-                    continue
-                if pid_value > 0:
-                    pid_to_image[pid_value] = image_name
+            if pid_value > 0:
+                pid_to_image[pid_value] = image_name
 
         return pid_to_image
 
@@ -5167,7 +5172,7 @@ class AccountManagerUI:
         ).grid(row=0, column=3, sticky="w", padx=(10, 0))
 
         ttk.Label(controls_frame, text="Every (s)", style="Dark.TLabel").grid(row=0, column=4, sticky="w", padx=(10, 4))
-        refresh_interval_var = tk.IntVar(value=2)
+        refresh_interval_var = tk.IntVar(value=3)
         refresh_interval_spin = ttk.Spinbox(
             controls_frame,
             from_=1,
@@ -5219,6 +5224,8 @@ class AccountManagerUI:
             "pid_to_account": {},
             "rows": [],
             "first_seen": {},
+            "render_static_by_pid": {},
+            "render_order": [],
             "sort_column": "pid",
             "sort_desc": False,
             "refresh_in_progress": False,
@@ -5316,29 +5323,88 @@ class AccountManagerUI:
                 pass
 
             selected_before = set(get_selected_pids())
-            state["pid_to_hwnd"].clear()
-            state["pid_to_account"].clear()
-            for row in tree.get_children():
-                tree.delete(row)
+            new_pid_to_hwnd = {}
+            new_pid_to_account = {}
+            desired_order = []
+            desired_static_by_pid = {}
+            desired_uptime_by_pid = {}
 
             for row in rows:
                 pid_value = int(row.get("pid", 0))
                 if pid_value <= 0:
                     continue
-                state["pid_to_hwnd"][pid_value] = row.get("hwnd")
-                state["pid_to_account"][pid_value] = row.get("account") or ""
+
+                iid = str(pid_value)
+                image_value = row.get("image", "")
+                account_value = row.get("account", "") or ""
+                title_value = row.get("title", "")
+                uptime_value = format_uptime(row.get("uptime_seconds", 0))
+
+                new_pid_to_hwnd[pid_value] = row.get("hwnd")
+                new_pid_to_account[pid_value] = account_value
+
+                desired_order.append(iid)
+                desired_static_by_pid[iid] = (str(pid_value), image_value, account_value, title_value)
+                desired_uptime_by_pid[iid] = uptime_value
+
+            existing_order = list(tree.get_children())
+            desired_set = set(desired_order)
+
+            # Remove stale rows only.
+            for iid in existing_order:
+                if iid in desired_set:
+                    continue
+                try:
+                    tree.delete(iid)
+                except Exception:
+                    pass
+
+            # Insert missing rows.
+            for iid in desired_order:
+                if tree.exists(iid):
+                    continue
+                static_values = desired_static_by_pid[iid]
+                uptime_value = desired_uptime_by_pid[iid]
                 tree.insert(
                     "",
                     "end",
-                    iid=str(pid_value),
-                    values=(
-                        str(pid_value),
-                        row.get("image", ""),
-                        row.get("account", ""),
-                        format_uptime(row.get("uptime_seconds", 0)),
-                        row.get("title", ""),
-                    )
+                    iid=iid,
+                    values=(static_values[0], static_values[1], static_values[2], uptime_value, static_values[3]),
                 )
+
+            # Reorder only when needed.
+            current_order = list(tree.get_children())
+            if current_order != desired_order:
+                for idx, iid in enumerate(desired_order):
+                    try:
+                        tree.move(iid, "", idx)
+                    except Exception:
+                        continue
+
+            # Update changed rows in place.
+            previous_static = state.get("render_static_by_pid", {})
+            for iid in desired_order:
+                static_values = desired_static_by_pid[iid]
+                uptime_value = desired_uptime_by_pid[iid]
+                if previous_static.get(iid) != static_values:
+                    try:
+                        tree.item(
+                            iid,
+                            values=(static_values[0], static_values[1], static_values[2], uptime_value, static_values[3]),
+                        )
+                    except Exception:
+                        pass
+                    continue
+                try:
+                    if tree.set(iid, "uptime") != uptime_value:
+                        tree.set(iid, "uptime", uptime_value)
+                except Exception:
+                    pass
+
+            state["pid_to_hwnd"] = new_pid_to_hwnd
+            state["pid_to_account"] = new_pid_to_account
+            state["render_static_by_pid"] = desired_static_by_pid
+            state["render_order"] = desired_order
 
             reselected = 0
             for pid_value in sorted(selected_before):
@@ -5478,6 +5544,12 @@ class AccountManagerUI:
             state["auto_refresh_after_id"] = None
             if state["closing"] or not auto_refresh_var.get():
                 return
+            try:
+                if str(window.state()) == "iconic":
+                    schedule_auto_refresh()
+                    return
+            except Exception:
+                pass
             refresh_instances()
             schedule_auto_refresh()
 

@@ -30,6 +30,7 @@ from .roblox_api import RobloxAPI
 
 
 class RobloxAccountManager:
+    LOGIN_DETECTION_INTERVAL_SECONDS = 0.1
     
     def __init__(self, password=None):
         self.data_folder = "AccountManagerData"
@@ -347,6 +348,7 @@ class RobloxAccountManager:
         """
         print("Please log into your Roblox account")
         
+        detect_interval_ms = max(50, int(self.LOGIN_DETECTION_INTERVAL_SECONDS * 1000))
         detector_script = """
         window.ultraFastDetection = {
             detected: false,
@@ -376,14 +378,9 @@ class RobloxAccountManager:
         };
         
         function instantDetect() {
-            const now = Date.now();
-            window.ultraFastDetection.debug.push('URL Check at: ' + now);
-            
             const url = window.location.href.toLowerCase();
-            window.ultraFastDetection.debug.push('Current URL: ' + url);
             
             if (url.includes('/login') || url.includes('/signup') || url.includes('/createaccount')) {
-                window.ultraFastDetection.debug.push('Still on login/signup/create page - not logged in');
                 return false;
             }
             
@@ -402,7 +399,6 @@ class RobloxAccountManager:
                 return true;
             }
             
-            window.ultraFastDetection.debug.push('Not detected - still checking...');
             return false;
         }
         
@@ -417,13 +413,16 @@ class RobloxAccountManager:
             if (instantDetect()) {
                 window.ultraFastDetection.cleanup();
             }
-        }, 25);
+        }, __DETECT_INTERVAL_MS__);
         
         let lastHref = location.href;
         window.ultraFastDetection.observer = new MutationObserver(() => {
             if (location.href !== lastHref) {
                 lastHref = location.href;
                 window.ultraFastDetection.debug.push('URL changed to: ' + location.href);
+                if (window.ultraFastDetection.debug.length > 40) {
+                    window.ultraFastDetection.debug = window.ultraFastDetection.debug.slice(-40);
+                }
                 if (instantDetect()) {
                     window.ultraFastDetection.cleanup();
                 }
@@ -437,6 +436,7 @@ class RobloxAccountManager:
             });
         });
         """
+        detector_script = detector_script.replace("__DETECT_INTERVAL_MS__", str(detect_interval_ms))
         
         try:
             driver.execute_script(detector_script)
@@ -490,7 +490,7 @@ class RobloxAccountManager:
                     except Exception as e:
                         print(f"Debug error: {e}")
                 
-                time.sleep(0.025)
+                time.sleep(self.LOGIN_DETECTION_INTERVAL_SECONDS)
                 
             except WebDriverException:
                 cleanup_detection()
