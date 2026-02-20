@@ -569,7 +569,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.4.1"
+        self.APP_VERSION = "2.4.2"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -604,6 +604,7 @@ class AccountManagerUI:
 
         self.themable_text_widgets = []
         self.themable_windows = set()
+        self._theme_refresh_callbacks = {}
 
         self.menu_bar = None
         self.actions_menu = None
@@ -636,7 +637,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.4.1 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.4.2 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -1201,6 +1202,17 @@ class AccountManagerUI:
             background=[("active", self.HOVER_BG)],
             foreground=[("active", self.FG_TEXT)],
         )
+        self.style.configure(
+            "Dark.TCheckbutton",
+            background=self.BG_DARK,
+            foreground=self.FG_TEXT,
+            font=("Segoe UI", 10),
+        )
+        self.style.map(
+            "Dark.TCheckbutton",
+            background=[("active", self.BG_MID)],
+            foreground=[("disabled", self.FG_MUTED)],
+        )
 
         if getattr(self, "status_label", None):
             self.status_label.configure(bg=self.BG_DARK)
@@ -1231,6 +1243,7 @@ class AccountManagerUI:
             self.console_window.apply_theme()
 
         self._apply_themable_text_widgets()
+        self._apply_theme_refresh_callbacks()
         self._apply_title_bar_theme_all()
 
         if persist:
@@ -1277,6 +1290,7 @@ class AccountManagerUI:
 
         def _cleanup(event, win=window):
             self.themable_windows.discard(win)
+            self._theme_refresh_callbacks.pop(win, None)
 
         try:
             window.bind("<Destroy>", _cleanup, add="+")
@@ -1285,6 +1299,28 @@ class AccountManagerUI:
             pass
 
         self._apply_title_bar_theme(window)
+
+    def register_theme_refresh(self, window, callback):
+        if window is None or callback is None:
+            return
+        self._theme_refresh_callbacks[window] = callback
+        try:
+            callback()
+        except Exception:
+            pass
+
+    def _apply_theme_refresh_callbacks(self):
+        stale = []
+        for window, callback in list(self._theme_refresh_callbacks.items()):
+            try:
+                if window.winfo_exists():
+                    callback()
+                else:
+                    stale.append(window)
+            except Exception:
+                stale.append(window)
+        for window in stale:
+            self._theme_refresh_callbacks.pop(window, None)
 
     def _handle_window_map(self, event):
         widget = event.widget if event else None
@@ -4320,13 +4356,14 @@ class AccountManagerUI:
             style="Dark.TLabel",
             font=("Segoe UI", 14, "bold")
         ).pack(anchor="w")
-        ttk.Label(
+        settings_intro_label = ttk.Label(
             main_frame,
             text="Manage app preferences, Roblox launch behavior, and automation tools.",
             style="Dark.TLabel",
             font=("Segoe UI", 9),
             foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
-        ).pack(anchor="w", pady=(2, 10))
+        )
+        settings_intro_label.pack(anchor="w", pady=(2, 10))
         
         topmost_var = tk.BooleanVar(value=self.settings.get("enable_topmost", False))
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
@@ -4343,19 +4380,6 @@ class AccountManagerUI:
         auto_arrange_scope_var = tk.StringVar(value=self.settings.get("auto_arrange_scope", "both"))
         custom_roblox_player_path_var = tk.StringVar(value=self.settings.get("custom_roblox_player_path", ""))
         installer_previous_versions_var = tk.IntVar(value=clamp_installer_previous_versions(self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)))
-        
-        checkbox_style = ttk.Style()
-        checkbox_style.configure(
-            "Dark.TCheckbutton",
-            background=self.BG_DARK,
-            foreground="white",
-            font=("Segoe UI", 10)
-        )
-        checkbox_style.map(
-            "Dark.TCheckbutton",
-            background=[("active", self.BG_MID)],
-            foreground=[("disabled", self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888")]
-        )
         
         def auto_save_setting(setting_name, var):
             def save():
@@ -4391,6 +4415,8 @@ class AccountManagerUI:
         tab_var = tk.StringVar(value="general")
         tab_buttons = {}
         tabs = {}
+        settings_cards = []
+        settings_muted_labels = [settings_intro_label]
 
         tab_bar = tk.Frame(main_frame, bg=self.BG_DARK)
         tab_bar.pack(fill="x", pady=(0, 8))
@@ -4512,16 +4538,59 @@ class AccountManagerUI:
                 font=("Segoe UI", 11, "bold")
             ).pack(anchor="w")
             if subtitle:
-                ttk.Label(
+                subtitle_label = ttk.Label(
                     header,
                     text=subtitle,
                     style="Dark.TLabel",
                     font=("Segoe UI", 9),
                     foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888"
-                ).pack(anchor="w", pady=(2, 0))
+                )
+                subtitle_label.pack(anchor="w", pady=(2, 0))
+                settings_muted_labels.append(subtitle_label)
             body = ttk.Frame(outer, style="Dark.TFrame")
             body.pack(fill="x", padx=10, pady=(8, 10))
+            settings_cards.append({"outer": outer, "header": header})
             return body
+
+        def _refresh_settings_theme():
+            if not settings_window.winfo_exists():
+                return
+
+            settings_window.configure(bg=self.BG_DARK)
+            tab_bar.configure(bg=self.BG_DARK)
+
+            for tab_name, btn in tab_buttons.items():
+                if tab_name == tab_var.get():
+                    btn.configure(
+                        bg=self.BG_LIGHT,
+                        fg=self.FG_TEXT,
+                        activebackground=self.BG_LIGHT,
+                        activeforeground=self.FG_TEXT,
+                    )
+                else:
+                    btn.configure(
+                        bg=self.BG_MID,
+                        fg=self.FG_MUTED,
+                        activebackground=self.BG_MID,
+                        activeforeground=self.FG_TEXT,
+                    )
+
+            for card in settings_cards:
+                outer = card.get("outer")
+                header = card.get("header")
+                if outer and outer.winfo_exists():
+                    outer.configure(bg=self.BG_MID, highlightbackground=self.BORDER_COLOR, highlightcolor=self.BORDER_COLOR)
+                if header and header.winfo_exists():
+                    header.configure(bg=self.BG_MID)
+
+            for label in settings_muted_labels:
+                if label and label.winfo_exists():
+                    label.configure(foreground=self.FG_MUTED)
+
+            for data in tab_scroll_state.values():
+                canvas = data.get("canvas")
+                if canvas and canvas.winfo_exists():
+                    canvas.configure(bg=self.BG_DARK)
 
         interface_card = create_settings_card(general_tab, "Interface & Notifications", "Behavior and interaction preferences")
 
@@ -4935,6 +5004,7 @@ class AccountManagerUI:
             command=open_fastflags_and_close_settings
         ).pack(fill="x", pady=(0, 0))
 
+        self.register_theme_refresh(settings_window, _refresh_settings_theme)
         set_active_tab("general")
         padding_w = 40
         padding_h = 40
