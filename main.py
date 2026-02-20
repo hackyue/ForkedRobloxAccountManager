@@ -12,11 +12,11 @@ import time
 import shutil
 import subprocess
 import ctypes
-from ctypes import wintypes
 import warnings
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 import requests
+from functools import lru_cache
 
 warnings.filterwarnings("ignore")
 
@@ -32,8 +32,14 @@ def get_app_base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+@lru_cache(maxsize=1)
+def get_cached_app_base_dir():
+    return get_app_base_dir()
+
+
+@lru_cache(maxsize=1)
 def get_data_folder():
-    return os.path.join(get_app_base_dir(), "AccountManagerData")
+    return os.path.join(get_cached_app_base_dir(), "AccountManagerData")
 
 
 def set_windows_app_user_model_id():
@@ -51,12 +57,14 @@ def _apply_update_mode(argv):
     target = None
 
     try:
-        if "--pid" in argv:
-            pid = int(argv[argv.index("--pid") + 1])
-        if "--source" in argv:
-            source = argv[argv.index("--source") + 1]
-        if "--target" in argv:
-            target = argv[argv.index("--target") + 1]
+        args = iter(argv[1:])
+        for arg in args:
+            if arg == "--pid":
+                pid = int(next(args))
+            elif arg == "--source":
+                source = next(args)
+            elif arg == "--target":
+                target = next(args)
     except Exception:
         pid = None
 
@@ -107,15 +115,15 @@ def _apply_update_mode(argv):
 def setup_icon(data_folder):
     icon_path = os.path.join(data_folder, "icon.ico")
 
-    if not os.path.exists(icon_path):
-        bundled_icon_path = os.path.join(get_app_base_dir(), "icon.ico")
-        if os.path.exists(bundled_icon_path):
+    if not os.path.isfile(icon_path):
+        bundled_icon_path = os.path.join(get_cached_app_base_dir(), "icon.ico")
+        if os.path.isfile(bundled_icon_path):
             try:
                 shutil.copyfile(bundled_icon_path, icon_path)
             except Exception:
                 pass
 
-    if not os.path.exists(icon_path):
+    if not os.path.isfile(icon_path):
         try:
             response = requests.get(
                 "https://raw.githubusercontent.com/hackyue/ForkedRobloxAccountManager/Windows/icon.ico",
@@ -127,7 +135,7 @@ def setup_icon(data_folder):
         except Exception:
             pass
 
-    return icon_path if os.path.exists(icon_path) else None
+    return icon_path if os.path.isfile(icon_path) else None
 
 
 def main():
