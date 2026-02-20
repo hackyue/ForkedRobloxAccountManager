@@ -4966,24 +4966,65 @@ class AccountManagerUI:
         )
         title_label.pack(anchor="w", pady=(0, 10))
 
+        controls_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        controls_frame.pack(fill="x", pady=(0, 8))
+        controls_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(controls_frame, text="Filter", style="Dark.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(controls_frame, textvariable=filter_var, style="Dark.TEntry")
+        filter_entry.grid(row=0, column=1, sticky="ew")
+
+        known_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            controls_frame,
+            text="Known Accounts Only",
+            variable=known_only_var,
+            style="Dark.TCheckbutton",
+        ).grid(row=0, column=2, sticky="w", padx=(10, 0))
+
+        auto_refresh_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            controls_frame,
+            text="Auto Refresh",
+            variable=auto_refresh_var,
+            style="Dark.TCheckbutton",
+        ).grid(row=0, column=3, sticky="w", padx=(10, 0))
+
+        ttk.Label(controls_frame, text="Every (s)", style="Dark.TLabel").grid(row=0, column=4, sticky="w", padx=(10, 4))
+        refresh_interval_var = tk.IntVar(value=2)
+        refresh_interval_spin = ttk.Spinbox(
+            controls_frame,
+            from_=1,
+            to=30,
+            increment=1,
+            textvariable=refresh_interval_var,
+            width=4,
+            style="Dark.TSpinbox",
+            justify="center",
+        )
+        refresh_interval_spin.grid(row=0, column=5, sticky="w")
+
         list_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         list_frame.pack(fill="both", expand=True)
 
         tree = ttk.Treeview(
             list_frame,
-            columns=("pid", "exe", "account", "title"),
+            columns=("pid", "exe", "account", "uptime", "title"),
             show="headings",
             height=14,
-            selectmode="browse",
+            selectmode="extended",
             style="Dark.Treeview",
         )
         tree.heading("pid", text="PID")
         tree.heading("exe", text="Executable")
         tree.heading("account", text="Account")
+        tree.heading("uptime", text="Uptime")
         tree.heading("title", text="Window Title")
         tree.column("pid", width=70, anchor="w")
         tree.column("exe", width=150, anchor="w")
         tree.column("account", width=140, anchor="w")
+        tree.column("uptime", width=95, anchor="w")
         tree.column("title", width=320, anchor="w")
         tree.pack(side="left", fill="both", expand=True)
 
@@ -4991,12 +5032,24 @@ class AccountManagerUI:
         list_scroll.pack(side="right", fill="y")
         tree.configure(yscrollcommand=list_scroll.set)
 
+        status_var = tk.StringVar(value="Ready.")
+        status_label = ttk.Label(main_frame, textvariable=status_var, style="Dark.TLabel")
+        status_label.pack(anchor="w", pady=(8, 0))
+
         button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         button_frame.pack(fill="x", pady=(10, 0))
 
         state = {
             "pid_to_hwnd": {},
             "pid_to_account": {},
+            "rows": [],
+            "first_seen": {},
+            "sort_column": "pid",
+            "sort_desc": False,
+            "refresh_in_progress": False,
+            "refresh_pending": False,
+            "auto_refresh_after_id": None,
+            "closing": False,
         }
 
         target_exes = {
@@ -5005,6 +5058,19 @@ class AccountManagerUI:
             "robloxplayerlauncher.exe",
             "robloxstudiolauncherbeta.exe",
         }
+
+        def format_uptime(seconds_value):
+            try:
+                total = max(0, int(seconds_value))
+            except Exception:
+                total = 0
+            hours, rem = divmod(total, 3600)
+            minutes, secs = divmod(rem, 60)
+            if hours > 0:
+                return f"{hours}h {minutes:02d}m"
+            if minutes > 0:
+                return f"{minutes}m {secs:02d}s"
+            return f"{secs}s"
 
         def extract_account_from_title(title_text: str):
             if not title_text:
@@ -5025,16 +5091,95 @@ class AccountManagerUI:
                         return resolved
             return candidates[0]
 
-        def get_running_roblox_pids():
-            return self._query_tasklist_pid_map(target_exes)
+        def get_selected_pids():
+            selected = []
+            for item in tree.selection():
+                try:
+                    selected.append(int(item))
+                except Exception:
+                    continue
+            return selected
 
-        def refresh_instances():
+        def apply_rows_to_tree():
+            rows = list(state.get("rows", []))
+            filter_text = (filter_var.get() or "").strip().lower()
+            known_only = bool(known_only_var.get())
+
+            if known_only:
+                rows = [row for row in rows if (row.get("account") or "").strip()]
+
+            if filter_text:
+                filtered_rows = []
+                for row in rows:
+                    haystack = " ".join([
+                        str(row.get("pid", "")),
+                        str(row.get("image", "")),
+                        str(row.get("account", "")),
+                        str(row.get("title", "")),
+                    ]).lower()
+                    if filter_text in haystack:
+                        filtered_rows.append(row)
+                rows = filtered_rows
+
+            sort_column = state.get("sort_column", "pid")
+            sort_desc = bool(state.get("sort_desc", False))
+
+            def sort_key(row):
+                if sort_column == "pid":
+                    return int(row.get("pid", 0))
+                if sort_column == "uptime":
+                    return int(row.get("uptime_seconds", 0))
+                if sort_column == "account":
+                    return str(row.get("account", "")).lower()
+                if sort_column == "exe":
+                    return str(row.get("image", "")).lower()
+                return str(row.get("title", "")).lower()
+
+            try:
+                rows.sort(key=sort_key, reverse=sort_desc)
+            except Exception:
+                pass
+
+            selected_before = set(get_selected_pids())
             state["pid_to_hwnd"].clear()
             state["pid_to_account"].clear()
             for row in tree.get_children():
                 tree.delete(row)
 
-            pid_to_image = get_running_roblox_pids()
+            for row in rows:
+                pid_value = int(row.get("pid", 0))
+                if pid_value <= 0:
+                    continue
+                state["pid_to_hwnd"][pid_value] = row.get("hwnd")
+                state["pid_to_account"][pid_value] = row.get("account") or ""
+                tree.insert(
+                    "",
+                    "end",
+                    iid=str(pid_value),
+                    values=(
+                        str(pid_value),
+                        row.get("image", ""),
+                        row.get("account", ""),
+                        format_uptime(row.get("uptime_seconds", 0)),
+                        row.get("title", ""),
+                    )
+                )
+
+            reselected = 0
+            for pid_value in sorted(selected_before):
+                iid = str(pid_value)
+                if tree.exists(iid):
+                    tree.selection_add(iid)
+                    reselected += 1
+
+            total = len(state.get("rows", []))
+            shown = len(rows)
+            mapped = sum(1 for r in state.get("rows", []) if (r.get("account") or "").strip())
+            status_var.set(f"Instances: {shown}/{total} shown | Mapped accounts: {mapped} | Selected: {reselected}")
+
+        def build_snapshot():
+            pid_to_image = self._query_tasklist_pid_map(target_exes)
+            pid_to_hwnd = {}
             pid_to_titles = {}
 
             def enum_handler(hwnd, _):
@@ -5064,7 +5209,7 @@ class AccountManagerUI:
                 except Exception:
                     title_text = ""
 
-                state["pid_to_hwnd"].setdefault(pid_value, hwnd)
+                pid_to_hwnd.setdefault(pid_value, hwnd)
                 if title_text.strip():
                     pid_to_titles.setdefault(pid_value, []).append(title_text.strip())
                 return True
@@ -5074,7 +5219,13 @@ class AccountManagerUI:
             except Exception:
                 pass
 
-            all_pids = set(pid_to_image.keys()) | set(state["pid_to_hwnd"].keys())
+            now = time.time()
+            all_pids = set(pid_to_image.keys()) | set(pid_to_hwnd.keys())
+            stale_pids = set(state["first_seen"].keys()) - all_pids
+            for pid_value in stale_pids:
+                state["first_seen"].pop(pid_value, None)
+
+            rows = []
             for pid_value in sorted(all_pids):
                 image = pid_to_image.get(pid_value) or ""
                 titles = pid_to_titles.get(pid_value) or []
@@ -5087,23 +5238,93 @@ class AccountManagerUI:
                     mapped_account = ""
 
                 account = mapped_account or extract_account_from_title(title_text)
-                state["pid_to_account"][pid_value] = account
-                tree.insert("", "end", iid=str(pid_value), values=(str(pid_value), image, account, title_text))
+                first_seen = state["first_seen"].setdefault(pid_value, now)
+                rows.append({
+                    "pid": pid_value,
+                    "image": image,
+                    "account": account,
+                    "title": title_text,
+                    "hwnd": pid_to_hwnd.get(pid_value),
+                    "uptime_seconds": max(0, int(now - first_seen)),
+                })
+            return rows
 
-        def get_selected_pid():
-            sel = tree.selection()
-            if not sel:
+        def refresh_instances():
+            if state["closing"]:
                 return None
+            if state["refresh_in_progress"]:
+                state["refresh_pending"] = True
+                return
+            state["refresh_in_progress"] = True
+            status_var.set("Refreshing instances...")
+
+            def worker():
+                rows = []
+                try:
+                    rows = build_snapshot()
+                except Exception:
+                    rows = []
+
+                def apply():
+                    state["refresh_in_progress"] = False
+                    if state["closing"]:
+                        return
+                    state["rows"] = rows
+                    apply_rows_to_tree()
+                    if state["refresh_pending"]:
+                        state["refresh_pending"] = False
+                        refresh_instances()
+
+                self.root.after(0, apply)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def schedule_auto_refresh():
+            after_id = state.get("auto_refresh_after_id")
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except Exception:
+                    pass
+                state["auto_refresh_after_id"] = None
+
+            if state["closing"] or not auto_refresh_var.get():
+                return
             try:
-                return int(sel[0])
+                interval = int(refresh_interval_var.get())
             except Exception:
-                return None
+                interval = 2
+            interval = max(1, min(30, interval))
+            refresh_interval_var.set(interval)
+
+            state["auto_refresh_after_id"] = window.after(interval * 1000, _auto_refresh_tick)
+
+        def _auto_refresh_tick():
+            state["auto_refresh_after_id"] = None
+            if state["closing"] or not auto_refresh_var.get():
+                return
+            refresh_instances()
+            schedule_auto_refresh()
+
+        def on_sort(column_name):
+            if state.get("sort_column") == column_name:
+                state["sort_desc"] = not bool(state.get("sort_desc", False))
+            else:
+                state["sort_column"] = column_name
+                state["sort_desc"] = False
+            apply_rows_to_tree()
+
+        tree.heading("pid", text="PID", command=lambda: on_sort("pid"))
+        tree.heading("exe", text="Executable", command=lambda: on_sort("exe"))
+        tree.heading("account", text="Account", command=lambda: on_sort("account"))
+        tree.heading("uptime", text="Uptime", command=lambda: on_sort("uptime"))
+        tree.heading("title", text="Window Title", command=lambda: on_sort("title"))
 
         def focus_selected():
-            pid_value = get_selected_pid()
-            if pid_value is None:
+            selected = get_selected_pids()
+            if not selected:
                 return
-            hwnd = state["pid_to_hwnd"].get(pid_value)
+            hwnd = state["pid_to_hwnd"].get(selected[0])
             if not hwnd:
                 return
             try:
@@ -5114,77 +5335,173 @@ class AccountManagerUI:
                 pass
 
         def close_selected():
-            pid_value = get_selected_pid()
-            if pid_value is None:
+            selected = get_selected_pids()
+            if not selected:
                 return
-            confirm = messagebox.askyesno("Close Instance", f"Close Roblox instance PID {pid_value}?")
+            if len(selected) == 1:
+                prompt = f"Close Roblox instance PID {selected[0]}?"
+            else:
+                prompt = f"Close {len(selected)} Roblox instances?"
+            confirm = messagebox.askyesno("Close Instance", prompt)
             if not confirm:
                 return
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid_value), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace"
-                )
-            except Exception:
-                pass
-            refresh_instances()
+
+            def worker(pid_values):
+                for pid_value in pid_values:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid_value), "/T", "/F"],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace"
+                        )
+                    except Exception:
+                        continue
+                self.root.after(0, refresh_instances)
+
+            threading.Thread(target=worker, args=(list(selected),), daemon=True).start()
 
         def relaunch_selected():
-            pid_value = get_selected_pid()
-            if pid_value is None:
+            selected = get_selected_pids()
+            if not selected:
                 return
-            account = state["pid_to_account"].get(pid_value) or ""
-            if not account:
+            pairs = []
+            for pid_value in selected:
+                account = state["pid_to_account"].get(pid_value) or ""
+                if account:
+                    pairs.append((pid_value, account))
+
+            if not pairs:
                 messagebox.showerror("Relaunch", "Unable to detect an account for this instance.")
                 return
-
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid_value), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace"
-                )
-            except Exception:
-                pass
 
             debug_enabled = self.settings.get("enable_debug_logging", False)
             selected_version_label = self.version_var.get() if hasattr(self, "version_var") else ""
             version_path = self.version_options.get(selected_version_label) if hasattr(self, "version_options") else None
 
             def worker():
-                try:
-                    self.manager.launch_home_app(account, version=version_path or None, enable_debug=debug_enabled)
-                except Exception:
-                    pass
+                delay_seconds = self._get_multi_launch_delay()
+                for idx, (pid_value, account) in enumerate(pairs):
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid_value), "/T", "/F"],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        self.manager.launch_home_app(account, version=version_path or None, enable_debug=debug_enabled)
+                    except Exception:
+                        pass
+                    if delay_seconds > 0 and idx < len(pairs) - 1:
+                        time.sleep(delay_seconds)
                 self.root.after(0, refresh_instances)
 
             threading.Thread(target=worker, daemon=True).start()
 
         def copy_pid():
-            pid_value = get_selected_pid()
-            if pid_value is None:
+            selected = get_selected_pids()
+            if not selected:
                 return
             try:
                 window.clipboard_clear()
-                window.clipboard_append(str(pid_value))
+                window.clipboard_append("\n".join(str(pid) for pid in selected))
                 window.update_idletasks()
             except Exception:
                 pass
 
+        def copy_account():
+            selected = get_selected_pids()
+            if not selected:
+                return
+            accounts = []
+            for pid_value in selected:
+                account = (state["pid_to_account"].get(pid_value) or "").strip()
+                if account:
+                    accounts.append(account)
+            if not accounts:
+                return
+            seen = set()
+            unique_accounts = []
+            for account in accounts:
+                if account in seen:
+                    continue
+                seen.add(account)
+                unique_accounts.append(account)
+            try:
+                window.clipboard_clear()
+                window.clipboard_append("\n".join(unique_accounts))
+                window.update_idletasks()
+            except Exception:
+                pass
+
+        def close_all():
+            all_pids = [int(row.get("pid", 0)) for row in state.get("rows", []) if int(row.get("pid", 0)) > 0]
+            if not all_pids:
+                return
+            confirm = messagebox.askyesno("Close All", f"Close all {len(all_pids)} detected Roblox instances?")
+            if not confirm:
+                return
+
+            def worker(pid_values):
+                for pid_value in pid_values:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid_value), "/T", "/F"],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace"
+                        )
+                    except Exception:
+                        continue
+                self.root.after(0, refresh_instances)
+
+            threading.Thread(target=worker, args=(all_pids,), daemon=True).start()
+
+        def update_selection_status():
+            total = len(state.get("rows", []))
+            shown = len(tree.get_children())
+            mapped = sum(1 for r in state.get("rows", []) if (r.get("account") or "").strip())
+            selected_count = len(get_selected_pids())
+            status_var.set(f"Instances: {shown}/{total} shown | Mapped accounts: {mapped} | Selected: {selected_count}")
+
+        def on_filter_change(*_args):
+            apply_rows_to_tree()
+
+        def on_tree_select(_evt=None):
+            update_selection_status()
+
+        filter_var.trace_add("write", on_filter_change)
+        known_only_var.trace_add("write", on_filter_change)
+        auto_refresh_var.trace_add("write", lambda *_: schedule_auto_refresh())
+        refresh_interval_var.trace_add("write", lambda *_: schedule_auto_refresh())
+        tree.bind("<<TreeviewSelect>>", on_tree_select)
+        filter_entry.bind("<Escape>", lambda _evt: (filter_var.set(""), "break")[1])
+
         ttk.Button(button_frame, text="Refresh", style="Dark.TButton", command=refresh_instances).pack(side="left", padx=(0, 6))
         ttk.Button(button_frame, text="Focus", style="Dark.TButton", command=focus_selected).pack(side="left", padx=(0, 6))
         ttk.Button(button_frame, text="Close", style="Dark.TButton", command=close_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Close All", style="Dark.TButton", command=close_all).pack(side="left", padx=(0, 6))
         ttk.Button(button_frame, text="Relaunch", style="Dark.TButton", command=relaunch_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Copy PID", style="Dark.TButton", command=copy_pid).pack(side="left")
+        ttk.Button(button_frame, text="Copy PID", style="Dark.TButton", command=copy_pid).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Copy Account", style="Dark.TButton", command=copy_account).pack(side="left")
 
         tree.bind("<Double-1>", lambda _evt: focus_selected())
 
         def on_close():
+            state["closing"] = True
+            after_id = state.get("auto_refresh_after_id")
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except Exception:
+                    pass
+                state["auto_refresh_after_id"] = None
             try:
                 window.grab_release()
             except Exception:
@@ -5208,6 +5525,7 @@ class AccountManagerUI:
         self._center_window(window, final_w, final_h)
         window.deiconify()
         refresh_instances()
+        schedule_auto_refresh()
 
     def open_console_output(self):
         """Open or focus the console output window."""
