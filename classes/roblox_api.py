@@ -26,6 +26,26 @@ class RobloxAPI:
     _http_session_lock = threading.Lock()
 
     @staticmethod
+    def _subprocess_no_window_kwargs():
+        """Return subprocess kwargs that prevent transient console windows on Windows."""
+        if platform.system() != "Windows":
+            return {}
+
+        kwargs = {}
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if creation_flags:
+            kwargs["creationflags"] = creation_flags
+
+        startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+        if startupinfo_cls is not None:
+            startupinfo = startupinfo_cls()
+            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+            startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+            kwargs["startupinfo"] = startupinfo
+
+        return kwargs
+
+    @staticmethod
     def _get_http_session():
         """Shared session for non-authenticated GET calls to reuse TCP connections."""
         if RobloxAPI._http_session is not None:
@@ -403,7 +423,8 @@ class RobloxAPI:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
+                **RobloxAPI._subprocess_no_window_kwargs(),
             )
             return result.returncode == 0 and 'RobloxPlayerBeta.exe' in (result.stdout or "")
         except Exception:
@@ -438,7 +459,8 @@ class RobloxAPI:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=5
+                timeout=5,
+                **RobloxAPI._subprocess_no_window_kwargs(),
             )
             command_lines = (result.stdout or "").strip()
             if auth_ticket in command_lines:
@@ -524,7 +546,12 @@ class RobloxAPI:
             if launcher_requires_player_flag:
                 command.append("-player")
             command.append(target_url)
-            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **RobloxAPI._subprocess_no_window_kwargs(),
+            )
             launcher_display = launcher_name or (
                 "Bloxstrap" if is_bloxstrap_install else (
                     "Fishstrap" if is_fishstrap_install else (
@@ -882,6 +909,7 @@ class RobloxAPI:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    **RobloxAPI._subprocess_no_window_kwargs(),
                 )
             else:
                 subprocess.run(command, check=True)

@@ -24,18 +24,33 @@ class HardwareEncryption:
     def _get_machine_id(self):
         """Generate unique machine ID from hardware identifiers"""
         identifiers = []
+
+        def no_window_kwargs():
+            if platform.system() != "Windows":
+                return {}
+            kwargs = {}
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if creation_flags:
+                kwargs["creationflags"] = creation_flags
+            startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+            if startupinfo_cls is not None:
+                startupinfo = startupinfo_cls()
+                startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+                startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+                kwargs["startupinfo"] = startupinfo
+            return kwargs
         
         try:
             if platform.system() == "Windows":
-                result = subprocess.check_output("wmic csproduct get uuid", shell=True)
+                result = subprocess.check_output("wmic csproduct get uuid", shell=True, **no_window_kwargs())
                 uuid = result.decode().split('\n')[1].strip()
                 identifiers.append(uuid)
                 
-                result = subprocess.check_output("wmic cpu get processorid", shell=True)
+                result = subprocess.check_output("wmic cpu get processorid", shell=True, **no_window_kwargs())
                 cpu_id = result.decode().split('\n')[1].strip()
                 identifiers.append(cpu_id)
                 
-                result = subprocess.check_output("wmic baseboard get serialnumber", shell=True)
+                result = subprocess.check_output("wmic baseboard get serialnumber", shell=True, **no_window_kwargs())
                 board_serial = result.decode().split('\n')[1].strip()
                 identifiers.append(board_serial)
             else:

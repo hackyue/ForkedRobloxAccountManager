@@ -164,6 +164,26 @@ def clamp_installer_previous_versions(value):
     return max(MIN_INSTALLER_PREVIOUS_VERSIONS, min(MAX_INSTALLER_PREVIOUS_VERSIONS, int_value))
 
 
+def subprocess_no_window_kwargs():
+    """Return subprocess kwargs that prevent transient console windows on Windows."""
+    if platform.system() != "Windows":
+        return {}
+
+    kwargs = {}
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creation_flags:
+        kwargs["creationflags"] = creation_flags
+
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
 THEMES = {
     "Synapse Neon": {
         "root_bg": "#05050b",
@@ -569,7 +589,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.4.2"
+        self.APP_VERSION = "2.4.2.1"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -637,7 +657,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.4.2 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.4.2.1 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -974,8 +994,79 @@ class AccountManagerUI:
         """Return browser automation preference: auto, chrome, or firefox."""
         value = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
         if value not in {"auto", "chrome", "firefox"}:
-            return "auto"
-        return value
+            value = "auto"
+
+        available = self._get_available_browsers()
+        if not available:
+            return value
+        if len(available) == 1:
+            return available[0]
+        if value in {"auto", "chrome", "firefox"} and (value == "auto" or value in available):
+            return value
+        return "auto"
+
+    def _is_browser_installed_locally(self, browser_name):
+        name = str(browser_name or "").strip().lower()
+        if name not in {"chrome", "firefox"}:
+            return False
+
+        try:
+            if hasattr(self, "manager") and hasattr(self.manager, "_is_browser_installed"):
+                return bool(self.manager._is_browser_installed(name))
+        except Exception:
+            pass
+
+        try:
+            candidates = []
+            pf = os.environ.get("ProgramFiles")
+            pfx86 = os.environ.get("ProgramFiles(x86)")
+            localapp = os.environ.get("LOCALAPPDATA")
+            appdata = os.environ.get("APPDATA")
+
+            if name == "chrome":
+                if pf:
+                    candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
+                if pfx86:
+                    candidates.append(os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"))
+                if localapp:
+                    candidates.append(os.path.join(localapp, "Google", "Chrome", "Application", "chrome.exe"))
+            else:
+                if pf:
+                    candidates.append(os.path.join(pf, "Mozilla Firefox", "firefox.exe"))
+                if pfx86:
+                    candidates.append(os.path.join(pfx86, "Mozilla Firefox", "firefox.exe"))
+                if localapp:
+                    candidates.append(os.path.join(localapp, "Mozilla Firefox", "firefox.exe"))
+                if appdata:
+                    candidates.append(os.path.join(appdata, "Mozilla", "Firefox", "firefox.exe"))
+
+            for path in candidates:
+                if path and os.path.exists(path):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _get_available_browsers(self):
+        available = []
+        try:
+            if hasattr(self, "manager") and hasattr(self.manager, "get_available_browsers"):
+                manager_available = self.manager.get_available_browsers()
+                if isinstance(manager_available, (list, tuple, set)):
+                    for name in manager_available:
+                        normalized = str(name or "").strip().lower()
+                        if normalized in {"chrome", "firefox"} and normalized not in available:
+                            available.append(normalized)
+                    if available:
+                        return available
+        except Exception:
+            pass
+
+        if self._is_browser_installed_locally("chrome"):
+            available.append("chrome")
+        if self._is_browser_installed_locally("firefox"):
+            available.append("firefox")
+        return available
 
     def _focus_main_window(self):
         try:
@@ -1112,6 +1203,7 @@ class AccountManagerUI:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    **subprocess_no_window_kwargs(),
                 )
             except Exception:
                 pass
@@ -2594,7 +2686,7 @@ class AccountManagerUI:
                     target_exe,
                 ]
 
-                subprocess.Popen(args, close_fds=True)
+                subprocess.Popen(args, close_fds=True, **subprocess_no_window_kwargs())
                 ui_close()
                 self.root.after(0, self.root.destroy)
             except Exception as exc:
@@ -3487,7 +3579,8 @@ class AccountManagerUI:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
-                errors='replace'
+                errors='replace',
+                **subprocess_no_window_kwargs(),
             )
         except Exception as exc:
             messagebox.showerror("Force Quit Roblox", f"Failed to run taskkill: {exc}")
@@ -4144,6 +4237,7 @@ class AccountManagerUI:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                **subprocess_no_window_kwargs(),
             )
         except Exception:
             return pid_to_image
@@ -4308,7 +4402,8 @@ class AccountManagerUI:
 
         try:
             result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq RobloxPlayerBeta.exe'], 
-                                  capture_output=True, text=True, encoding='utf-8', errors='replace') 
+                                  capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                  **subprocess_no_window_kwargs()) 
             
             if result.stdout and 'RobloxPlayerBeta.exe' in result.stdout:
                 response = messagebox.askquestion( 
@@ -4321,7 +4416,8 @@ class AccountManagerUI:
                 
                 if response == 'yes':
                     subprocess.run(['taskkill', '/F', '/IM', 'RobloxPlayerBeta.exe'], 
-                                 capture_output=True, text=True, encoding='utf-8', errors='replace') 
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                 **subprocess_no_window_kwargs()) 
                     self.show_success_message("All Roblox instances have been closed.")
                 else:
                     return False
@@ -4750,32 +4846,57 @@ class AccountManagerUI:
         theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
 
         browser_card = create_settings_card(general_tab, "Browser Automation")
-        browser_value_to_label = {
-            "auto": "Auto (Chrome first, then Firefox)",
-            "chrome": "Chrome only",
-            "firefox": "Firefox only",
-        }
+        available_browsers = self._get_available_browsers()
+        browser_value_to_label = {}
+        if len(available_browsers) >= 2:
+            browser_value_to_label["auto"] = "Auto (Chrome first, then Firefox)"
+        if "chrome" in available_browsers:
+            browser_value_to_label["chrome"] = "Chrome only"
+        if "firefox" in available_browsers:
+            browser_value_to_label["firefox"] = "Firefox only"
         browser_label_to_value = {label: value for value, label in browser_value_to_label.items()}
-        browser_pref_label_var = tk.StringVar(
-            value=browser_value_to_label.get(browser_preference_var.get(), browser_value_to_label["auto"])
-        )
-        browser_combo = ttk.Combobox(
-            browser_card,
-            values=list(browser_value_to_label.values()),
-            textvariable=browser_pref_label_var,
-            state="readonly",
-            style="Dark.TCombobox",
-        )
-        browser_combo.pack(fill="x", pady=(0, 4))
+        current_browser_pref = browser_preference_var.get()
+        if len(available_browsers) == 1:
+            current_browser_pref = available_browsers[0]
+        elif current_browser_pref not in browser_value_to_label:
+            current_browser_pref = "auto" if "auto" in browser_value_to_label else available_browsers[0] if available_browsers else "auto"
 
-        def on_browser_preference_change(_=None):
-            selected_label = (browser_combo.get() or "").strip()
-            selected_value = browser_label_to_value.get(selected_label, "auto")
-            browser_preference_var.set(selected_value)
-            self.settings["browser_preference"] = selected_value
-            self.save_settings()
+        browser_preference_var.set(current_browser_pref)
+        self.settings["browser_preference"] = current_browser_pref
+        self.save_settings()
 
-        browser_combo.bind("<<ComboboxSelected>>", on_browser_preference_change)
+        if browser_value_to_label:
+            browser_pref_label_var = tk.StringVar(
+                value=browser_value_to_label.get(current_browser_pref, next(iter(browser_value_to_label.values())))
+            )
+            browser_combo = ttk.Combobox(
+                browser_card,
+                values=list(browser_value_to_label.values()),
+                textvariable=browser_pref_label_var,
+                state="readonly",
+                style="Dark.TCombobox",
+            )
+            browser_combo.pack(fill="x", pady=(0, 4))
+
+            def on_browser_preference_change(_=None):
+                selected_label = (browser_combo.get() or "").strip()
+                selected_value = browser_label_to_value.get(selected_label, current_browser_pref)
+                browser_preference_var.set(selected_value)
+                self.settings["browser_preference"] = selected_value
+                self.save_settings()
+
+            browser_combo.bind("<<ComboboxSelected>>", on_browser_preference_change)
+        else:
+            ttk.Label(
+                browser_card,
+                text=(
+                    "No supported browser detected.\n"
+                    "Please download Google Chrome or Mozilla Firefox."
+                ),
+                style="Dark.TLabel",
+                wraplength=340,
+                justify="left",
+            ).pack(fill="x", pady=(0, 4))
 
         auto_arrange_card = create_settings_card(general_tab, "Client Window Arrangement")
 
@@ -5601,7 +5722,8 @@ class AccountManagerUI:
                             capture_output=True,
                             text=True,
                             encoding="utf-8",
-                            errors="replace"
+                            errors="replace",
+                            **subprocess_no_window_kwargs(),
                         )
                     except Exception:
                         continue
@@ -5636,7 +5758,8 @@ class AccountManagerUI:
                             capture_output=True,
                             text=True,
                             encoding="utf-8",
-                            errors="replace"
+                            errors="replace",
+                            **subprocess_no_window_kwargs(),
                         )
                     except Exception:
                         pass
@@ -5702,7 +5825,8 @@ class AccountManagerUI:
                             capture_output=True,
                             text=True,
                             encoding="utf-8",
-                            errors="replace"
+                            errors="replace",
+                            **subprocess_no_window_kwargs(),
                         )
                     except Exception:
                         continue

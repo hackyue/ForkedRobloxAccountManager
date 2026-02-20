@@ -26,6 +26,22 @@ from utils.encryption_setup import setup_encryption
 from utils.ui import AccountManagerUI
 
 
+def subprocess_no_window_kwargs():
+    if os.name != "nt":
+        return {}
+    kwargs = {}
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creation_flags:
+        kwargs["creationflags"] = creation_flags
+    startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_cls is not None:
+        startupinfo = startupinfo_cls()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def get_app_base_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -99,7 +115,7 @@ def _apply_update_mode(argv):
 
         os.replace(source, target)
 
-        subprocess.Popen([target], close_fds=True)
+        subprocess.Popen([target], close_fds=True, **subprocess_no_window_kwargs())
         return 0
     except Exception as exc:
         try:

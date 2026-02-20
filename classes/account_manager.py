@@ -10,6 +10,7 @@ import time
 import tempfile
 import hashlib
 import shutil
+import subprocess
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -31,6 +32,9 @@ from .roblox_api import RobloxAPI
 
 class RobloxAccountManager:
     LOGIN_DETECTION_INTERVAL_SECONDS = 0.1
+    _SELENIUM_POPEN_KW = {
+        "creation_flags": getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    } if os.name == "nt" else {}
     
     def __init__(self, password=None):
         self.data_folder = "AccountManagerData"
@@ -253,7 +257,8 @@ class RobloxAccountManager:
 
         service = Service(
             ChromeDriverManager().install(),
-            log_path=os.devnull
+            log_path=os.devnull,
+            popen_kw=self._SELENIUM_POPEN_KW.copy(),
         )
         driver = webdriver.Chrome(service=service, options=chrome_options)
         try:
@@ -281,7 +286,11 @@ class RobloxAccountManager:
         firefox_options.set_preference("app.update.auto", False)
         firefox_options.set_preference("app.update.enabled", False)
 
-        service = FirefoxService(GeckoDriverManager().install(), log_output=os.devnull)
+        service = FirefoxService(
+            GeckoDriverManager().install(),
+            log_output=os.devnull,
+            popen_kw=self._SELENIUM_POPEN_KW.copy(),
+        )
         return webdriver.Firefox(service=service, options=firefox_options)
 
     def setup_browser_driver(self, preferred_browser=None):
