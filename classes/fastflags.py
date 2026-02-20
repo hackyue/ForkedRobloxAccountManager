@@ -264,11 +264,6 @@ class FastFlagsManager:
     
     def validate_flag_name(self, flag_name):
         """Validate FastFlag name format"""
-        # FastFlags typically follow patterns like:
-        # FFlagDebugGraphicsDisableDecals
-        # DFIntTaskSchedulerTargetFps
-        # DFFlagDebugSomething
-        # DFFloatSomething
         pattern = r'^(DF|FF)(Int|Float|lag)[A-Z][a-zA-Z0-9]*$'
         
         if not flag_name:

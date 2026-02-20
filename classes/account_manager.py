@@ -785,7 +785,15 @@ class RobloxAccountManager:
 
         return self.launch_roblox(username, "", "", version=version, enable_debug=enable_debug)
 
-    def launch_roblox(self, username, game_id, private_server_id="", version=None, enable_debug=False):
+    def launch_roblox(
+        self,
+        username,
+        game_id,
+        private_server_id="",
+        version=None,
+        enable_debug=False,
+        server_job_id="",
+    ):
         """
         Launch Roblox game with specified account and version
         
@@ -794,6 +802,7 @@ class RobloxAccountManager:
             game_id: ID of the game to launch
             private_server_id: Optional private server ID
             version: Optional path to Roblox version (if None, use default/latest)
+            server_job_id: Optional public server job ID
         """
         if username not in self.accounts:
             print(f"[ERROR] Account '{username}' not found")
@@ -807,7 +816,8 @@ class RobloxAccountManager:
             game_id,
             private_server_id,
             version,
-            enable_debug=enable_debug
+            enable_debug=enable_debug,
+            server_job_id=server_job_id,
         )
     
     def set_account_note(self, username, note):

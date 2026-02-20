@@ -879,6 +879,7 @@ class AccountManagerUI:
             "enable_topmost": False,
             "enable_multi_roblox": False,
             "confirm_before_launch": False,
+            "randomize_server_job_ids": False,
             "max_recent_games": 10,
             "enable_multi_select": False,
             "enable_debug_logging": False,
@@ -4010,13 +4011,26 @@ class AccountManagerUI:
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
         launch_delay = self._get_multi_launch_delay()
+        randomize_server_jobs = self.settings.get("randomize_server_job_ids", False)
 
-        def worker(selected_usernames, pid, psid, ver, debug_flag, delay_seconds):
+        def worker(selected_usernames, pid, psid, ver, debug_flag, delay_seconds, randomize_jobs):
             success_count = 0
+            if randomize_jobs and psid:
+                print("[INFO] Random Job ID setting ignored because a private server link code is set.")
             for idx, uname in enumerate(selected_usernames):
                 try:
+                    server_job_id = ""
+                    if randomize_jobs and not psid:
+                        server_job_id = RobloxAPI.get_random_public_server_job_id(pid) or ""
                     before_pids = self._get_running_tracked_roblox_pid_set()
-                    if self.manager.launch_roblox(uname, pid, psid, ver, enable_debug=debug_flag):
+                    if self.manager.launch_roblox(
+                        uname,
+                        pid,
+                        psid,
+                        ver,
+                        enable_debug=debug_flag,
+                        server_job_id=server_job_id
+                    ):
                         success_count += 1
                     time.sleep(0.8)
                     after_pids = self._get_running_tracked_roblox_pid_set()
@@ -4053,7 +4067,7 @@ class AccountManagerUI:
 
         threading.Thread(
             target=worker,
-            args=(list(usernames), game_id, private_server, version_path, debug_enabled, launch_delay),
+            args=(list(usernames), game_id, private_server, version_path, debug_enabled, launch_delay, randomize_server_jobs),
             daemon=True
         ).start()
 
@@ -4157,6 +4171,7 @@ class AccountManagerUI:
         topmost_var = tk.BooleanVar(value=self.settings.get("enable_topmost", False))
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
         confirm_launch_var = tk.BooleanVar(value=self.settings.get("confirm_before_launch", False))
+        randomize_job_id_var = tk.BooleanVar(value=self.settings.get("randomize_server_job_ids", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
@@ -4478,6 +4493,14 @@ class AccountManagerUI:
             variable=multi_roblox_var,
             style="Dark.TCheckbutton",
             command=on_multi_roblox_toggle
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            roblox_tab,
+            text="Randomize Server Job IDs",
+            variable=randomize_job_id_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("randomize_server_job_ids", randomize_job_id_var)
         ).pack(anchor="w", pady=2)
 
         ttk.Label(roblox_tab, text="", style="Dark.TLabel").pack(pady=5)

@@ -145,6 +145,61 @@ class RobloxAPI:
         except Exception as exc:
             print(f"[WARNING] Unexpected error while fetching game name for place {place_id_str}: {exc}")
         return None
+
+    @staticmethod
+    def get_random_public_server_job_id(place_id, max_pages=3):
+        if not place_id:
+            return None
+
+        place_id_str = str(place_id).strip()
+        if not place_id_str.isdigit():
+            return None
+
+        collected_servers = []
+        cursor = ""
+        pages_fetched = 0
+
+        try:
+            while pages_fetched < max_pages:
+                url = (
+                    f"https://games.roblox.com/v1/games/{place_id_str}/servers/Public"
+                    f"?sortOrder=Asc&limit=100"
+                )
+                if cursor:
+                    url += f"&cursor={quote(cursor, safe='')}"
+
+                response = requests.get(url, timeout=8)
+                response.raise_for_status()
+                payload = response.json() if response.content else {}
+                servers = payload.get("data") or []
+
+                for server in servers:
+                    job_id = str(server.get("id") or "").strip()
+                    if not job_id:
+                        continue
+                    try:
+                        max_players = int(server.get("maxPlayers", 0) or 0)
+                    except Exception:
+                        max_players = 0
+                    try:
+                        playing = int(server.get("playing", 0) or 0)
+                    except Exception:
+                        playing = 0
+                    if max_players > 0 and playing >= max_players:
+                        continue
+                    collected_servers.append(job_id)
+
+                pages_fetched += 1
+                cursor = str(payload.get("nextPageCursor") or "").strip()
+                if not cursor:
+                    break
+
+            if not collected_servers:
+                return None
+            return random.choice(collected_servers)
+        except Exception as exc:
+            print(f"[WARNING] Failed to fetch public servers for place {place_id_str}: {exc}")
+            return None
     
     @staticmethod
     def get_auth_ticket(roblosecurity_cookie):
@@ -348,7 +403,15 @@ class RobloxAPI:
             print(f"[DEBUG] Unable to inspect Roblox process command line: {exc}")
 
     @staticmethod
-    def launch_roblox(username, cookie, game_id, private_server_id="", roblox_path=None, enable_debug=False):
+    def launch_roblox(
+        username,
+        cookie,
+        game_id,
+        private_server_id="",
+        roblox_path=None,
+        enable_debug=False,
+        server_job_id="",
+    ):
         """
         Launch Roblox game with specified account and version
         
@@ -358,6 +421,7 @@ class RobloxAPI:
             game_id: ID of the game to launch
             private_server_id: Optional private server ID
             roblox_path: Optional path to Roblox version directory (if None, uses default)
+            server_job_id: Optional public server job ID
         """
         def _log_debug(msg):
             if enable_debug:
@@ -599,17 +663,23 @@ class RobloxAPI:
         browser_tracker_id = random.randint(55393295400, 55393295500)
         launch_time = int(time.time() * 1000)
 
+        place_launch_request = "RequestGame"
+        place_launch_extra = ""
+        if private_server_id:
+            place_launch_extra = "&linkCode=" + private_server_id
+        elif server_job_id:
+            place_launch_request = "RequestGameJob"
+            place_launch_extra = "&gameId=" + str(server_job_id)
+
         url = (
             "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket_encoded +
             "+launchtime:" + str(launch_time) +
-            "+placelauncherurl:https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame" +
+            "+placelauncherurl:https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=" + place_launch_request +
             "&browserTrackerId=" + str(browser_tracker_id) +
             "&placeId=" + str(game_id) +
-            "&isPlayTogetherGame=false"
+            "&isPlayTogetherGame=false" +
+            place_launch_extra
         )
-
-        if private_server_id:
-            url += "&linkCode=" + private_server_id
 
         url += (
             "+browsertrackerid:" + str(browser_tracker_id) +
@@ -621,6 +691,8 @@ class RobloxAPI:
         print(f"Game ID: {game_id}")
         if private_server_id:
             print(f"Private Server: {private_server_id}")
+        elif server_job_id:
+            print(f"Server Job ID: {server_job_id}")
 
         try:
             if launcher_exe:
@@ -644,9 +716,9 @@ class RobloxAPI:
                     except Exception as exc:
                         _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to -t flow: {exc}")
                     place_launch_url = (
-                        f"https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame"
+                        f"https://assetgame.roblox.com/game/PlaceLauncher.ashx?request={place_launch_request}"
                         f"&browserTrackerId={browser_tracker_id}&placeId={game_id}&isPlayTogetherGame=false"
-                        f"{('&linkCode=' + private_server_id) if private_server_id else ''}"
+                        f"{place_launch_extra}"
                     )
                     launch_args = [
                         roblox_exe,
