@@ -3721,7 +3721,7 @@ class AccountManagerUI:
         return [area for _, area in work_areas]
 
     def _arrange_windows_on_primary_monitor(self, hwnds):
-        """Arrange Roblox clients across all monitors, keeping each window inside its monitor."""
+        """Arrange Roblox clients across selected monitor work areas."""
         if not win32api or not win32gui:
             return
 
@@ -3735,22 +3735,105 @@ class AccountManagerUI:
             return
 
         hwnds = list(hwnds)
-        total = len(hwnds)
-        if total == 0:
+        if not hwnds:
             return
 
-        start = 0
-        for idx, work_area in enumerate(monitor_work_areas):
-            remaining_monitors = len(monitor_work_areas) - idx
-            remaining_windows = total - start
-            if remaining_windows <= 0:
-                break
+        hwnds = self._sort_windows_by_position(hwnds)
+        min_width, min_height = self._get_min_window_size(hwnds[0])
+        if min_width <= 0 or min_height <= 0:
+            return
 
-            windows_for_monitor = max(1, math.ceil(remaining_windows / remaining_monitors))
-            subset = hwnds[start:start + windows_for_monitor]
-            if subset:
-                self._arrange_windows_within_area(subset, work_area)
-            start += windows_for_monitor
+        monitor_slots = []
+        for work_area in monitor_work_areas:
+            work_left, work_top, work_right, work_bottom = work_area
+            area_width = max(1, work_right - work_left)
+            area_height = max(1, work_bottom - work_top)
+
+            tile_width = max(1, min(min_width, area_width))
+            tile_height = max(1, min(min_height, area_height))
+            columns = max(1, area_width // tile_width)
+            rows = max(1, area_height // tile_height)
+            capacity = max(1, columns * rows)
+
+            monitor_slots.append({
+                "area": work_area,
+                "tile_width": tile_width,
+                "tile_height": tile_height,
+                "columns": columns,
+                "rows": rows,
+                "capacity": capacity,
+            })
+
+        if not monitor_slots:
+            return
+
+        total_capacity = sum(slot["capacity"] for slot in monitor_slots)
+        if total_capacity <= 0:
+            return
+
+        for index, hwnd in enumerate(hwnds):
+            slot_index = index % total_capacity
+            monitor_index = 0
+            while monitor_index < len(monitor_slots):
+                cap = monitor_slots[monitor_index]["capacity"]
+                if slot_index < cap:
+                    break
+                slot_index -= cap
+                monitor_index += 1
+
+            if monitor_index >= len(monitor_slots):
+                monitor_index = len(monitor_slots) - 1
+                slot_index = 0
+
+            slot = monitor_slots[monitor_index]
+            work_left, work_top, work_right, work_bottom = slot["area"]
+            columns = slot["columns"]
+            tile_width = slot["tile_width"]
+            tile_height = slot["tile_height"]
+
+            row = slot_index // columns
+            col = slot_index % columns
+            left = work_left + (col * tile_width)
+            top = work_top + (row * tile_height)
+
+            # Keep the tile fully inside the monitor work area.
+            left = min(left, work_right - tile_width)
+            top = min(top, work_bottom - tile_height)
+
+            try:
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.MoveWindow(hwnd, left, top, tile_width, tile_height, True)
+            except Exception:
+                continue
+
+    def _sort_windows_by_position(self, hwnds):
+        """Sort windows by current top-left position for deterministic arrangement."""
+        positioned = []
+        for hwnd in hwnds:
+            try:
+                left, top, _, _ = win32gui.GetWindowRect(hwnd)
+            except Exception:
+                left = top = 0
+            positioned.append((top, left, hwnd))
+        positioned.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [item[2] for item in positioned]
+
+    def _get_min_window_size(self, hwnd):
+        """Probe the minimum resizable Roblox window size enforced by Windows/client."""
+        fallback = (320, 240)
+        if not win32gui or not hwnd:
+            return fallback
+
+        try:
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            left, top, _, _ = win32gui.GetWindowRect(hwnd)
+            win32gui.MoveWindow(hwnd, left, top, 1, 1, True)
+            min_left, min_top, min_right, min_bottom = win32gui.GetWindowRect(hwnd)
+            min_width = max(1, min_right - min_left)
+            min_height = max(1, min_bottom - min_top)
+            return min_width, min_height
+        except Exception:
+            return fallback
 
     def _arrange_windows_within_area(self, hwnds, work_area):
         """Tile the given HWNDs inside a single monitor work area."""
