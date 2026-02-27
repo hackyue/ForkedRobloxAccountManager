@@ -257,22 +257,6 @@ def main():
     app = AccountManagerUI(root, manager, icon_path=icon_path)
     install_bug_issue_hooks(root, app)
 
-    if os.environ.get("FRAM_TEST_BUG") == "1":
-        def _raise_ui_bug():
-            raise RuntimeError(
-                "BUG_TEST password=abc token=xyz .ROBLOSECURITY=secret "
-                "path=C:\\Users\\Admin\\private"
-            )
-        root.after(1000, _raise_ui_bug)
-
-    if os.environ.get("FRAM_TEST_THREAD_BUG") == "1":
-        def _raise_thread_bug():
-            raise RuntimeError(
-                "THREAD_BUG password=qwerty token=threadsecret "
-                ".ROBLOSECURITY=threadcookie"
-            )
-        root.after(1200, lambda: threading.Thread(target=_raise_thread_bug, daemon=True).start())
-
     try:
         root.mainloop()
     except KeyboardInterrupt:

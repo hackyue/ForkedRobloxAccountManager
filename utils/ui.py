@@ -46,6 +46,9 @@ from classes.fastflags import FastFlagsManager
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
 ROBLOX_DEPLOY_HISTORY_URL = "https://setup.rbxcdn.com/DeployHistory.txt"
+DISCORD_SERVER_URL = "https://discord.gg/SpMTxg8YjJ"
+DISCORD_LOGO_URL = "https://cdn.prod.website-files.com/6257adef93867e50d84d30e2/67ed8194f41d7d8eade32c90_Logo.svg"
+DISCORD_LOGO_PNG_FALLBACK_URL = "https://cdn-icons-png.flaticon.com/512/2111/2111370.png"
 
 ROBLOX_DOWNLOAD_HEADERS = {
     "User-Agent": (
@@ -715,6 +718,7 @@ class AccountManagerUI:
         self._http_session = None
         self._http_session_lock = threading.Lock()
         self._settings_save_after_ids = {}
+        self._discord_button_image = None
 
         self.global_settings_window = None
         self.global_settings_values = None
@@ -2455,6 +2459,86 @@ class AccountManagerUI:
                 json.dump(self.settings, f, indent=2)
         except Exception as e:
             print(f"Failed to save settings: {e}")
+
+    def _load_discord_button_image(self, size=20):
+        """Load a real Discord logo image for the settings header button."""
+        if self._discord_button_image is not None:
+            return self._discord_button_image
+
+        cache_dir = os.path.join(self.data_folder, "cache")
+        png_path = os.path.join(cache_dir, f"discord_logo_{int(size)}.png")
+
+        def _load_png(path):
+            try:
+                img = tk.PhotoImage(file=path)
+                try:
+                    width = int(img.width())
+                    if width > int(size):
+                        ratio = max(1, int(round(width / float(size))))
+                        img = img.subsample(ratio, ratio)
+                except Exception:
+                    pass
+                self._discord_button_image = img
+                return img
+            except Exception:
+                return None
+
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except Exception:
+            pass
+
+        if os.path.isfile(png_path):
+            image = _load_png(png_path)
+            if image is not None:
+                return image
+
+        svg_bytes = b""
+        try:
+            response = requests.get(DISCORD_LOGO_URL, timeout=10)
+            if response.status_code == 200 and response.content:
+                content_type = (response.headers.get("Content-Type", "") or "").lower()
+                if response.content.startswith(b"\x89PNG\r\n\x1a\n"):
+                    with open(png_path, "wb") as cache_fp:
+                        cache_fp.write(response.content)
+                    image = _load_png(png_path)
+                    if image is not None:
+                        return image
+                elif ("svg" in content_type) or (b"<svg" in response.content[:400].lower()):
+                    svg_bytes = response.content
+        except Exception:
+            svg_bytes = b""
+
+        if svg_bytes:
+            try:
+                import cairosvg
+                png_bytes = cairosvg.svg2png(
+                    bytestring=svg_bytes,
+                    output_width=int(size),
+                    output_height=int(size),
+                )
+                if png_bytes:
+                    with open(png_path, "wb") as cache_fp:
+                        cache_fp.write(png_bytes)
+                    image = _load_png(png_path)
+                    if image is not None:
+                        return image
+            except Exception:
+                pass
+
+        # Fallback: direct PNG logo URL (no SVG conversion required).
+        try:
+            response = requests.get(DISCORD_LOGO_PNG_FALLBACK_URL, timeout=10)
+            if response.status_code == 200 and response.content.startswith(b"\x89PNG\r\n\x1a\n"):
+                with open(png_path, "wb") as cache_fp:
+                    cache_fp.write(response.content)
+                image = _load_png(png_path)
+                if image is not None:
+                    return image
+        except Exception:
+            pass
+
+        return None
 
     def _sanitize_issue_report_text(self, text):
         """Best-effort redaction for issue drafts to avoid exposing secrets."""
@@ -5058,20 +5142,70 @@ class AccountManagerUI:
         main_frame = ttk.Frame(settings_window, style="Dark.TFrame")
         main_frame.pack(fill="both", expand=True, padx=20, pady=15)
 
+        header_row = tk.Frame(main_frame, bg=self.BG_DARK)
+        header_row.pack(fill="x")
+        header_text_frame = tk.Frame(header_row, bg=self.BG_DARK)
+        header_text_frame.pack(side="left", fill="x", expand=True)
+
         ttk.Label(
-            main_frame,
+            header_text_frame,
             text="Settings",
             style="Dark.TLabel",
             font=("Segoe UI", 14, "bold")
         ).pack(anchor="w")
         settings_intro_label = ttk.Label(
-            main_frame,
+            header_text_frame,
             text="Manage app preferences, Roblox launch behavior, and automation tools.",
             style="Dark.TLabel",
             font=("Segoe UI", 9),
             foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
         )
         settings_intro_label.pack(anchor="w", pady=(2, 10))
+
+        def open_discord_server():
+            opened = False
+            try:
+                if webbrowser is not None:
+                    opened = bool(webbrowser.open(DISCORD_SERVER_URL, new=2))
+                else:
+                    import webbrowser as std_webbrowser
+                    opened = bool(std_webbrowser.open(DISCORD_SERVER_URL, new=2))
+            except Exception:
+                opened = False
+
+            if opened:
+                return
+
+            try:
+                settings_window.clipboard_clear()
+                settings_window.clipboard_append(DISCORD_SERVER_URL)
+                settings_window.update_idletasks()
+            except Exception:
+                pass
+            messagebox.showinfo(
+                "Discord",
+                "Could not open the Discord invite automatically. The invite link was copied to your clipboard.",
+                parent=settings_window,
+            )
+
+        discord_button_kwargs = {
+            "style": "Dark.TButton",
+            "command": open_discord_server,
+        }
+
+        discord_image = self._load_discord_button_image(size=20)
+        if discord_image is not None:
+            self._settings_discord_icon = discord_image
+            discord_button_kwargs["image"] = discord_image
+            discord_button_kwargs["width"] = 3
+        else:
+            self._settings_discord_icon = None
+            discord_button_kwargs["text"] = "Discord"
+
+        ttk.Button(
+            header_row,
+            **discord_button_kwargs,
+        ).pack(side="right", padx=(8, 0), pady=(0, 8))
         
         topmost_var = tk.BooleanVar(value=self.settings.get("enable_topmost", False))
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
@@ -5269,6 +5403,8 @@ class AccountManagerUI:
 
             settings_window.configure(bg=self.BG_DARK)
             tab_bar.configure(bg=self.BG_DARK)
+            header_row.configure(bg=self.BG_DARK)
+            header_text_frame.configure(bg=self.BG_DARK)
 
             for tab_name, btn in tab_buttons.items():
                 if tab_name == tab_var.get():
