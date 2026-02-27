@@ -12,6 +12,8 @@ import time
 import shutil
 import subprocess
 import ctypes
+import threading
+import traceback
 import warnings
 import tkinter as tk
 from tkinter import messagebox, simpledialog
@@ -154,6 +156,61 @@ def setup_icon(data_folder):
     return icon_path if os.path.isfile(icon_path) else None
 
 
+def install_bug_issue_hooks(root, app):
+    """Route unhandled exceptions to the in-app GitHub issue prompt."""
+    previous_sys_hook = sys.excepthook
+    previous_tk_hook = getattr(root, "report_callback_exception", None)
+    previous_thread_hook = getattr(threading, "excepthook", None)
+
+    def _forward(exc_type, exc_value, exc_traceback, source):
+        if exc_type in (KeyboardInterrupt, SystemExit):
+            return
+        try:
+            traceback.print_exception(exc_type, exc_value, exc_traceback)
+        except Exception:
+            pass
+        try:
+            app.report_unhandled_exception(exc_type, exc_value, exc_traceback, source=source)
+        except Exception:
+            pass
+
+    def _sys_hook(exc_type, exc_value, exc_traceback):
+        _forward(exc_type, exc_value, exc_traceback, source="sys")
+        try:
+            if callable(previous_sys_hook):
+                previous_sys_hook(exc_type, exc_value, exc_traceback)
+        except Exception:
+            pass
+
+    def _tk_hook(exc_type, exc_value, exc_traceback):
+        _forward(exc_type, exc_value, exc_traceback, source="tk")
+        try:
+            if callable(previous_tk_hook):
+                previous_tk_hook(exc_type, exc_value, exc_traceback)
+        except Exception:
+            pass
+
+    sys.excepthook = _sys_hook
+    root.report_callback_exception = _tk_hook
+
+    if hasattr(threading, "excepthook"):
+        def _thread_hook(args):
+            try:
+                exc_type = getattr(args, "exc_type", Exception)
+                exc_value = getattr(args, "exc_value", Exception("Unknown thread error"))
+                exc_traceback = getattr(args, "exc_traceback", None)
+                _forward(exc_type, exc_value, exc_traceback, source="thread")
+            except Exception:
+                pass
+            try:
+                if callable(previous_thread_hook):
+                    previous_thread_hook(args)
+            except Exception:
+                pass
+
+        threading.excepthook = _thread_hook
+
+
 def main():
     """Main application entry point"""
     data_folder = get_data_folder()
@@ -198,6 +255,23 @@ def main():
             pass
 
     app = AccountManagerUI(root, manager, icon_path=icon_path)
+    install_bug_issue_hooks(root, app)
+
+    if os.environ.get("FRAM_TEST_BUG") == "1":
+        def _raise_ui_bug():
+            raise RuntimeError(
+                "BUG_TEST password=abc token=xyz .ROBLOSECURITY=secret "
+                "path=C:\\Users\\Admin\\private"
+            )
+        root.after(1000, _raise_ui_bug)
+
+    if os.environ.get("FRAM_TEST_THREAD_BUG") == "1":
+        def _raise_thread_bug():
+            raise RuntimeError(
+                "THREAD_BUG password=qwerty token=threadsecret "
+                ".ROBLOSECURITY=threadcookie"
+            )
+        root.after(1200, lambda: threading.Thread(target=_raise_thread_bug, daemon=True).start())
 
     try:
         root.mainloop()

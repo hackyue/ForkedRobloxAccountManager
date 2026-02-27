@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import io
+import traceback
 import tempfile
 import zipfile
 import shutil
@@ -419,6 +420,23 @@ class ConsoleOutputBuffer:
         redacted = re.sub(
             r"(?i)(\.ROBLOSECURITY\s*[:=]\s*)([^;\s]+)",
             r"\1[REDACTED]",
+            redacted,
+        )
+
+        # Redact username segment in local filesystem paths.
+        redacted = re.sub(
+            r"(?i)([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
+            r"\1<user>",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
+            r"\1<user>",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([\\/]+home[\\/]+)([^\\/\r\n\"']+)",
+            r"\1<user>",
             redacted,
         )
 
@@ -972,7 +990,8 @@ class AccountManagerUI:
             "max_recent_games": 10,
             "enable_multi_select": False,
             "enable_debug_logging": False,
-            "hide_sensitive_info": True,
+            "hide_sensitive_info": False,
+            "bug_issue_prompt_enabled": True,
             "selected_theme": "Synapse Neon",
             "disable_success_popups": False,
             "auto_arrange_scope": "both",
@@ -2436,6 +2455,247 @@ class AccountManagerUI:
                 json.dump(self.settings, f, indent=2)
         except Exception as e:
             print(f"Failed to save settings: {e}")
+
+    def _sanitize_issue_report_text(self, text):
+        """Best-effort redaction for issue drafts to avoid exposing secrets."""
+        if not text:
+            return ""
+
+        redacted = str(text)
+
+        redacted = re.sub(
+            r'(?i)(\"(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\"\s*:\s*\")([^\"]*)(\")',
+            r"\1[REDACTED]\3",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)('(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)'\s*:\s*')([^']*)(')",
+            r"\1[REDACTED]\3",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)\b(password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+            r"\1\2[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([?&](?:password|pass|token|cookie|auth|authorization)=)([^&\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(\.ROBLOSECURITY\s*=\s*)([^;\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(\.ROBLOSECURITY\s*[:=]\s*)([^;\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(authorization\s*:\s*bearer\s+)([^\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(sessionid\s*=\s*)([^;\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)\b[A-F0-9]{32,}\b",
+            "[REDACTED_HEX]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
+            r"\1<user>",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
+            r"\1<user>",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)([\\/]+home[\\/]+)([^\\/\r\n\"']+)",
+            r"\1<user>",
+            redacted,
+        )
+        return redacted
+
+    def _build_bug_issue_draft(self, exc_type, exc_value, exc_traceback, source="unknown"):
+        exception_name = getattr(exc_type, "__name__", str(exc_type) or "Exception")
+        exception_message = str(exc_value or "").strip() or "(no message)"
+        raw_traceback = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        trace_text = self._sanitize_issue_report_text(raw_traceback).strip()
+
+        account_count = 0
+        try:
+            account_count = len(getattr(self.manager, "accounts", {}) or {})
+        except Exception:
+            account_count = 0
+
+        title = f"Crash: {exception_name} ({source})"
+        body = (
+            "## Summary\n"
+            f"Unhandled exception detected in `{source}`.\n\n"
+            "## Environment\n"
+            f"- App Version: {getattr(self, 'APP_VERSION', 'unknown')}\n"
+            f"- OS: {platform.system()} {platform.release()}\n"
+            f"- Python: {sys.version.split()[0]}\n"
+            f"- Saved Account Count: {account_count}\n\n"
+            "## Exception\n"
+            f"- Type: `{exception_name}`\n"
+            f"- Message: `{self._sanitize_issue_report_text(exception_message)}`\n\n"
+            "## Traceback (sanitized)\n"
+            "```text\n"
+            f"{trace_text}\n"
+            "```\n"
+        )
+
+        try:
+            from urllib.parse import urlencode
+            query = urlencode(
+                {
+                    "title": self._sanitize_issue_report_text(title)[:180],
+                    "body": body[:7000],
+                    "labels": "bug,auto-report",
+                }
+            )
+            issue_url = f"https://github.com/hackyue/ForkedRobloxAccountManager/issues/new?{query}"
+        except Exception:
+            issue_url = "https://github.com/hackyue/ForkedRobloxAccountManager/issues/new"
+
+        return {
+            "title": title,
+            "body": body,
+            "issue_url": issue_url,
+            "signature": self._sanitize_issue_report_text(f"{exception_name}|{exception_message}|{source}")[:400],
+        }
+
+    def _show_bug_issue_prompt(self, issue_data):
+        if not issue_data:
+            return
+        if not self.settings.get("bug_issue_prompt_enabled", True):
+            return
+        if getattr(self, "_bug_issue_prompt_open", False):
+            return
+
+        try:
+            signature = issue_data.get("signature", "")
+            if signature:
+                if signature == getattr(self, "_last_bug_issue_signature", ""):
+                    return
+                self._last_bug_issue_signature = signature
+        except Exception:
+            pass
+
+        self._bug_issue_prompt_open = True
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Bug Detected")
+        dialog.configure(bg=self.BG_DARK)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        self.register_toplevel(dialog)
+
+        if self.settings.get("enable_topmost", False):
+            dialog.attributes("-topmost", True)
+
+        container = ttk.Frame(dialog, style="Dark.TFrame")
+        container.pack(fill="both", expand=True, padx=14, pady=12)
+
+        ttk.Label(
+            container,
+            text="A bug was detected. Do you want to create a GitHub issue draft for the developer?",
+            style="Dark.TLabel",
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 4))
+
+        ttk.Label(
+            container,
+            text="Privacy: Nothing is sent automatically. Sensitive values are redacted before opening the draft.",
+            style="Dark.TLabel",
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        button_row = ttk.Frame(container, style="Dark.TFrame")
+        button_row.pack(fill="x")
+        button_row.columnconfigure(0, weight=1)
+        button_row.columnconfigure(1, weight=1)
+        button_row.columnconfigure(2, weight=1)
+
+        def close_prompt():
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+            self._bug_issue_prompt_open = False
+
+        def open_issue():
+            try:
+                import webbrowser
+                webbrowser.open(issue_data.get("issue_url", ""), new=2)
+            except Exception:
+                pass
+            close_prompt()
+
+        def never_ask_again():
+            self.settings["bug_issue_prompt_enabled"] = False
+            self.save_settings()
+            close_prompt()
+
+        ttk.Button(
+            button_row,
+            text="Create GitHub Issue",
+            style="Dark.TButton",
+            command=open_issue,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        ttk.Button(
+            button_row,
+            text="Not Now",
+            style="Dark.TButton",
+            command=close_prompt,
+        ).grid(row=0, column=1, sticky="ew", padx=3)
+
+        ttk.Button(
+            button_row,
+            text="Never Ask Again",
+            style="Dark.TButton",
+            command=never_ask_again,
+        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+
+        dialog.protocol("WM_DELETE_WINDOW", close_prompt)
+        dialog.update_idletasks()
+        self._center_window(dialog, max(520, dialog.winfo_reqwidth() + 20), max(210, dialog.winfo_reqheight() + 20))
+        dialog.deiconify()
+
+    def report_unhandled_exception(self, exc_type, exc_value, exc_traceback, source="unknown"):
+        """Queue a privacy-safe issue draft prompt for unexpected crashes."""
+        if exc_type in (KeyboardInterrupt, SystemExit):
+            return
+        if not self.settings.get("bug_issue_prompt_enabled", True):
+            return
+
+        try:
+            issue_data = self._build_bug_issue_draft(exc_type, exc_value, exc_traceback, source=source)
+        except Exception:
+            return
+
+        def _show():
+            try:
+                self._show_bug_issue_prompt(issue_data)
+            except Exception:
+                pass
+
+        try:
+            self.root.after(0, _show)
+        except Exception:
+            pass
 
     def _schedule_setting_save(self, key, value, delay_ms=250):
         """Debounce frequent UI setting writes to keep typing responsive."""
@@ -4820,6 +5080,7 @@ class AccountManagerUI:
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         hide_sensitive_var = tk.BooleanVar(value=self.settings.get("hide_sensitive_info", False))
+        bug_prompt_var = tk.BooleanVar(value=self.settings.get("bug_issue_prompt_enabled", True))
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
         auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update_enabled", True))
         theme_var = tk.StringVar(value=self.settings.get("selected_theme", self.theme_name))
@@ -5501,6 +5762,14 @@ class AccountManagerUI:
             variable=hide_sensitive_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("hide_sensitive_info", hide_sensitive_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            logging_card,
+            text="Prompt for Bug Reports",
+            variable=bug_prompt_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("bug_issue_prompt_enabled", bug_prompt_var)
         ).pack(anchor="w", pady=2)
 
         def open_instance_manager_and_close_settings():
