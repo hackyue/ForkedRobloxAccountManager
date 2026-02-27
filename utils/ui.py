@@ -602,6 +602,7 @@ class AccountManagerUI:
 
         self.multi_roblox_handle = None
         self._pid_account_map = {}
+        self._pid_launch_context_map = {}
         self._pid_account_lock = threading.Lock()
         self._tracked_roblox_exes = {
             "robloxplayerbeta.exe",
@@ -3582,6 +3583,7 @@ class AccountManagerUI:
                 text=True,
                 encoding='utf-8',
                 errors='replace',
+                timeout=12,
                 **subprocess_no_window_kwargs(),
             )
         except Exception as exc:
@@ -4277,7 +4279,15 @@ class AccountManagerUI:
                     if not (set(after_pids) - set(before_pids)):
                         time.sleep(1.0)
                         after_pids = self._get_running_tracked_roblox_pid_set()
-                    self._assign_new_pids_to_account(uname, before_pids, after_pids)
+                    self._assign_new_pids_to_account(
+                        uname,
+                        before_pids,
+                        after_pids,
+                        launch_context={
+                            "mode": "home",
+                            "version_path": version_path or None,
+                        },
+                    )
                 except Exception as e:
                     print(f"Failed to launch Roblox home for {uname}: {e}")
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
@@ -4322,6 +4332,7 @@ class AccountManagerUI:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                timeout=8,
                 **subprocess_no_window_kwargs(),
             )
         except Exception:
@@ -4352,7 +4363,27 @@ class AccountManagerUI:
 
         return pid_to_image
 
-    def _assign_new_pids_to_account(self, username, before_pids, after_pids):
+    def _normalize_launch_context(self, launch_context):
+        context = {
+            "mode": "home",
+            "game_id": "",
+            "private_server_id": "",
+            "server_job_id": "",
+            "version_path": None,
+        }
+        if not isinstance(launch_context, dict):
+            return context
+
+        mode = str(launch_context.get("mode", "home") or "home").strip().lower()
+        context["mode"] = "game" if mode == "game" else "home"
+        context["game_id"] = str(launch_context.get("game_id", "") or "").strip()
+        context["private_server_id"] = str(launch_context.get("private_server_id", "") or "").strip()
+        context["server_job_id"] = str(launch_context.get("server_job_id", "") or "").strip()
+        version_path = launch_context.get("version_path")
+        context["version_path"] = str(version_path).strip() if version_path else None
+        return context
+
+    def _assign_new_pids_to_account(self, username, before_pids, after_pids, launch_context=None):
         if not username:
             return
         try:
@@ -4361,10 +4392,12 @@ class AccountManagerUI:
             return
         if not new_pids:
             return
+        normalized_context = self._normalize_launch_context(launch_context)
         try:
             with self._pid_account_lock:
                 for pid_value in new_pids:
                     self._pid_account_map[int(pid_value)] = str(username)
+                    self._pid_launch_context_map[int(pid_value)] = dict(normalized_context)
         except Exception:
             pass
 
@@ -4485,6 +4518,7 @@ class AccountManagerUI:
             for idx, uname in enumerate(selected_usernames):
                 try:
                     server_job_id = ""
+                    effective_server_job_id = ""
                     if randomize_jobs and not psid:
                         max_random_job_attempts = 3
                         for attempt in range(1, max_random_job_attempts + 1):
@@ -4504,6 +4538,7 @@ class AccountManagerUI:
                         enable_debug=debug_flag,
                         server_job_id=server_job_id
                     )
+                    effective_server_job_id = server_job_id
                     if (not launched) and server_job_id and randomize_jobs and not psid:
                         print("[INFO] Random job ID launch failed; retrying with default launch.")
                         launched = self.manager.launch_roblox(
@@ -4514,6 +4549,8 @@ class AccountManagerUI:
                             enable_debug=debug_flag,
                             server_job_id=""
                         )
+                        if launched:
+                            effective_server_job_id = ""
                     if launched:
                         success_count += 1
                     time.sleep(0.8)
@@ -4521,7 +4558,18 @@ class AccountManagerUI:
                     if not (set(after_pids) - set(before_pids)):
                         time.sleep(1.0)
                         after_pids = self._get_running_tracked_roblox_pid_set()
-                    self._assign_new_pids_to_account(uname, before_pids, after_pids)
+                    self._assign_new_pids_to_account(
+                        uname,
+                        before_pids,
+                        after_pids,
+                        launch_context={
+                            "mode": "game",
+                            "game_id": pid,
+                            "private_server_id": psid,
+                            "server_job_id": effective_server_job_id,
+                            "version_path": ver,
+                        },
+                    )
                 except Exception as e:
                     print(f"Failed to launch game for {uname}: {e}")
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
@@ -4597,6 +4645,7 @@ class AccountManagerUI:
         try:
             result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq RobloxPlayerBeta.exe'], 
                                   capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                  timeout=10,
                                   **subprocess_no_window_kwargs()) 
             
             if result.stdout and 'RobloxPlayerBeta.exe' in result.stdout:
@@ -4611,6 +4660,7 @@ class AccountManagerUI:
                 if response == 'yes':
                     subprocess.run(['taskkill', '/F', '/IM', 'RobloxPlayerBeta.exe'], 
                                  capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                 timeout=10,
                                  **subprocess_no_window_kwargs()) 
                     self.show_success_message("All Roblox instances have been closed.")
                 else:
@@ -5452,43 +5502,114 @@ class AccountManagerUI:
         self.instance_manager_window = window
         window.withdraw()
         window.title("Instance Manager")
-        window.configure(bg=self.BG_DARK)
+        window.configure(bg="#060a14")
         window.resizable(True, True)
-
-        window.transient(self.root)
-        window.grab_set()
+        window.minsize(980, 560)
         self.register_toplevel(window)
 
         if self.settings.get("enable_topmost", False):
             window.attributes("-topmost", True)
 
-        main_frame = ttk.Frame(window, style="Dark.TFrame")
-        main_frame.pack(fill="both", expand=True, padx=20, pady=15)
+        main_frame = tk.Frame(window, bg="#060a14")
+        main_frame.pack(fill="both", expand=True, padx=18, pady=14)
 
-        title_label = ttk.Label(
-            main_frame,
+        header_frame = tk.Frame(main_frame, bg="#060a14")
+        header_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            header_frame,
             text="Instance Manager",
-            style="Dark.TLabel",
-            font=("Segoe UI", 14, "bold")
-        )
-        title_label.pack(anchor="w", pady=(0, 10))
+            bg="#060a14",
+            fg="#f3f7ff",
+            font=("Segoe UI Semibold", 20),
+        ).pack(anchor="w")
+        tk.Label(
+            header_frame,
+            text="Monitor and control your Roblox instances",
+            bg="#060a14",
+            fg="#8ea2c8",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(2, 0))
 
-        controls_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        controls_frame.pack(fill="x", pady=(0, 8))
-        controls_frame.columnconfigure(1, weight=1)
+        card_running_var = tk.StringVar(value="0")
+        card_not_responding_var = tk.StringVar(value="0")
+        card_closed_var = tk.StringVar(value="0")
 
-        ttk.Label(controls_frame, text="Filter", style="Dark.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        def create_metric_card(parent, title, value_var, border_color, value_color):
+            card = tk.Frame(
+                parent,
+                bg="#0a1222",
+                highlightthickness=1,
+                highlightbackground=border_color,
+                highlightcolor=border_color,
+                bd=0,
+            )
+            tk.Label(
+                card,
+                text=title,
+                bg="#0a1222",
+                fg="#9fb2d5",
+                font=("Segoe UI Semibold", 10),
+            ).pack(anchor="w", padx=14, pady=(14, 4))
+            tk.Label(
+                card,
+                textvariable=value_var,
+                bg="#0a1222",
+                fg=value_color,
+                font=("Segoe UI Semibold", 20),
+            ).pack(anchor="w", padx=14, pady=(0, 12))
+            return card
+
+        cards_frame = tk.Frame(main_frame, bg="#060a14")
+        cards_frame.pack(fill="x", pady=(4, 10))
+        cards_frame.grid_columnconfigure(0, weight=1)
+        cards_frame.grid_columnconfigure(1, weight=1)
+        cards_frame.grid_columnconfigure(2, weight=1)
+        create_metric_card(cards_frame, "Running", card_running_var, "#1f7f66", "#3ee8ab").grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        create_metric_card(cards_frame, "Not Responding", card_not_responding_var, "#9a6f1d", "#ffc34d").grid(row=0, column=1, sticky="ew", padx=(4, 4))
+        create_metric_card(cards_frame, "Closed", card_closed_var, "#8c2c42", "#ff6f8d").grid(row=0, column=2, sticky="ew", padx=(8, 0))
+
+        toolbar_frame = tk.Frame(main_frame, bg="#060a14")
+        toolbar_frame.pack(fill="x", pady=(2, 8))
+        button_frame = ttk.Frame(toolbar_frame, style="Dark.TFrame")
+        button_frame.pack(side="left")
+
+        loaded_count_var = tk.StringVar(value="0 instances loaded")
+        tk.Label(
+            toolbar_frame,
+            textvariable=loaded_count_var,
+            bg="#060a14",
+            fg="#8ea2c8",
+            font=("Consolas", 10),
+        ).pack(side="right", padx=(12, 0))
+
+        controls_frame = tk.Frame(main_frame, bg="#060a14")
+        controls_frame.pack(fill="x", pady=(0, 10))
+        controls_frame.grid_columnconfigure(1, weight=1)
+
+        tk.Label(controls_frame, text="Filter", bg="#060a14", fg="#8ea2c8", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
         filter_var = tk.StringVar()
         filter_entry = ttk.Entry(controls_frame, textvariable=filter_var, style="Dark.TEntry")
         filter_entry.grid(row=0, column=1, sticky="ew")
 
+        tk.Label(controls_frame, text="Status", bg="#060a14", fg="#8ea2c8", font=("Segoe UI", 9)).grid(row=0, column=2, sticky="w", padx=(10, 4))
+        status_filter_var = tk.StringVar(value="All")
+        status_filter_combo = ttk.Combobox(
+            controls_frame,
+            textvariable=status_filter_var,
+            values=("All", "Running", "Not Responding", "Closed"),
+            state="readonly",
+            style="Dark.TCombobox",
+            width=16,
+        )
+        status_filter_combo.grid(row=0, column=3, sticky="w")
+
         known_only_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             controls_frame,
-            text="Known Accounts Only",
+            text="Known Accounts",
             variable=known_only_var,
             style="Dark.TCheckbutton",
-        ).grid(row=0, column=2, sticky="w", padx=(10, 0))
+        ).grid(row=0, column=4, sticky="w", padx=(10, 0))
 
         auto_refresh_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
@@ -5496,10 +5617,10 @@ class AccountManagerUI:
             text="Auto Refresh",
             variable=auto_refresh_var,
             style="Dark.TCheckbutton",
-        ).grid(row=0, column=3, sticky="w", padx=(10, 0))
+        ).grid(row=0, column=5, sticky="w", padx=(10, 0))
 
-        ttk.Label(controls_frame, text="Every (s)", style="Dark.TLabel").grid(row=0, column=4, sticky="w", padx=(10, 4))
-        refresh_interval_var = tk.IntVar(value=3)
+        tk.Label(controls_frame, text="Every (s)", bg="#060a14", fg="#8ea2c8", font=("Segoe UI", 9)).grid(row=0, column=6, sticky="w", padx=(8, 4))
+        refresh_interval_var = tk.IntVar(value=5)
         refresh_interval_spin = ttk.Spinbox(
             controls_frame,
             from_=1,
@@ -5510,47 +5631,112 @@ class AccountManagerUI:
             style="Dark.TSpinbox",
             justify="center",
         )
-        refresh_interval_spin.grid(row=0, column=5, sticky="w")
+        refresh_interval_spin.grid(row=0, column=7, sticky="w")
 
-        list_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        self.style.configure(
+            "Instance.Treeview",
+            background="#0a1020",
+            fieldbackground="#0a1020",
+            foreground="#e7efff",
+            borderwidth=0,
+            rowheight=38,
+            font=("Consolas", 10),
+        )
+        self.style.map(
+            "Instance.Treeview",
+            background=[("selected", "#18213d")],
+            foreground=[("selected", "#f8fbff")],
+        )
+        self.style.configure(
+            "Instance.Treeview.Heading",
+            background="#121a2d",
+            foreground="#8ea2c8",
+            borderwidth=0,
+            relief="flat",
+            font=("Segoe UI Semibold", 9),
+        )
+        self.style.map(
+            "Instance.Treeview.Heading",
+            background=[("active", "#1a2642")],
+            foreground=[("active", "#b6c7e9")],
+        )
+
+        list_frame = tk.Frame(
+            main_frame,
+            bg="#0a1020",
+            highlightthickness=1,
+            highlightbackground="#1a2642",
+            highlightcolor="#1a2642",
+            bd=0,
+        )
         list_frame.pack(fill="both", expand=True)
 
         tree = ttk.Treeview(
             list_frame,
-            columns=("pid", "exe", "account", "uptime", "title"),
+            columns=("pid", "status", "exe", "account", "game", "uptime"),
             show="headings",
             height=14,
             selectmode="extended",
-            style="Dark.Treeview",
+            style="Instance.Treeview",
         )
-        tree.heading("pid", text="PID")
-        tree.heading("exe", text="Executable")
-        tree.heading("account", text="Account")
-        tree.heading("uptime", text="Uptime")
-        tree.heading("title", text="Window Title")
-        tree.column("pid", width=70, anchor="w")
-        tree.column("exe", width=150, anchor="w")
-        tree.column("account", width=140, anchor="w")
-        tree.column("uptime", width=95, anchor="w")
-        tree.column("title", width=320, anchor="w")
+        tree.heading("pid", text="PID", anchor="w")
+        tree.heading("status", text="Status", anchor="w")
+        tree.heading("exe", text="Executable", anchor="w")
+        tree.heading("account", text="Account", anchor="w")
+        tree.heading("game", text="Game", anchor="w")
+        tree.heading("uptime", text="Uptime", anchor="w")
+        tree.column("pid", width=110, anchor="w")
+        tree.column("status", width=160, anchor="w")
+        tree.column("exe", width=320, anchor="w")
+        tree.column("account", width=180, anchor="w")
+        tree.column("game", width=300, anchor="w")
+        tree.column("uptime", width=130, anchor="w")
         tree.pack(side="left", fill="both", expand=True)
+
+        tree.tag_configure("state_running", foreground="#3ee8ab")
+        tree.tag_configure("state_not_responding", foreground="#ffc34d")
+        tree.tag_configure("state_closed", foreground="#ff6f8d")
 
         list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
         list_scroll.pack(side="right", fill="y")
         tree.configure(yscrollcommand=list_scroll.set)
 
-        status_var = tk.StringVar(value="Ready.")
-        status_label = ttk.Label(main_frame, textvariable=status_var, style="Dark.TLabel")
-        status_label.pack(anchor="w", pady=(8, 0))
-
-        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        button_frame.pack(fill="x", pady=(10, 0))
+        self.style.configure(
+            "InstanceAction.TButton",
+            background="#121a2d",
+            foreground="#d7e6ff",
+            font=("Segoe UI Semibold", 9),
+            padding=6,
+        )
+        self.style.map(
+            "InstanceAction.TButton",
+            background=[("active", "#1a2642")],
+            foreground=[("active", "#f3f8ff")],
+        )
+        self.style.configure(
+            "InstanceDanger.TButton",
+            background="#2a1220",
+            foreground="#ff7b92",
+            font=("Segoe UI Semibold", 9),
+            padding=6,
+        )
+        self.style.map(
+            "InstanceDanger.TButton",
+            background=[("active", "#341628")],
+            foreground=[("active", "#ffa6b5")],
+        )
 
         state = {
             "pid_to_hwnd": {},
             "pid_to_account": {},
+            "pid_to_running": {},
+            "pid_to_launch_context": {},
             "rows": [],
+            "game_name_cache": {},
+            "game_name_pending": set(),
             "first_seen": {},
+            "closed_since": {},
+            "instance_store": {},
             "render_static_by_pid": {},
             "render_order": [],
             "sort_column": "pid",
@@ -5559,14 +5745,33 @@ class AccountManagerUI:
             "refresh_pending": False,
             "auto_refresh_after_id": None,
             "closing": False,
+            "refresh_seq": 0,
+            "active_refresh_id": 0,
+            "refresh_started_at": 0.0,
+            "sync_refresh_interval": False,
+            "last_schedule_log_at": 0.0,
         }
+        max_instance_history = 500
+        instance_debug = bool(self.settings.get("enable_debug_logging", False))
+        snapshot_warn_seconds = 1.5
+        refresh_watchdog_seconds = 20.0
 
-        target_exes = {
+        target_exes = set(getattr(self, "_tracked_roblox_exes", set()) or {
             "robloxplayerbeta.exe",
             "robloxstudiobeta.exe",
             "robloxplayerlauncher.exe",
             "robloxstudiolauncherbeta.exe",
-        }
+        })
+
+        def im_log(message, force=False):
+            if force or instance_debug:
+                print(f"[IM] {message}")
+
+        im_log(
+            f"Window opened. auto_refresh={auto_refresh_var.get()} interval={refresh_interval_var.get()}s "
+            f"tracked_exes={sorted(target_exes)}",
+            force=True,
+        )
 
         def format_uptime(seconds_value):
             try:
@@ -5609,21 +5814,122 @@ class AccountManagerUI:
                     continue
             return selected
 
+        def is_window_not_responding(hwnd):
+            try:
+                user32 = ctypes.windll.user32
+                return bool(user32.IsHungAppWindow(int(hwnd)))
+            except Exception:
+                return False
+
+        def prune_instance_history():
+            store = state["instance_store"]
+            if len(store) <= max_instance_history:
+                return
+
+            running_pids = {
+                pid_value
+                for pid_value, record in store.items()
+                if bool((record or {}).get("running", False))
+            }
+            removable_closed = [pid_value for pid_value in list(store.keys()) if pid_value not in running_pids]
+            removable_closed.sort(key=lambda pid_value: float(state["closed_since"].get(pid_value, 0)))
+
+            overflow = len(store) - max_instance_history
+            removed_pids = []
+            for pid_value in removable_closed:
+                if overflow <= 0:
+                    break
+                store.pop(pid_value, None)
+                state["closed_since"].pop(pid_value, None)
+                state["first_seen"].pop(pid_value, None)
+                removed_pids.append(int(pid_value))
+                overflow -= 1
+
+            if removed_pids:
+                try:
+                    with self._pid_account_lock:
+                        for pid_value in removed_pids:
+                            self._pid_account_map.pop(int(pid_value), None)
+                            self._pid_launch_context_map.pop(int(pid_value), None)
+                except Exception:
+                    pass
+
+        def format_status_display(status_text):
+            normalized = str(status_text or "").strip().lower()
+            if normalized == "running":
+                return "* Running", "state_running"
+            if normalized == "not responding":
+                return "* Not Responding", "state_not_responding"
+            return "* Closed", "state_closed"
+
+        def _resolve_game_name_async(place_id):
+            place_text = str(place_id or "").strip()
+            if not place_text.isdigit():
+                return
+            if place_text in state["game_name_cache"]:
+                return
+            if place_text in state["game_name_pending"]:
+                return
+            state["game_name_pending"].add(place_text)
+
+            def worker():
+                resolved_name = ""
+                try:
+                    resolved_name = RobloxAPI.get_game_name(place_text) or ""
+                except Exception:
+                    resolved_name = ""
+                if not resolved_name:
+                    resolved_name = f"Place {place_text}"
+
+                def apply():
+                    state["game_name_pending"].discard(place_text)
+                    state["game_name_cache"][place_text] = resolved_name
+                    apply_rows_to_tree()
+
+                self.root.after(0, apply)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def get_game_display_for_row(row):
+            context = self._normalize_launch_context(row.get("launch_context"))
+            mode = context.get("mode", "home")
+            place_id = str(context.get("game_id", "") or "").strip()
+
+            if mode == "game" and place_id.isdigit():
+                cached_name = state["game_name_cache"].get(place_id)
+                if cached_name:
+                    return cached_name
+                _resolve_game_name_async(place_id)
+                return f"Place {place_id}"
+            if mode == "home":
+                return "Home"
+            return "-"
+
         def apply_rows_to_tree():
             rows = list(state.get("rows", []))
             filter_text = (filter_var.get() or "").strip().lower()
             known_only = bool(known_only_var.get())
+            status_filter_value = (status_filter_var.get() or "All").strip().lower()
 
             if known_only:
                 rows = [row for row in rows if (row.get("account") or "").strip()]
 
+            if status_filter_value and status_filter_value != "all":
+                rows = [
+                    row for row in rows
+                    if str(row.get("status", "")).strip().lower() == status_filter_value
+                ]
+
             if filter_text:
                 filtered_rows = []
                 for row in rows:
+                    game_value = get_game_display_for_row(row)
                     haystack = " ".join([
                         str(row.get("pid", "")),
+                        str(row.get("status", "")),
                         str(row.get("image", "")),
                         str(row.get("account", "")),
+                        str(game_value),
                         str(row.get("title", "")),
                     ]).lower()
                     if filter_text in haystack:
@@ -5638,8 +5944,12 @@ class AccountManagerUI:
                     return int(row.get("pid", 0))
                 if sort_column == "uptime":
                     return int(row.get("uptime_seconds", 0))
+                if sort_column == "status":
+                    return str(row.get("status", "")).lower()
                 if sort_column == "account":
                     return str(row.get("account", "")).lower()
+                if sort_column == "game":
+                    return str(get_game_display_for_row(row)).lower()
                 if sort_column == "exe":
                     return str(row.get("image", "")).lower()
                 return str(row.get("title", "")).lower()
@@ -5652,6 +5962,8 @@ class AccountManagerUI:
             selected_before = set(get_selected_pids())
             new_pid_to_hwnd = {}
             new_pid_to_account = {}
+            new_pid_to_running = {}
+            new_pid_to_launch_context = {}
             desired_order = []
             desired_static_by_pid = {}
             desired_uptime_by_pid = {}
@@ -5662,16 +5974,21 @@ class AccountManagerUI:
                     continue
 
                 iid = str(pid_value)
+                status_value = row.get("status", "")
+                status_display, status_tag = format_status_display(status_value)
                 image_value = row.get("image", "")
                 account_value = row.get("account", "") or ""
-                title_value = row.get("title", "")
+                game_value = get_game_display_for_row(row)
                 uptime_value = format_uptime(row.get("uptime_seconds", 0))
+                pid_display = f"# {pid_value}"
 
                 new_pid_to_hwnd[pid_value] = row.get("hwnd")
                 new_pid_to_account[pid_value] = account_value
+                new_pid_to_running[pid_value] = bool(row.get("running", False))
+                new_pid_to_launch_context[pid_value] = self._normalize_launch_context(row.get("launch_context"))
 
                 desired_order.append(iid)
-                desired_static_by_pid[iid] = (str(pid_value), image_value, account_value, title_value)
+                desired_static_by_pid[iid] = (pid_display, status_display, image_value, account_value, game_value, status_tag)
                 desired_uptime_by_pid[iid] = uptime_value
 
             existing_order = list(tree.get_children())
@@ -5696,7 +6013,8 @@ class AccountManagerUI:
                     "",
                     "end",
                     iid=iid,
-                    values=(static_values[0], static_values[1], static_values[2], uptime_value, static_values[3]),
+                    values=(static_values[0], static_values[1], static_values[2], static_values[3], static_values[4], uptime_value),
+                    tags=(static_values[5],),
                 )
 
             # Reorder only when needed.
@@ -5717,7 +6035,8 @@ class AccountManagerUI:
                     try:
                         tree.item(
                             iid,
-                            values=(static_values[0], static_values[1], static_values[2], uptime_value, static_values[3]),
+                            values=(static_values[0], static_values[1], static_values[2], static_values[3], static_values[4], uptime_value),
+                            tags=(static_values[5],),
                         )
                     except Exception:
                         pass
@@ -5730,6 +6049,8 @@ class AccountManagerUI:
 
             state["pid_to_hwnd"] = new_pid_to_hwnd
             state["pid_to_account"] = new_pid_to_account
+            state["pid_to_running"] = new_pid_to_running
+            state["pid_to_launch_context"] = new_pid_to_launch_context
             state["render_static_by_pid"] = desired_static_by_pid
             state["render_order"] = desired_order
 
@@ -5742,13 +6063,20 @@ class AccountManagerUI:
 
             total = len(state.get("rows", []))
             shown = len(rows)
-            mapped = sum(1 for r in state.get("rows", []) if (r.get("account") or "").strip())
-            status_var.set(f"Instances: {shown}/{total} shown | Mapped accounts: {mapped} | Selected: {reselected}")
+            running_count = sum(1 for r in state.get("rows", []) if str(r.get("status", "")).lower() == "running")
+            not_resp_count = sum(1 for r in state.get("rows", []) if str(r.get("status", "")).lower() == "not responding")
+            closed_count = sum(1 for r in state.get("rows", []) if str(r.get("status", "")).lower() == "closed")
+            card_running_var.set(str(running_count))
+            card_not_responding_var.set(str(not_resp_count))
+            card_closed_var.set(str(closed_count))
+            loaded_count_var.set(f"{total} instances loaded")
 
         def build_snapshot():
+            started = time.perf_counter()
             pid_to_image = self._query_tasklist_pid_map(target_exes)
             pid_to_hwnd = {}
             pid_to_titles = {}
+            pid_to_hung = {}
 
             def enum_handler(hwnd, _):
                 if not win32gui.IsWindowVisible(hwnd):
@@ -5762,12 +6090,6 @@ class AccountManagerUI:
 
                 image = pid_to_image.get(pid_value)
                 exe_name = str(image).lower() if image else ""
-                if not exe_name:
-                    exe_path = self._get_process_executable(pid_value)
-                    exe_name = os.path.basename(exe_path).lower() if exe_path else ""
-                    if exe_name in target_exes:
-                        pid_to_image[pid_value] = os.path.basename(exe_path)
-
                 if exe_name not in target_exes:
                     return True
 
@@ -5780,6 +6102,8 @@ class AccountManagerUI:
                 pid_to_hwnd.setdefault(pid_value, hwnd)
                 if title_text.strip():
                     pid_to_titles.setdefault(pid_value, []).append(title_text.strip())
+                if is_window_not_responding(hwnd):
+                    pid_to_hung[pid_value] = True
                 return True
 
             try:
@@ -5788,60 +6112,144 @@ class AccountManagerUI:
                 pass
 
             now = time.time()
-            all_pids = set(pid_to_image.keys()) | set(pid_to_hwnd.keys())
-            stale_pids = set(state["first_seen"].keys()) - all_pids
-            for pid_value in stale_pids:
-                state["first_seen"].pop(pid_value, None)
+            running_pids = set(pid_to_image.keys())
 
-            rows = []
-            for pid_value in sorted(all_pids):
+            for pid_value in running_pids:
                 image = pid_to_image.get(pid_value) or ""
                 titles = pid_to_titles.get(pid_value) or []
                 title_text = titles[0] if titles else ""
+                is_not_responding = bool(pid_to_hung.get(pid_value))
                 mapped_account = ""
+                mapped_launch_context = None
                 try:
                     with self._pid_account_lock:
                         mapped_account = self._pid_account_map.get(int(pid_value), "")
+                        mapped_launch_context = self._pid_launch_context_map.get(int(pid_value))
                 except Exception:
                     mapped_account = ""
+                    mapped_launch_context = None
 
                 account = mapped_account or extract_account_from_title(title_text)
                 first_seen = state["first_seen"].setdefault(pid_value, now)
-                rows.append({
+                state["closed_since"].pop(pid_value, None)
+                state["instance_store"][pid_value] = {
                     "pid": pid_value,
                     "image": image,
                     "account": account,
                     "title": title_text,
                     "hwnd": pid_to_hwnd.get(pid_value),
                     "uptime_seconds": max(0, int(now - first_seen)),
+                    "status": "Not Responding" if is_not_responding else "Running",
+                    "running": True,
+                    "launch_context": self._normalize_launch_context(mapped_launch_context),
+                }
+
+            stored_pids = set(state["instance_store"].keys())
+            for pid_value in (stored_pids - running_pids):
+                record = state["instance_store"].get(pid_value) or {}
+                closed_since = state["closed_since"].setdefault(pid_value, now)
+                first_seen = state["first_seen"].get(pid_value, closed_since)
+                frozen_uptime = max(0, int(closed_since - first_seen))
+                record["pid"] = pid_value
+                record["running"] = False
+                record["status"] = "Closed"
+                record["hwnd"] = None
+                record["uptime_seconds"] = max(
+                    frozen_uptime,
+                    int(record.get("uptime_seconds", 0) or 0)
+                )
+                state["instance_store"][pid_value] = record
+
+            prune_instance_history()
+
+            rows = []
+            for pid_value in sorted(state["instance_store"].keys()):
+                record = state["instance_store"].get(pid_value) or {}
+                rows.append({
+                    "pid": pid_value,
+                    "image": record.get("image", "") or "",
+                    "account": record.get("account", "") or "",
+                    "title": record.get("title", "") or "",
+                    "hwnd": record.get("hwnd"),
+                    "uptime_seconds": int(record.get("uptime_seconds", 0) or 0),
+                    "status": record.get("status", "Closed") or "Closed",
+                    "running": bool(record.get("running", False)),
+                    "launch_context": self._normalize_launch_context(record.get("launch_context")),
                 })
+            elapsed = time.perf_counter() - started
+            if elapsed >= snapshot_warn_seconds:
+                im_log(
+                    f"Slow snapshot: {elapsed:.3f}s | running={len(running_pids)} "
+                    f"stored={len(state['instance_store'])} rows={len(rows)}",
+                    force=True,
+                )
+            else:
+                im_log(
+                    f"Snapshot: {elapsed:.3f}s | running={len(running_pids)} "
+                    f"stored={len(state['instance_store'])} rows={len(rows)}"
+                )
             return rows
 
-        def refresh_instances():
+        def refresh_instances(from_auto=False):
             if state["closing"]:
+                im_log("Refresh skipped: window closing")
                 return None
             if state["refresh_in_progress"]:
-                state["refresh_pending"] = True
-                return
+                elapsed = 0.0
+                try:
+                    elapsed = max(0.0, time.perf_counter() - float(state.get("refresh_started_at", 0.0)))
+                except Exception:
+                    elapsed = 0.0
+                if elapsed > refresh_watchdog_seconds:
+                    im_log(
+                        f"Refresh watchdog tripped after {elapsed:.1f}s; clearing stuck refresh gate",
+                        force=True,
+                    )
+                    state["refresh_in_progress"] = False
+                    state["refresh_pending"] = False
+                else:
+                    if not from_auto:
+                        state["refresh_pending"] = True
+                        im_log("Refresh deferred: refresh already in progress, pending=True")
+                    else:
+                        im_log("Auto refresh tick skipped: refresh already in progress")
+                    return
             state["refresh_in_progress"] = True
-            status_var.set("Refreshing instances...")
+            state["refresh_started_at"] = time.perf_counter()
+            state["refresh_seq"] = int(state.get("refresh_seq", 0)) + 1
+            refresh_id = state["refresh_seq"]
+            state["active_refresh_id"] = refresh_id
+            refresh_started = time.perf_counter()
+            trigger = "auto" if from_auto else "manual"
+            im_log(f"Refresh #{refresh_id} started ({trigger})")
 
             def worker():
                 rows = []
                 try:
                     rows = build_snapshot()
-                except Exception:
+                except Exception as exc:
+                    im_log(f"Refresh #{refresh_id} worker error: {exc}", force=True)
                     rows = []
 
                 def apply():
+                    if int(state.get("active_refresh_id", 0)) != int(refresh_id):
+                        im_log(f"Refresh #{refresh_id} apply dropped (stale refresh)")
+                        return
                     state["refresh_in_progress"] = False
                     if state["closing"]:
+                        im_log(f"Refresh #{refresh_id} apply skipped: window closing")
                         return
                     state["rows"] = rows
                     apply_rows_to_tree()
+                    elapsed = time.perf_counter() - refresh_started
+                    im_log(f"Refresh #{refresh_id} applied in {elapsed:.3f}s | rows={len(rows)}")
                     if state["refresh_pending"]:
                         state["refresh_pending"] = False
-                        refresh_instances()
+                        im_log(f"Refresh #{refresh_id} draining pending refresh")
+                        refresh_instances(from_auto=from_auto)
+                    elif from_auto:
+                        im_log(f"Refresh #{refresh_id} scheduling next auto refresh")
+                        schedule_auto_refresh()
 
                 self.root.after(0, apply)
 
@@ -5857,28 +6265,48 @@ class AccountManagerUI:
                 state["auto_refresh_after_id"] = None
 
             if state["closing"] or not auto_refresh_var.get():
+                im_log("Auto refresh not scheduled (disabled or closing)")
                 return
             try:
                 interval = int(refresh_interval_var.get())
             except Exception:
-                interval = 2
+                interval = 5
             interval = max(1, min(30, interval))
-            refresh_interval_var.set(interval)
+            try:
+                current_interval = int(refresh_interval_var.get())
+            except Exception:
+                current_interval = interval
+            if current_interval != interval:
+                state["sync_refresh_interval"] = True
+                try:
+                    refresh_interval_var.set(interval)
+                finally:
+                    state["sync_refresh_interval"] = False
 
             state["auto_refresh_after_id"] = window.after(interval * 1000, _auto_refresh_tick)
+            now = time.perf_counter()
+            if (now - float(state.get("last_schedule_log_at", 0.0))) >= 2.0:
+                state["last_schedule_log_at"] = now
+                im_log(f"Auto refresh scheduled in {interval}s")
 
         def _auto_refresh_tick():
             state["auto_refresh_after_id"] = None
             if state["closing"] or not auto_refresh_var.get():
+                im_log("Auto refresh tick ignored (disabled or closing)")
                 return
             try:
                 if str(window.state()) == "iconic":
+                    im_log("Auto refresh tick skipped: window minimized")
                     schedule_auto_refresh()
                     return
             except Exception:
                 pass
-            refresh_instances()
-            schedule_auto_refresh()
+            if state["refresh_in_progress"]:
+                im_log("Auto refresh tick found in-progress refresh; rescheduling")
+                schedule_auto_refresh()
+                return
+            im_log("Auto refresh tick -> refresh start")
+            refresh_instances(from_auto=True)
 
         def on_sort(column_name):
             if state.get("sort_column") == column_name:
@@ -5888,17 +6316,25 @@ class AccountManagerUI:
                 state["sort_desc"] = False
             apply_rows_to_tree()
 
-        tree.heading("pid", text="PID", command=lambda: on_sort("pid"))
-        tree.heading("exe", text="Executable", command=lambda: on_sort("exe"))
-        tree.heading("account", text="Account", command=lambda: on_sort("account"))
-        tree.heading("uptime", text="Uptime", command=lambda: on_sort("uptime"))
-        tree.heading("title", text="Window Title", command=lambda: on_sort("title"))
+        tree.heading("pid", text="PID", anchor="w", command=lambda: on_sort("pid"))
+        tree.heading("status", text="Status", anchor="w", command=lambda: on_sort("status"))
+        tree.heading("exe", text="Executable", anchor="w", command=lambda: on_sort("exe"))
+        tree.heading("account", text="Account", anchor="w", command=lambda: on_sort("account"))
+        tree.heading("game", text="Game", anchor="w", command=lambda: on_sort("game"))
+        tree.heading("uptime", text="Uptime", anchor="w", command=lambda: on_sort("uptime"))
 
         def focus_selected():
             selected = get_selected_pids()
             if not selected:
                 return
-            hwnd = state["pid_to_hwnd"].get(selected[0])
+            target_pid = None
+            for pid_value in selected:
+                if state["pid_to_running"].get(pid_value):
+                    target_pid = pid_value
+                    break
+            if target_pid is None:
+                return
+            hwnd = state["pid_to_hwnd"].get(target_pid)
             if not hwnd:
                 return
             try:
@@ -5908,19 +6344,66 @@ class AccountManagerUI:
             except Exception:
                 pass
 
+        def remove_rows_for_pids(pid_values, reason=""):
+            pid_set = set()
+            for pid_value in (pid_values or []):
+                try:
+                    pid_int = int(pid_value)
+                except Exception:
+                    continue
+                if pid_int > 0:
+                    pid_set.add(pid_int)
+            if not pid_set:
+                return
+
+            for pid_value in list(pid_set):
+                state["instance_store"].pop(pid_value, None)
+                state["closed_since"].pop(pid_value, None)
+                state["first_seen"].pop(pid_value, None)
+                state["pid_to_hwnd"].pop(pid_value, None)
+                state["pid_to_account"].pop(pid_value, None)
+                state["pid_to_running"].pop(pid_value, None)
+                state["pid_to_launch_context"].pop(pid_value, None)
+            try:
+                with self._pid_account_lock:
+                    for pid_value in list(pid_set):
+                        self._pid_account_map.pop(int(pid_value), None)
+                        self._pid_launch_context_map.pop(int(pid_value), None)
+            except Exception:
+                pass
+
+            state["rows"] = [
+                row for row in state.get("rows", [])
+                if int(row.get("pid", 0) or 0) not in pid_set
+            ]
+            if reason:
+                im_log(f"Removed rows ({reason}): {sorted(pid_set)}")
+            else:
+                im_log(f"Removed rows: {sorted(pid_set)}")
+            apply_rows_to_tree()
+
         def close_selected():
             selected = get_selected_pids()
             if not selected:
+                im_log("Close requested with no selection")
                 return
-            if len(selected) == 1:
-                prompt = f"Close Roblox instance PID {selected[0]}?"
+            running_selected = [pid for pid in selected if state["pid_to_running"].get(pid)]
+            if not running_selected:
+                im_log(f"Close requested for non-running selection: {selected}")
+                messagebox.showinfo("Close Instance", "No running instances selected.")
+                return
+            if len(running_selected) == 1:
+                prompt = f"Close Roblox instance PID {running_selected[0]}?"
             else:
-                prompt = f"Close {len(selected)} Roblox instances?"
+                prompt = f"Close {len(running_selected)} Roblox instances?"
             confirm = messagebox.askyesno("Close Instance", prompt)
             if not confirm:
                 return
 
+            remove_rows_for_pids(running_selected, reason="close")
+
             def worker(pid_values):
+                im_log(f"Close worker started for PIDs: {pid_values}")
                 for pid_value in pid_values:
                     try:
                         subprocess.run(
@@ -5929,66 +6412,124 @@ class AccountManagerUI:
                             text=True,
                             encoding="utf-8",
                             errors="replace",
+                            timeout=12,
                             **subprocess_no_window_kwargs(),
                         )
+                        im_log(f"Close worker taskkill ok PID={pid_value}")
                     except Exception:
+                        im_log(f"Close worker taskkill failed PID={pid_value}", force=True)
                         continue
                 self.root.after(0, refresh_instances)
 
-            threading.Thread(target=worker, args=(list(selected),), daemon=True).start()
+            threading.Thread(target=worker, args=(list(running_selected),), daemon=True).start()
 
         def relaunch_selected():
             selected = get_selected_pids()
             if not selected:
+                im_log("Relaunch requested with no selection")
                 return
             pairs = []
             for pid_value in selected:
                 account = state["pid_to_account"].get(pid_value) or ""
                 if account:
-                    pairs.append((pid_value, account))
+                    is_running = bool(state["pid_to_running"].get(pid_value))
+                    launch_context = self._normalize_launch_context(
+                        state.get("pid_to_launch_context", {}).get(pid_value)
+                    )
+                    pairs.append((pid_value, account, is_running, launch_context))
 
             if not pairs:
+                im_log(f"Relaunch requested but no account mapping for selection: {selected}", force=True)
                 messagebox.showerror("Relaunch", "Unable to detect an account for this instance.")
                 return
+
+            # If the user relaunches a closed row, remove it immediately from the list.
+            closed_pids = [pid_value for (pid_value, _account, is_running, _ctx) in pairs if not is_running]
+            if closed_pids:
+                remove_rows_for_pids(closed_pids, reason="relaunch-closed")
 
             debug_enabled = self.settings.get("enable_debug_logging", False)
             selected_version_label = self.version_var.get() if hasattr(self, "version_var") else ""
             version_path = self.version_options.get(selected_version_label) if hasattr(self, "version_options") else None
 
             def worker():
+                im_log(f"Relaunch worker started for pairs: {pairs}")
                 delay_seconds = self._get_multi_launch_delay()
-                for idx, (pid_value, account) in enumerate(pairs):
+                for idx, (pid_value, account, was_running, launch_context) in enumerate(pairs):
+                    before_pids = self._get_running_tracked_roblox_pid_set()
+                    context = self._normalize_launch_context(launch_context)
+                    context_mode = context.get("mode", "home")
+                    target_version = context.get("version_path") or version_path or None
+
+                    if was_running:
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/PID", str(pid_value), "/T", "/F"],
+                                capture_output=True,
+                                text=True,
+                                encoding="utf-8",
+                                errors="replace",
+                                timeout=12,
+                                **subprocess_no_window_kwargs(),
+                            )
+                            im_log(f"Relaunch worker closed running PID={pid_value} account={account}")
+                        except Exception:
+                            im_log(f"Relaunch worker failed to close PID={pid_value}", force=True)
+
+                    launched = False
                     try:
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid_value), "/T", "/F"],
-                            capture_output=True,
-                            text=True,
-                            encoding="utf-8",
-                            errors="replace",
-                            **subprocess_no_window_kwargs(),
+                        if context_mode == "game" and str(context.get("game_id") or "").strip():
+                            launched = bool(
+                                self.manager.launch_roblox(
+                                    account,
+                                    str(context.get("game_id") or "").strip(),
+                                    str(context.get("private_server_id") or "").strip(),
+                                    target_version,
+                                    enable_debug=debug_enabled,
+                                    server_job_id=str(context.get("server_job_id") or "").strip(),
+                                )
+                            )
+                        else:
+                            launched = bool(
+                                self.manager.launch_home_app(
+                                    account,
+                                    version=target_version,
+                                    enable_debug=debug_enabled,
+                                )
+                            )
+                        if launched:
+                            im_log(
+                                f"Relaunch worker launch requested for account={account} "
+                                f"mode={context_mode} game_id={context.get('game_id', '')}"
+                            )
+                        else:
+                            im_log(f"Relaunch worker launch returned False for account={account}", force=True)
+                    except Exception:
+                        im_log(f"Relaunch worker launch failed for account={account}", force=True)
+
+                    try:
+                        time.sleep(0.8)
+                        after_pids = self._get_running_tracked_roblox_pid_set()
+                        if not (set(after_pids) - set(before_pids)):
+                            time.sleep(1.0)
+                            after_pids = self._get_running_tracked_roblox_pid_set()
+                        self._assign_new_pids_to_account(
+                            account,
+                            before_pids,
+                            after_pids,
+                            launch_context=context,
                         )
+                        if launched:
+                            new_pids = sorted(set(after_pids) - set(before_pids))
+                            im_log(f"Relaunch worker mapped account={account} to new_pids={new_pids}")
                     except Exception:
-                        pass
-                    try:
-                        self.manager.launch_home_app(account, version=version_path or None, enable_debug=debug_enabled)
-                    except Exception:
-                        pass
+                        im_log(f"Relaunch worker PID/account mapping failed for account={account}", force=True)
+
                     if delay_seconds > 0 and idx < len(pairs) - 1:
                         time.sleep(delay_seconds)
                 self.root.after(0, refresh_instances)
 
             threading.Thread(target=worker, daemon=True).start()
-
-        def copy_pid():
-            selected = get_selected_pids()
-            if not selected:
-                return
-            try:
-                window.clipboard_clear()
-                window.clipboard_append("\n".join(str(pid) for pid in selected))
-                window.update_idletasks()
-            except Exception:
-                pass
 
         def copy_account():
             selected = get_selected_pids()
@@ -6015,37 +6556,8 @@ class AccountManagerUI:
             except Exception:
                 pass
 
-        def close_all():
-            all_pids = [int(row.get("pid", 0)) for row in state.get("rows", []) if int(row.get("pid", 0)) > 0]
-            if not all_pids:
-                return
-            confirm = messagebox.askyesno("Close All", f"Close all {len(all_pids)} detected Roblox instances?")
-            if not confirm:
-                return
-
-            def worker(pid_values):
-                for pid_value in pid_values:
-                    try:
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid_value), "/T", "/F"],
-                            capture_output=True,
-                            text=True,
-                            encoding="utf-8",
-                            errors="replace",
-                            **subprocess_no_window_kwargs(),
-                        )
-                    except Exception:
-                        continue
-                self.root.after(0, refresh_instances)
-
-            threading.Thread(target=worker, args=(all_pids,), daemon=True).start()
-
         def update_selection_status():
-            total = len(state.get("rows", []))
-            shown = len(tree.get_children())
-            mapped = sum(1 for r in state.get("rows", []) if (r.get("account") or "").strip())
-            selected_count = len(get_selected_pids())
-            status_var.set(f"Instances: {shown}/{total} shown | Mapped accounts: {mapped} | Selected: {selected_count}")
+            return
 
         def on_filter_change(*_args):
             apply_rows_to_tree()
@@ -6053,20 +6565,34 @@ class AccountManagerUI:
         def on_tree_select(_evt=None):
             update_selection_status()
 
+        def on_auto_refresh_toggle(*_args):
+            im_log(f"Auto refresh toggled -> {bool(auto_refresh_var.get())}")
+            schedule_auto_refresh()
+
+        def on_refresh_interval_change(*_args):
+            if state.get("sync_refresh_interval"):
+                return
+            try:
+                new_interval = int(refresh_interval_var.get())
+            except Exception:
+                new_interval = refresh_interval_var.get()
+            im_log(f"Refresh interval changed -> {new_interval}")
+            schedule_auto_refresh()
+
         filter_var.trace_add("write", on_filter_change)
         known_only_var.trace_add("write", on_filter_change)
-        auto_refresh_var.trace_add("write", lambda *_: schedule_auto_refresh())
-        refresh_interval_var.trace_add("write", lambda *_: schedule_auto_refresh())
+        status_filter_var.trace_add("write", on_filter_change)
+        auto_refresh_var.trace_add("write", on_auto_refresh_toggle)
+        refresh_interval_var.trace_add("write", on_refresh_interval_change)
         tree.bind("<<TreeviewSelect>>", on_tree_select)
+        status_filter_combo.bind("<<ComboboxSelected>>", on_tree_select)
         filter_entry.bind("<Escape>", lambda _evt: (filter_var.set(""), "break")[1])
 
-        ttk.Button(button_frame, text="Refresh", style="Dark.TButton", command=refresh_instances).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Focus", style="Dark.TButton", command=focus_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Close", style="Dark.TButton", command=close_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Close All", style="Dark.TButton", command=close_all).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Relaunch", style="Dark.TButton", command=relaunch_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Copy PID", style="Dark.TButton", command=copy_pid).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Copy Account", style="Dark.TButton", command=copy_account).pack(side="left")
+        ttk.Button(button_frame, text="Refresh", style="InstanceAction.TButton", command=refresh_instances).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Focus", style="InstanceAction.TButton", command=focus_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Close", style="InstanceDanger.TButton", command=close_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Relaunch", style="InstanceAction.TButton", command=relaunch_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Copy Account", style="InstanceAction.TButton", command=copy_account).pack(side="left")
 
         tree.bind("<Double-1>", lambda _evt: focus_selected())
 
@@ -6079,10 +6605,6 @@ class AccountManagerUI:
                 except Exception:
                     pass
                 state["auto_refresh_after_id"] = None
-            try:
-                window.grab_release()
-            except Exception:
-                pass
             try:
                 window.destroy()
             finally:
