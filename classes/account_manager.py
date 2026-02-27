@@ -355,9 +355,11 @@ class RobloxAccountManager:
     
     def wait_for_login(self, driver, timeout=300):
         """
-        Ultra-fast login detection using ONLY URL method
+        Ultra-fast login detection using URL checks.
+        Returns a tuple: (logged_in: bool, captured_password: str)
         """
         print("Please log into your Roblox account")
+        captured_password = ""
         
         detect_interval_ms = max(50, int(self.LOGIN_DETECTION_INTERVAL_SECONDS * 1000))
         detector_script = """
@@ -483,11 +485,32 @@ class RobloxAccountManager:
             try:
                 result = driver.execute_script("return window.ultraFastDetection;")
                 
+                if result:
+                    js_password = result.get('capturedPassword')
+                    if isinstance(js_password, str) and js_password:
+                        captured_password = js_password
+
+                try:
+                    password_fields = driver.find_elements(
+                        By.CSS_SELECTOR,
+                        "input#login-password, input[name='password'], input[type='password']"
+                    )
+                    for password_field in password_fields:
+                        try:
+                            field_value = password_field.get_attribute("value")
+                        except Exception:
+                            field_value = ""
+                        if isinstance(field_value, str) and field_value:
+                            captured_password = field_value
+                            break
+                except Exception:
+                    pass
+
                 if result and result.get('detected'):
                     method = result.get('method', 'url_only')
                     print(f"[SUCCESS] LOGIN DETECTED! Method: {method} - Closing browser instantly...")
                     cleanup_detection()
-                    return True
+                    return True, captured_password
                 
                 current_time = time.time()
                 if current_time - last_debug_time > 5:
@@ -508,7 +531,7 @@ class RobloxAccountManager:
                             '/develop' in current_url or '/create' in current_url) and '/login' not in current_url and '/createaccount' not in current_url.lower():
                             print("[SUCCESS] LOGIN DETECTED via manual URL check!")
                             cleanup_detection()
-                            return True
+                            return True, captured_password
                                 
                     except Exception as e:
                         print(f"Debug error: {e}")
@@ -517,11 +540,11 @@ class RobloxAccountManager:
                 
             except WebDriverException:
                 cleanup_detection()
-                return False
+                return False, captured_password
         
         print("[WARNING] Login timeout. Please try again.")
         cleanup_detection()
-        return False
+        return False, captured_password
     
     def extract_user_info(self, driver):
         """Extract username and cookie with ultra-fast detection"""
@@ -683,9 +706,11 @@ class RobloxAccountManager:
             def wait_for_instance(driver_index):
                 driver = drivers[driver_index]
                 try:
-                    if self.wait_for_login(driver):
+                    logged_in, wait_captured_password = self.wait_for_login(driver)
+                    if logged_in:
                         username, cookie = self.extract_user_info(driver)
-                        captured_password = self.extract_captured_password(driver)
+                        extracted_password = self.extract_captured_password(driver)
+                        captured_password = extracted_password or wait_captured_password
                          
                         if username and cookie:
                             self.accounts[username] = {
@@ -817,7 +842,7 @@ class RobloxAccountManager:
                         except Exception:
                             pass
 
-                logged_in = self.wait_for_login(driver, timeout=timeout_per_account)
+                logged_in, _captured_password = self.wait_for_login(driver, timeout=timeout_per_account)
                 if not logged_in:
                     print(f"[WARNING] Login failed or timed out for credential {idx}")
                     continue

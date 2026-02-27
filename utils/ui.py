@@ -589,7 +589,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.4.2.1"
+        self.APP_VERSION = "2.4.2"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -658,7 +658,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.4.2.1 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.4.2 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -5770,7 +5770,6 @@ class AccountManagerUI:
         im_log(
             f"Window opened. auto_refresh={auto_refresh_var.get()} interval={refresh_interval_var.get()}s "
             f"tracked_exes={sorted(target_exes)}",
-            force=True,
         )
 
         def format_uptime(seconds_value):
@@ -6556,6 +6555,39 @@ class AccountManagerUI:
             except Exception:
                 pass
 
+        def copy_password():
+            selected = get_selected_pids()
+            if not selected:
+                return
+            passwords = []
+            for pid_value in selected:
+                account = (state["pid_to_account"].get(pid_value) or "").strip()
+                if not account:
+                    continue
+                account_data = self.manager.accounts.get(account)
+                if isinstance(account_data, dict):
+                    password_value = str(account_data.get("password", "") or "").strip()
+                else:
+                    password_value = ""
+                if password_value:
+                    passwords.append(password_value)
+            if not passwords:
+                messagebox.showinfo("Copy Password", "No password found for the selected instance(s).")
+                return
+            seen = set()
+            unique_passwords = []
+            for password_value in passwords:
+                if password_value in seen:
+                    continue
+                seen.add(password_value)
+                unique_passwords.append(password_value)
+            try:
+                window.clipboard_clear()
+                window.clipboard_append("\n".join(unique_passwords))
+                window.update_idletasks()
+            except Exception:
+                pass
+
         def update_selection_status():
             return
 
@@ -6592,7 +6624,8 @@ class AccountManagerUI:
         ttk.Button(button_frame, text="Focus", style="InstanceAction.TButton", command=focus_selected).pack(side="left", padx=(0, 6))
         ttk.Button(button_frame, text="Close", style="InstanceDanger.TButton", command=close_selected).pack(side="left", padx=(0, 6))
         ttk.Button(button_frame, text="Relaunch", style="InstanceAction.TButton", command=relaunch_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(button_frame, text="Copy Account", style="InstanceAction.TButton", command=copy_account).pack(side="left")
+        ttk.Button(button_frame, text="Copy Account", style="InstanceAction.TButton", command=copy_account).pack(side="left", padx=(0, 6))
+        ttk.Button(button_frame, text="Copy Password", style="InstanceAction.TButton", command=copy_password).pack(side="left")
 
         tree.bind("<Double-1>", lambda _evt: focus_selected())
 
