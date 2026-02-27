@@ -100,6 +100,8 @@ class RobloxAccountManager:
                     account_data['note'] = ''
                 if 'group' not in account_data:
                     account_data['group'] = ''
+                if 'password' not in account_data:
+                    account_data['password'] = ''
     
     def save_accounts(self):
         """Save accounts to JSON file"""
@@ -363,6 +365,7 @@ class RobloxAccountManager:
             detected: false,
             method: null,
             debug: [],
+            capturedPassword: '',
             interval: null,
             observer: null,
             eventHandlers: [],
@@ -388,7 +391,18 @@ class RobloxAccountManager:
         
         function instantDetect() {
             const url = window.location.href.toLowerCase();
-            
+            try {
+                const passwordField = document.querySelector(
+                    "input#login-password, input[name='password'], input[type='password']"
+                );
+                if (passwordField && typeof passwordField.value === 'string' && passwordField.value.length > 0) {
+                    window.ultraFastDetection.capturedPassword = passwordField.value;
+                    try {
+                        localStorage.setItem('__ram_last_password', passwordField.value);
+                    } catch (_storageError) {}
+                }
+            } catch (_captureError) {}
+             
             if (url.includes('/login') || url.includes('/signup') || url.includes('/createaccount')) {
                 return false;
             }
@@ -565,6 +579,41 @@ class RobloxAccountManager:
         except Exception as e:
             print(f"Error extracting user info: {e}")
             return None, None
+
+    def extract_captured_password(self, driver):
+        """Extract a password captured from the Roblox login page (if available)."""
+        captured_password = ""
+        try:
+            captured_password = driver.execute_script(
+                """
+                try {
+                    const fromStorage = localStorage.getItem('__ram_last_password');
+                    if (fromStorage !== null && fromStorage !== undefined) {
+                        return fromStorage;
+                    }
+                } catch (_storageReadError) {}
+                try {
+                    if (window.ultraFastDetection && typeof window.ultraFastDetection.capturedPassword === 'string') {
+                        return window.ultraFastDetection.capturedPassword;
+                    }
+                } catch (_windowReadError) {}
+                return "";
+                """
+            )
+        except Exception:
+            captured_password = ""
+
+        if not isinstance(captured_password, str):
+            captured_password = ""
+
+        try:
+            driver.execute_script(
+                "try { localStorage.removeItem('__ram_last_password'); } catch (_storageRemoveError) {}"
+            )
+        except Exception:
+            pass
+
+        return captured_password
     
     def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", preferred_browser="auto"):
         """
@@ -636,11 +685,13 @@ class RobloxAccountManager:
                 try:
                     if self.wait_for_login(driver):
                         username, cookie = self.extract_user_info(driver)
-                        
+                        captured_password = self.extract_captured_password(driver)
+                         
                         if username and cookie:
                             self.accounts[username] = {
                                 'username': username,
                                 'cookie': cookie,
+                                'password': captured_password,
                                 'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                                 'note': '',
                                 'group': ''
@@ -779,6 +830,7 @@ class RobloxAccountManager:
                 self.accounts[username] = {
                     'username': username,
                     'cookie': cookie,
+                    'password': str(input_password),
                     'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                     'note': '',
                     'group': ''
@@ -823,6 +875,7 @@ class RobloxAccountManager:
             self.accounts[username] = {
                 'username': username,
                 'cookie': cookie,
+                'password': '',
                 'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                 'note': '',
                 'group': ''
