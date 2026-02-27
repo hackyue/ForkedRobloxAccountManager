@@ -4368,6 +4368,58 @@ class AccountManagerUI:
         except Exception:
             pass
 
+        for pid_value in new_pids:
+            self._rename_roblox_client_window_title(int(pid_value), str(username))
+
+    def _rename_roblox_client_window_title(self, pid_value, username):
+        if platform.system() != "Windows":
+            return
+        if not pid_value or not username:
+            return
+
+        def _rename_worker(target_pid, target_name):
+            max_attempts = 15
+            delay_seconds = 0.4
+            for _ in range(max_attempts):
+                hwnd = self._find_main_window_for_pid(target_pid)
+                if hwnd:
+                    try:
+                        win32gui.SetWindowText(hwnd, target_name)
+                        return
+                    except Exception:
+                        pass
+                time.sleep(delay_seconds)
+
+        threading.Thread(target=_rename_worker, args=(int(pid_value), str(username)), daemon=True).start()
+
+    def _find_main_window_for_pid(self, pid_value):
+        if platform.system() != "Windows":
+            return None
+
+        found_hwnd = {"value": None}
+
+        def _enum_handler(hwnd, _):
+            if found_hwnd["value"] is not None:
+                return False
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                return True
+            try:
+                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            except Exception:
+                return True
+            if int(window_pid) != int(pid_value):
+                return True
+            found_hwnd["value"] = hwnd
+            return False
+
+        try:
+            win32gui.EnumWindows(_enum_handler, None)
+        except Exception:
+            return None
+        return found_hwnd["value"]
+
     def launch_game(self):
         """Launch Roblox game with the selected account(s)"""
         if self.settings.get("enable_multi_select", False):
