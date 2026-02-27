@@ -341,9 +341,10 @@ class _ConsoleStreamProxy(io.TextIOBase):
     def write(self, data):
         if not data:
             return 0
+        safe_data = self.buffer.sanitize_text(data)
         if self.target_stream:
-            self.target_stream.write(data)
-        self.buffer.append_text(data, self.stream_label)
+            self.target_stream.write(safe_data)
+        self.buffer.append_text(safe_data, self.stream_label)
         return len(data)
 
     def flush(self):
@@ -363,7 +364,65 @@ class ConsoleOutputBuffer:
         self.original_stderr = sys.stderr
         self.stdout_proxy = None
         self.stderr_proxy = None
+        self._redaction_enabled_getter = None
         atexit.register(self._cleanup)
+
+    def set_redaction_enabled_getter(self, getter):
+        self._redaction_enabled_getter = getter
+
+    def _is_redaction_enabled(self):
+        if not callable(self._redaction_enabled_getter):
+            return False
+        try:
+            return bool(self._redaction_enabled_getter())
+        except Exception:
+            return False
+
+    def sanitize_text(self, text):
+        if not text or not self._is_redaction_enabled():
+            return text
+
+        redacted = text
+
+        # JSON-like fields: "password": "...", "cookie": "...", etc.
+        redacted = re.sub(
+            r'(?i)(\"(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\"\s*:\s*\")([^\"]*)(\")',
+            r"\1[REDACTED]\3",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)('(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)'\s*:\s*')([^']*)(')",
+            r"\1[REDACTED]\3",
+            redacted,
+        )
+
+        # Key/value pairs in plain logs.
+        redacted = re.sub(
+            r"(?i)\b(password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+            r"\1\2[REDACTED]",
+            redacted,
+        )
+
+        # Query-string params.
+        redacted = re.sub(
+            r"(?i)([?&](?:password|pass|token|cookie|auth|authorization)=)([^&\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+
+        # Roblox security cookie in headers or cookie strings.
+        redacted = re.sub(
+            r"(?i)(\.ROBLOSECURITY\s*=\s*)([^;\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(\.ROBLOSECURITY\s*[:=]\s*)([^;\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+
+        return redacted
 
     def start_capture(self):
         if self.stdout_proxy and self.stderr_proxy:
@@ -670,6 +729,9 @@ class AccountManagerUI:
         
         self.settings_file = os.path.join(self.data_folder, "ui_settings.json")
         self.load_settings()
+        self.console_output.set_redaction_enabled_getter(
+            lambda: bool(self.settings.get("hide_sensitive_info", False))
+        )
         try:
             self.root.attributes("-topmost", bool(self.settings.get("enable_topmost", False)))
         except Exception:
@@ -910,6 +972,7 @@ class AccountManagerUI:
             "max_recent_games": 10,
             "enable_multi_select": False,
             "enable_debug_logging": False,
+            "hide_sensitive_info": True,
             "selected_theme": "Synapse Neon",
             "disable_success_popups": False,
             "auto_arrange_scope": "both",
@@ -4756,6 +4819,7 @@ class AccountManagerUI:
         randomize_job_id_var = tk.BooleanVar(value=self.settings.get("randomize_server_job_ids", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
+        hide_sensitive_var = tk.BooleanVar(value=self.settings.get("hide_sensitive_info", False))
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
         auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update_enabled", True))
         theme_var = tk.StringVar(value=self.settings.get("selected_theme", self.theme_name))
@@ -5429,6 +5493,14 @@ class AccountManagerUI:
             variable=debug_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("enable_debug_logging", debug_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            logging_card,
+            text="Hide Sensitive Info",
+            variable=hide_sensitive_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("hide_sensitive_info", hide_sensitive_var)
         ).pack(anchor="w", pady=2)
 
         def open_instance_manager_and_close_settings():
