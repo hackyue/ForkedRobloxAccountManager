@@ -215,7 +215,7 @@ class RobloxAccountManager:
             return ["chrome", "firefox"]
         return ["chrome", "firefox"]
 
-    def _setup_chrome_driver(self):
+    def _setup_chrome_driver(self, headless=False):
         """Setup Chrome driver with speed-oriented options."""
         profile_dir = self.create_temp_profile()
 
@@ -256,6 +256,9 @@ class RobloxAccountManager:
         chrome_options.add_argument("--disable-component-update")
         chrome_options.add_argument("--disable-background-networking")
         chrome_options.add_argument("--aggressive-cache-discard")
+        if headless:
+            chrome_options.add_argument("--headless=new")
+            chrome_options.add_argument("--window-size=520,700")
 
         service = Service(
             ChromeDriverManager().install(),
@@ -269,7 +272,7 @@ class RobloxAccountManager:
             pass
         return driver
 
-    def _setup_firefox_driver(self):
+    def _setup_firefox_driver(self, headless=False):
         """Setup Firefox driver with compatible performance options."""
         if FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None:
             raise RuntimeError("Firefox Selenium support is unavailable in this environment.")
@@ -287,6 +290,8 @@ class RobloxAccountManager:
         firefox_options.set_preference("browser.shell.checkDefaultBrowser", False)
         firefox_options.set_preference("app.update.auto", False)
         firefox_options.set_preference("app.update.enabled", False)
+        if headless:
+            firefox_options.add_argument("-headless")
 
         service = FirefoxService(
             GeckoDriverManager().install(),
@@ -295,7 +300,7 @@ class RobloxAccountManager:
         )
         return webdriver.Firefox(service=service, options=firefox_options)
 
-    def setup_browser_driver(self, preferred_browser=None):
+    def setup_browser_driver(self, preferred_browser=None, headless=False):
         """
         Setup a Selenium driver using supported browsers.
         Returns (driver, browser_name) or (None, None) on failure.
@@ -312,9 +317,9 @@ class RobloxAccountManager:
                     if not self._is_browser_installed(browser_name):
                         continue
                     if browser_name == "chrome":
-                        driver = self._setup_chrome_driver()
+                        driver = self._setup_chrome_driver(headless=headless)
                     else:
-                        driver = self._setup_firefox_driver()
+                        driver = self._setup_firefox_driver(headless=headless)
                     return driver, browser_name
                 except Exception as exc:
                     attempted.append((browser_name, str(exc)))
@@ -323,9 +328,9 @@ class RobloxAccountManager:
             for browser_name in self._get_browser_preference_order(preferred_browser):
                 try:
                     if browser_name == "chrome":
-                        driver = self._setup_chrome_driver()
+                        driver = self._setup_chrome_driver(headless=headless)
                     else:
-                        driver = self._setup_firefox_driver()
+                        driver = self._setup_firefox_driver(headless=headless)
                     return driver, browser_name
                 except Exception as exc:
                     attempted.append((browser_name, str(exc)))
@@ -637,6 +642,210 @@ class RobloxAccountManager:
             pass
 
         return captured_password
+
+    def _extract_quick_sign_in_code(self, driver):
+        try:
+            script = """
+            const response = {
+                modalOpen: false,
+                codeFromText: "",
+                codeFromImage: "",
+            };
+            const titleEl = document.querySelector(".cross-device-login-display-code-modal-title-container .modal-title, h4.modal-title");
+            const titleText = (titleEl ? titleEl.textContent : "").toLowerCase();
+            response.modalOpen = titleText.includes("quick sign in code") || titleText.includes("quick sign-in code");
+
+            const codeEl = document.querySelector(".cross-device-login-display-code-modal-title-container ~ .modal-body .font-title, .modal-body .font-title");
+            if (codeEl && codeEl.textContent) {
+                response.codeFromText = String(codeEl.textContent).trim().toUpperCase();
+            }
+
+            const imgEl = document.querySelector("img.cross-device-login-display-qr-code-image, img[src*='auth-token-service'][src*='code=']");
+            if (imgEl && imgEl.getAttribute("src")) {
+                try {
+                    const url = new URL(imgEl.getAttribute("src"), window.location.origin);
+                    response.codeFromImage = String(url.searchParams.get("code") || "").trim().toUpperCase();
+                } catch (_error) {}
+            }
+
+            return response;
+            """
+            raw_value = driver.execute_script(script)
+        except Exception:
+            return ""
+
+        if not isinstance(raw_value, dict):
+            return ""
+        if not bool(raw_value.get("modalOpen")):
+            return ""
+
+        for candidate in (raw_value.get("codeFromText"), raw_value.get("codeFromImage")):
+            normalized = str(candidate or "").strip().upper().replace(" ", "").replace("-", "")
+            if len(normalized) == 6 and normalized.isalnum():
+                return normalized
+        return ""
+
+    def _quick_sign_in_button_candidates(self):
+        return [
+            (By.CSS_SELECTOR, "button[data-testid*='quick']"),
+            (By.CSS_SELECTOR, "button[data-testid*='signin']"),
+            (By.CSS_SELECTOR, "button[id*='quick']"),
+            (By.CSS_SELECTOR, "button[class*='quick']"),
+            (By.CSS_SELECTOR, "a[data-testid*='quick']"),
+            (By.CSS_SELECTOR, "a[id*='quick']"),
+            (By.CSS_SELECTOR, "a[class*='quick']"),
+            (By.XPATH, "//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'quick')]"),
+            (By.XPATH, "//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'quick')]"),
+        ]
+
+    def _open_quick_sign_in_panel(self, driver):
+        for by, selector in self._quick_sign_in_button_candidates():
+            try:
+                elements = driver.find_elements(by, selector)
+            except Exception:
+                elements = []
+            for element in elements:
+                try:
+                    if not element.is_displayed():
+                        continue
+                    element.click()
+                    return True
+                except Exception:
+                    try:
+                        driver.execute_script("arguments[0].click();", element)
+                        return True
+                    except Exception:
+                        continue
+        return False
+
+    def _is_likely_logged_in_url(self, url):
+        url_l = str(url or "").lower()
+        if "/login" in url_l or "/signup" in url_l or "/createaccount" in url_l:
+            return False
+        for token in (
+            "/home",
+            "/games",
+            "/catalog",
+            "/avatar",
+            "/discover",
+            "/friends",
+            "/profile",
+            "/groups",
+            "/develop",
+            "/create",
+            "/transactions",
+            "/my/avatar",
+        ):
+            if token in url_l:
+                return True
+        return "roblox.com/users/" in url_l
+
+    def add_account_quick_sign_in(
+        self,
+        preferred_browser="auto",
+        on_code=None,
+        on_status=None,
+        timeout=300,
+        cancel_event=None,
+    ):
+        driver = None
+        try:
+            preferred = None if str(preferred_browser or "auto").strip().lower() == "auto" else str(preferred_browser).strip().lower()
+            driver, browser_name = self.setup_browser_driver(preferred_browser=preferred, headless=True)
+            if not driver:
+                return {
+                    "success": False,
+                    "username": "",
+                    "code": "",
+                    "error": "Unable to open a supported browser.",
+                }
+
+            if callable(on_status):
+                on_status(f"Started {browser_name.capitalize()} in background. Preparing Quick Sign-In...")
+
+            try:
+                driver.set_window_size(520, 700)
+            except Exception:
+                pass
+            driver.get("https://www.roblox.com/login")
+            time.sleep(1.5)
+            self._open_quick_sign_in_panel(driver)
+
+            start_time = time.time()
+            last_code = ""
+            if callable(on_status):
+                on_status("Waiting for Roblox Quick Sign-In code...")
+
+            while time.time() - start_time < timeout:
+                if cancel_event is not None and cancel_event.is_set():
+                    return {
+                        "success": False,
+                        "username": "",
+                        "code": last_code,
+                        "error": "Quick Sign-In was cancelled.",
+                    }
+
+                quick_code = self._extract_quick_sign_in_code(driver)
+                if quick_code and quick_code != last_code:
+                    last_code = quick_code
+                    if callable(on_code):
+                        on_code(last_code)
+                    if callable(on_status):
+                        on_status("Code ready. Enter it on your other device to continue.")
+
+                current_url = ""
+                try:
+                    current_url = driver.current_url
+                except Exception:
+                    current_url = ""
+                has_cookie = False
+                try:
+                    cookies = driver.get_cookies()
+                    has_cookie = any(cookie.get("name") == ".ROBLOSECURITY" for cookie in cookies)
+                except Exception:
+                    has_cookie = False
+
+                if has_cookie or self._is_likely_logged_in_url(current_url):
+                    username, cookie = self.extract_user_info(driver)
+                    if username and cookie:
+                        self.accounts[username] = {
+                            "username": username,
+                            "cookie": cookie,
+                            "password": "",
+                            "added_date": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "note": "",
+                            "group": "",
+                        }
+                        self.save_accounts()
+                        return {
+                            "success": True,
+                            "username": username,
+                            "code": last_code,
+                            "error": "",
+                        }
+
+                time.sleep(0.35)
+
+            return {
+                "success": False,
+                "username": "",
+                "code": last_code,
+                "error": "Quick Sign-In timed out before login completed.",
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "username": "",
+                "code": "",
+                "error": str(exc),
+            }
+        finally:
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+            self.cleanup_temp_profile()
     
     def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", preferred_browser="auto"):
         """

@@ -710,6 +710,7 @@ class AccountManagerUI:
         self.menu_bar = None
         self.actions_menu = None
         self.installer_menu = None
+        self.add_account_menu = None
         self.menu_bar_frame = None
         self.menu_buttons = []
         self.version_options = {"Latest Version": None}
@@ -960,6 +961,10 @@ class AccountManagerUI:
             command=self.add_account,
         )
         self.add_account_split_btn.pack(side="left", fill="both", expand=True, padx=(0, 2))
+        self.add_account_split_btn.bind("<Button-3>", self.show_add_account_menu)
+
+        self.add_account_menu = tk.Menu(self.root, tearoff=False)
+        self.add_account_menu.add_command(label="Quick Sign-In", command=self.open_quick_sign_in_window)
 
         ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.delete_account).pack(
             side="left", fill="both", expand=True, padx=2
@@ -1640,7 +1645,7 @@ class AccountManagerUI:
             except tk.TclError:
                 pass
 
-        menus = [getattr(self, attr, None) for attr in ("actions_menu", "installer_menu")]
+        menus = [getattr(self, attr, None) for attr in ("actions_menu", "installer_menu", "add_account_menu")]
         for menu in menus:
             self._style_menu_recursive(menu)
 
@@ -1719,6 +1724,29 @@ class AccountManagerUI:
         finally:
             try:
                 self.installer_menu.grab_release()
+            except Exception:
+                pass
+
+    def show_add_account_menu(self, event=None):
+        if not getattr(self, "add_account_menu", None):
+            return
+        if event is None:
+            button = getattr(self, "add_account_split_btn", None)
+            if button is None:
+                return
+            try:
+                x = button.winfo_rootx()
+                y = button.winfo_rooty() + button.winfo_height()
+            except Exception:
+                return
+        else:
+            x = event.x_root
+            y = event.y_root
+        try:
+            self.add_account_menu.tk_popup(x, y)
+        finally:
+            try:
+                self.add_account_menu.grab_release()
             except Exception:
                 pass
 
@@ -3519,6 +3547,165 @@ class AccountManagerUI:
 
         self.manager.reorder_accounts(new_order)
         self.refresh_accounts(selected_usernames=[moved_username])
+
+    def _copy_quick_sign_in_code(self, code_var):
+        code = str(code_var.get() or "").strip()
+        if not code or code.startswith("Waiting"):
+            messagebox.showinfo("Quick Sign-In", "A code is not available yet.")
+            return
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(code)
+            self.root.update()
+            self.show_success_message("Quick Sign-In code copied.")
+        except Exception as exc:
+            messagebox.showerror("Quick Sign-In", f"Failed to copy code: {exc}")
+
+    def open_quick_sign_in_window(self):
+        if not self.is_chrome_installed():
+            messagebox.showwarning(
+                "Browser Required",
+                "Quick Sign-In requires Google Chrome or Mozilla Firefox to be installed.\n"
+                "Please install one of them and try again."
+            )
+            return
+
+        quick_window = tk.Toplevel(self.root)
+        quick_window.title("Quick Sign-In")
+        quick_window.geometry("460x250")
+        quick_window.configure(bg=self.BG_DARK)
+        quick_window.resizable(False, False)
+
+        self.root.update_idletasks()
+        main_x = self.root.winfo_x()
+        main_y = self.root.winfo_y()
+        main_width = self.root.winfo_width()
+        main_height = self.root.winfo_height()
+        x = main_x + (main_width - 460) // 2
+        y = main_y + (main_height - 250) // 2
+        quick_window.geometry(f"460x250+{x}+{y}")
+
+        if self.settings.get("enable_topmost", False):
+            quick_window.attributes("-topmost", True)
+
+        quick_window.transient(self.root)
+        quick_window.grab_set()
+        self.register_toplevel(quick_window)
+
+        content = ttk.Frame(quick_window, style="Dark.TFrame")
+        content.pack(fill="both", expand=True, padx=18, pady=16)
+
+        ttk.Label(
+            content,
+            text="Quick Sign-In",
+            style="Dark.TLabel",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w")
+
+        ttk.Label(
+            content,
+            text="Enter this code on your phone, tablet, or another signed-in device.",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(4, 10))
+
+        code_var = tk.StringVar(value="Waiting for code...")
+        status_var = tk.StringVar(value="Opening browser...")
+
+        code_label = tk.Label(
+            content,
+            textvariable=code_var,
+            bg=self.BG_MID,
+            fg=self.FG_ACCENT,
+            font=("Consolas", 21, "bold"),
+            relief="solid",
+            borderwidth=1,
+            padx=18,
+            pady=12,
+        )
+        code_label.pack(fill="x")
+
+        status_label = ttk.Label(
+            content,
+            textvariable=status_var,
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            wraplength=420,
+        )
+        status_label.pack(anchor="w", pady=(10, 12))
+
+        button_row = ttk.Frame(content, style="Dark.TFrame")
+        button_row.pack(fill="x")
+
+        copy_button = ttk.Button(
+            button_row,
+            text="Copy Code",
+            style="Dark.TButton",
+            command=lambda: self._copy_quick_sign_in_code(code_var),
+        )
+        copy_button.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        close_button = ttk.Button(
+            button_row,
+            text="Cancel",
+            style="Dark.TButton",
+        )
+        close_button.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        cancel_event = threading.Event()
+
+        def ui_update(fn):
+            self.root.after(
+                0,
+                lambda: fn() if quick_window.winfo_exists() else None
+            )
+
+        def set_code(value):
+            cleaned = str(value or "").strip()
+            if not cleaned:
+                return
+            ui_update(lambda: code_var.set(cleaned))
+
+        def set_status(value):
+            ui_update(lambda: status_var.set(str(value or "")))
+
+        def close_window():
+            cancel_event.set()
+            if quick_window.winfo_exists():
+                quick_window.destroy()
+
+        close_button.configure(command=close_window)
+        quick_window.protocol("WM_DELETE_WINDOW", close_window)
+
+        def run_quick_sign_in():
+            result = self.manager.add_account_quick_sign_in(
+                preferred_browser=self._get_preferred_browser(),
+                on_code=set_code,
+                on_status=set_status,
+                timeout=300,
+                cancel_event=cancel_event,
+            )
+
+            def finalize():
+                success = bool(result.get("success"))
+                error_message = str(result.get("error") or "").strip()
+                username = str(result.get("username") or "").strip()
+
+                if success:
+                    self.refresh_accounts(selected_usernames=[username] if username else None)
+                    self.show_success_message(f"Account added via Quick Sign-In: {username}")
+                    if quick_window.winfo_exists():
+                        quick_window.destroy()
+                    return
+
+                if error_message and "cancelled" not in error_message.lower():
+                    if quick_window.winfo_exists():
+                        status_var.set(error_message)
+                    messagebox.showerror("Quick Sign-In", error_message)
+
+            self.root.after(0, finalize)
+
+        threading.Thread(target=run_quick_sign_in, daemon=True).start()
 
     def add_account(self):
         """
