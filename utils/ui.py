@@ -996,6 +996,7 @@ class AccountManagerUI:
             "enable_multi_roblox": False,
             "confirm_before_launch": False,
             "randomize_server_job_ids": False,
+            "prefer_small_public_servers": False,
             "max_recent_games": 10,
             "enable_multi_select": False,
             "enable_debug_logging": False,
@@ -5104,16 +5105,31 @@ class AccountManagerUI:
         debug_enabled = self.settings.get("enable_debug_logging", False)
         launch_delay = self._get_multi_launch_delay()
         randomize_server_jobs = self.settings.get("randomize_server_job_ids", False)
+        prefer_small_servers = self.settings.get("prefer_small_public_servers", False)
 
-        def worker(selected_usernames, pid, psid, ver, debug_flag, delay_seconds, randomize_jobs):
+        def worker(selected_usernames, pid, psid, ver, debug_flag, delay_seconds, randomize_jobs, prefer_small):
             success_count = 0
             if randomize_jobs and psid:
                 print("[INFO] Random Job ID setting ignored because a private server link code is set.")
+            if prefer_small and psid:
+                print("[INFO] Lowest-population server setting ignored because a private server link code is set.")
+            if prefer_small and randomize_jobs and not psid:
+                print("[INFO] Lowest-population server setting is enabled; random server selection will be ignored.")
             for idx, uname in enumerate(selected_usernames):
                 try:
                     server_job_id = ""
                     effective_server_job_id = ""
-                    if randomize_jobs and not psid:
+                    if prefer_small and not psid:
+                        max_small_server_attempts = 3
+                        for attempt in range(1, max_small_server_attempts + 1):
+                            server_job_id = RobloxAPI.get_lowest_public_server_job_id(pid) or ""
+                            if server_job_id:
+                                break
+                            if attempt < max_small_server_attempts:
+                                time.sleep(0.6 * attempt)
+                        if not server_job_id:
+                            print("[INFO] Low-population public server unavailable; launching without job ID override.")
+                    elif randomize_jobs and not psid:
                         max_random_job_attempts = 3
                         for attempt in range(1, max_random_job_attempts + 1):
                             server_job_id = RobloxAPI.get_random_public_server_job_id(pid) or ""
@@ -5133,8 +5149,8 @@ class AccountManagerUI:
                         server_job_id=server_job_id
                     )
                     effective_server_job_id = server_job_id
-                    if (not launched) and server_job_id and randomize_jobs and not psid:
-                        print("[INFO] Random job ID launch failed; retrying with default launch.")
+                    if (not launched) and server_job_id and (randomize_jobs or prefer_small) and not psid:
+                        print("[INFO] Server job ID launch failed; retrying with default launch.")
                         launched = self.manager.launch_roblox(
                             uname,
                             pid,
@@ -5196,7 +5212,16 @@ class AccountManagerUI:
 
         threading.Thread(
             target=worker,
-            args=(list(usernames), game_id, private_server, version_path, debug_enabled, launch_delay, randomize_server_jobs),
+            args=(
+                list(usernames),
+                game_id,
+                private_server,
+                version_path,
+                debug_enabled,
+                launch_delay,
+                randomize_server_jobs,
+                prefer_small_servers,
+            ),
             daemon=True
         ).start()
 
@@ -5398,6 +5423,7 @@ class AccountManagerUI:
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
         confirm_launch_var = tk.BooleanVar(value=self.settings.get("confirm_before_launch", False))
         randomize_job_id_var = tk.BooleanVar(value=self.settings.get("randomize_server_job_ids", False))
+        prefer_small_servers_var = tk.BooleanVar(value=self.settings.get("prefer_small_public_servers", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         hide_sensitive_var = tk.BooleanVar(value=self.settings.get("hide_sensitive_info", False))
@@ -5852,6 +5878,14 @@ class AccountManagerUI:
             variable=randomize_job_id_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("randomize_server_job_ids", randomize_job_id_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            roblox_client_card,
+            text="Prefer Small Servers",
+            variable=prefer_small_servers_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("prefer_small_public_servers", prefer_small_servers_var)
         ).pack(anchor="w", pady=2)
 
         def open_global_settings_and_close_settings():

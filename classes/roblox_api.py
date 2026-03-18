@@ -295,6 +295,94 @@ class RobloxAPI:
         except Exception as exc:
             print(f"[WARNING] Failed to fetch public servers for place {place_id_str}: {exc}")
             return None
+
+    @staticmethod
+    def get_lowest_public_server_job_id(place_id, max_pages=3):
+        if not place_id:
+            return None
+
+        place_id_str = str(place_id).strip()
+        if not place_id_str.isdigit():
+            return None
+
+        best_choice = None
+        cursor = ""
+        pages_fetched = 0
+
+        try:
+            session = RobloxAPI._get_http_session()
+            while pages_fetched < max_pages:
+                url = f"https://games.roblox.com/v1/games/{place_id_str}/servers/Public"
+                params = {
+                    "sortOrder": "Asc",
+                    "limit": 100,
+                }
+                if cursor:
+                    params["cursor"] = cursor
+
+                response = None
+                page_ok = False
+                max_attempts = 4
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        response = session.get(url, params=params, timeout=8)
+                    except requests.exceptions.RequestException as exc:
+                        if attempt == max_attempts:
+                            print(f"[WARNING] Failed to fetch public servers for place {place_id_str}: {exc}")
+                            return None
+                        time.sleep(min(2.0 * attempt, 6.0))
+                        continue
+
+                    if response.status_code != 429:
+                        page_ok = True
+                        break
+
+                    retry_after = str(response.headers.get("Retry-After") or "").strip()
+                    delay_seconds = 0
+                    if retry_after.isdigit():
+                        delay_seconds = int(retry_after)
+                    if delay_seconds <= 0:
+                        delay_seconds = min(2 * attempt, 8)
+                    if attempt < max_attempts:
+                        time.sleep(delay_seconds)
+
+                if not page_ok or response is None:
+                    return None
+
+                response.raise_for_status()
+                payload = response.json() if response.content else {}
+                servers = payload.get("data") or []
+
+                for server in servers:
+                    job_id = str(server.get("id") or "").strip()
+                    if not job_id:
+                        continue
+                    try:
+                        max_players = int(server.get("maxPlayers", 0) or 0)
+                    except Exception:
+                        max_players = 0
+                    try:
+                        playing = int(server.get("playing", 0) or 0)
+                    except Exception:
+                        playing = 0
+                    if max_players > 0 and playing >= max_players:
+                        continue
+                    fill_ratio = (playing / max_players) if max_players > 0 else 1.0
+                    ranking = (playing, fill_ratio, random.random())
+                    if best_choice is None or ranking < best_choice[0]:
+                        best_choice = (ranking, job_id)
+
+                pages_fetched += 1
+                cursor = str(payload.get("nextPageCursor") or "").strip()
+                if not cursor:
+                    break
+
+            if best_choice is None:
+                return None
+            return best_choice[1]
+        except Exception as exc:
+            print(f"[WARNING] Failed to fetch low-population public server for place {place_id_str}: {exc}")
+            return None
     
     @staticmethod
     def get_auth_ticket(roblosecurity_cookie):
