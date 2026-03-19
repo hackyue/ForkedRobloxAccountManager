@@ -1,4 +1,4 @@
-"""
+﻿"""
 UI Module for Roblox Account Manager
 Contains the main AccountManagerUI class
 """
@@ -159,6 +159,7 @@ GWL_STYLE = -16
 WS_THICKFRAME = 0x00040000
 WS_MAXIMIZEBOX = 0x00010000
 WS_MINIMIZEBOX = 0x00020000
+INVALID_ACCOUNT_SYMBOL = "\u26A0"
 
 
 def clamp_multi_launch_delay(value):
@@ -703,6 +704,9 @@ class AccountManagerUI:
 
         self.console_output = get_console_output_buffer()
         self.console_window = ConsoleOutputWindow(self, self.console_output)
+        self._account_validation_status = {}
+        self._startup_validation_started = False
+        self._startup_validation_in_progress = False
 
         self.account_list_drag_data = {
             "start_index": None,
@@ -1000,6 +1004,7 @@ class AccountManagerUI:
 
         self.refresh_accounts()
         self.refresh_game_list()
+        self._schedule_startup_account_validation()
 
         self.root.after(500, self._auto_relaunch_maybe_start)
         self.root.after(1500, self._auto_update_maybe_start)
@@ -3348,9 +3353,13 @@ class AccountManagerUI:
             self.show_success_message("Game removed from list!")
 
     def _extract_username(self, display_text):
-        if " • " in display_text:
-            return display_text.split(" • ", 1)[0]
-        return display_text.split(' â€¢ ', 1)[0]
+        if display_text.startswith(f"{INVALID_ACCOUNT_SYMBOL} "):
+            display_text = display_text[2:]
+        if display_text.startswith("[!] "):
+            display_text = display_text[4:]
+        if " | " in display_text:
+            return display_text.split(" | ", 1)[0]
+        return display_text
 
     def refresh_accounts(self, selected_usernames=None):
         """Refresh the account list"""
@@ -3364,10 +3373,17 @@ class AccountManagerUI:
         active_group = self._get_active_group()
         display_items = []
         username_to_indices = {}
+        invalid_indices = []
+
+        for username in list(self._account_validation_status.keys()):
+            if username not in self.manager.accounts:
+                self._account_validation_status.pop(username, None)
 
         for username, data in self.manager.accounts.items():
             if not isinstance(data, dict):
                 continue
+
+            self._account_validation_status.setdefault(username, None)
 
             group = (data.get('group') or '').strip()
             if active_group and group != active_group:
@@ -3375,17 +3391,26 @@ class AccountManagerUI:
 
             note = (data.get('note') or '').strip()
             display_text = f"{username}"
+            if self._account_validation_status.get(username) is False:
+                display_text = f"{INVALID_ACCOUNT_SYMBOL} {display_text}"
             if group:
-                display_text += f" • [{group}]"
+                display_text += f" | [{group}]"
             if note:
-                display_text += f" • {note}"
+                display_text += f" | {note}"
 
             idx = len(display_items)
             display_items.append(display_text)
             username_to_indices.setdefault(username, []).append(idx)
+            if self._account_validation_status.get(username) is False:
+                invalid_indices.append(idx)
 
         if display_items:
             self.account_list.insert(tk.END, *display_items)
+            for idx in invalid_indices:
+                try:
+                    self.account_list.itemconfig(idx, fg="#ff4d4f")
+                except Exception:
+                    pass
 
         first_selected_idx = None
         for username in selected_usernames:
@@ -3396,6 +3421,44 @@ class AccountManagerUI:
 
         if first_selected_idx is not None:
             self.account_list.activate(first_selected_idx)
+
+    def _schedule_startup_account_validation(self):
+        """Kick off a quiet, background account validation pass after startup."""
+        if getattr(self, "_startup_validation_started", False):
+            return
+        self._startup_validation_started = True
+        self.root.after(1200, self._validate_accounts_on_startup_silent)
+
+    def _validate_accounts_on_startup_silent(self):
+        """Validate all accounts without popups and mark invalid ones in the list."""
+        if getattr(self, "_startup_validation_in_progress", False):
+            return
+        if getattr(self, "_validation_in_progress", False):
+            self.root.after(1000, self._validate_accounts_on_startup_silent)
+            return
+
+        usernames = [uname for uname, data in self.manager.accounts.items() if isinstance(data, dict)]
+        if not usernames:
+            return
+
+        self._startup_validation_in_progress = True
+
+        def worker(all_usernames):
+            status_updates = {}
+            for uname in all_usernames:
+                try:
+                    status_updates[uname] = bool(self.manager.validate_account(uname))
+                except Exception:
+                    status_updates[uname] = False
+
+            def done():
+                self._startup_validation_in_progress = False
+                self._account_validation_status.update(status_updates)
+                self.refresh_accounts()
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, args=(list(usernames),), daemon=True).start()
 
     def get_selected_username(self):
         """Get the currently selected username"""
@@ -4715,6 +4778,12 @@ class AccountManagerUI:
                     self.root.config(cursor="")
                 except Exception:
                     pass
+
+                for uname in valid_usernames:
+                    self._account_validation_status[uname] = True
+                for uname in invalid_usernames:
+                    self._account_validation_status[uname] = False
+                self.refresh_accounts(selected_usernames=selected_usernames)
 
                 if len(selected_usernames) == 1:
                     if valid_usernames:
