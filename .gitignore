@@ -45,3 +45,4 @@ tmp/
 .coverage
 htmlcov/
 debug/
+test.py

@@ -150,6 +150,16 @@ MAX_LAUNCH_DELAY_SECONDS = 60.0
 MIN_INSTALLER_PREVIOUS_VERSIONS = 5
 MAX_INSTALLER_PREVIOUS_VERSIONS = 15
 
+# Win32 flags used for force-resizing Roblox windows (test.py approach).
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+SWP_FRAMECHANGED = 0x0020
+SWP_NOSENDCHANGING = 0x0400
+GWL_STYLE = -16
+WS_THICKFRAME = 0x00040000
+WS_MAXIMIZEBOX = 0x00010000
+WS_MINIMIZEBOX = 0x00020000
+
 
 def clamp_multi_launch_delay(value):
     """Clamp arbitrary input to the allowed multi-launch delay range."""
@@ -1000,11 +1010,14 @@ class AccountManagerUI:
             "max_recent_games": 10,
             "enable_multi_select": False,
             "enable_debug_logging": False,
-            "hide_sensitive_info": False,
+            "hide_sensitive_info": True,
             "bug_issue_prompt_enabled": True,
             "selected_theme": "Synapse Neon",
             "disable_success_popups": False,
             "auto_arrange_scope": "both",
+            "auto_arrange_dimension_mode": "auto",
+            "auto_arrange_target_width": 800,
+            "auto_arrange_target_height": 600,
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_roblox_player_path": "",
             "selected_group": "All",
@@ -1039,6 +1052,7 @@ class AccountManagerUI:
         self.settings["browser_preference"] = browser_pref
 
         self._ensure_auto_arrange_scope_valid()
+        self._ensure_auto_arrange_dimension_settings_valid()
         if self.settings.get("enable_multi_roblox", False):
             self.root.after(100, self.initialize_multi_roblox)
 
@@ -1061,6 +1075,26 @@ class AccountManagerUI:
             scope = "primary"
 
         self.settings["auto_arrange_scope"] = scope
+
+    def _ensure_auto_arrange_dimension_settings_valid(self):
+        """Validate dimension mode and preferred client size settings."""
+        allowed_modes = {"auto", "target_size"}
+        mode = self.settings.get("auto_arrange_dimension_mode", "auto")
+        if mode not in allowed_modes:
+            mode = "auto"
+        self.settings["auto_arrange_dimension_mode"] = mode
+
+        try:
+            width = int(self.settings.get("auto_arrange_target_width", 800))
+        except (TypeError, ValueError):
+            width = 800
+        try:
+            height = int(self.settings.get("auto_arrange_target_height", 600))
+        except (TypeError, ValueError):
+            height = 600
+
+        self.settings["auto_arrange_target_width"] = max(50, min(7680, width))
+        self.settings["auto_arrange_target_height"] = max(50, min(4320, height))
 
     def _has_multiple_monitors(self):
         """Return True if more than one monitor is available."""
@@ -4338,72 +4372,17 @@ class AccountManagerUI:
             return
 
         hwnds = self._sort_windows_by_position(hwnds)
-        min_width, min_height = self._get_min_window_size(hwnds[0])
-        if min_width <= 0 or min_height <= 0:
+        if not monitor_work_areas:
             return
 
-        monitor_slots = []
-        for work_area in monitor_work_areas:
-            work_left, work_top, work_right, work_bottom = work_area
-            area_width = max(1, work_right - work_left)
-            area_height = max(1, work_bottom - work_top)
-
-            tile_width = max(1, min(min_width, area_width))
-            tile_height = max(1, min(min_height, area_height))
-            columns = max(1, area_width // tile_width)
-            rows = max(1, area_height // tile_height)
-            capacity = max(1, columns * rows)
-
-            monitor_slots.append({
-                "area": work_area,
-                "tile_width": tile_width,
-                "tile_height": tile_height,
-                "columns": columns,
-                "rows": rows,
-                "capacity": capacity,
-            })
-
-        if not monitor_slots:
-            return
-
-        total_capacity = sum(slot["capacity"] for slot in monitor_slots)
-        if total_capacity <= 0:
-            return
-
+        monitor_assignments = [[] for _ in monitor_work_areas]
         for index, hwnd in enumerate(hwnds):
-            slot_index = index % total_capacity
-            monitor_index = 0
-            while monitor_index < len(monitor_slots):
-                cap = monitor_slots[monitor_index]["capacity"]
-                if slot_index < cap:
-                    break
-                slot_index -= cap
-                monitor_index += 1
+            monitor_assignments[index % len(monitor_work_areas)].append(hwnd)
 
-            if monitor_index >= len(monitor_slots):
-                monitor_index = len(monitor_slots) - 1
-                slot_index = 0
-
-            slot = monitor_slots[monitor_index]
-            work_left, work_top, work_right, work_bottom = slot["area"]
-            columns = slot["columns"]
-            tile_width = slot["tile_width"]
-            tile_height = slot["tile_height"]
-
-            row = slot_index // columns
-            col = slot_index % columns
-            left = work_left + (col * tile_width)
-            top = work_top + (row * tile_height)
-
-            # Keep the tile fully inside the monitor work area.
-            left = min(left, work_right - tile_width)
-            top = min(top, work_bottom - tile_height)
-
-            try:
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                win32gui.MoveWindow(hwnd, left, top, tile_width, tile_height, True)
-            except Exception:
+        for monitor_index, assigned_hwnds in enumerate(monitor_assignments):
+            if not assigned_hwnds:
                 continue
+            self._arrange_windows_within_area(assigned_hwnds, monitor_work_areas[monitor_index])
 
     def _sort_windows_by_position(self, hwnds):
         """Sort windows by current top-left position for deterministic arrangement."""
@@ -4444,21 +4423,13 @@ class AccountManagerUI:
         if window_count == 0:
             return
 
-        aspect_ratio = available_width / available_height if available_height else 1
-        columns = max(1, math.ceil(math.sqrt(window_count * aspect_ratio)))
-        columns = min(columns, window_count)
-        rows = max(1, math.ceil(window_count / columns))
-
-        column_edges = [
-            work_left + round(i * available_width / columns)
-            for i in range(columns + 1)
-        ]
-        column_edges[-1] = work_right
-        row_edges = [
-            work_top + round(i * available_height / rows)
-            for i in range(rows + 1)
-        ]
-        row_edges[-1] = work_bottom
+        dimension_mode = self.settings.get("auto_arrange_dimension_mode", "auto")
+        columns, rows, tile_width, tile_height = self._get_auto_arrange_tile_layout(
+            window_count,
+            available_width,
+            available_height,
+            dimension_mode,
+        )
 
         for index, hwnd in enumerate(hwnds):
             row = index // columns
@@ -4466,19 +4437,86 @@ class AccountManagerUI:
             if row >= rows:
                 row = rows - 1
 
-            left = column_edges[col]
-            right = column_edges[col + 1]
-            top = row_edges[row]
-            bottom = row_edges[min(row + 1, len(row_edges) - 1)]
+            left = work_left + (col * tile_width)
+            top = work_top + (row * tile_height)
+            width = max(1, tile_width)
+            height = max(1, tile_height)
 
-            width = max(1, right - left)
-            height = max(1, bottom - top)
+            # Keep every tile fully inside the monitor work area.
+            left = min(left, work_right - width)
+            top = min(top, work_bottom - height)
 
             try:
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                win32gui.MoveWindow(hwnd, left, top, width, height, True)
+                ok, _, _ = self._move_resize_window_unclamped(hwnd, left, top, width, height, strip_styles=False)
+                if not ok:
+                    ok, _, _ = self._move_resize_window_unclamped(hwnd, left, top, width, height, strip_styles=True)
+                if not ok:
+                    win32gui.MoveWindow(hwnd, left, top, width, height, True)
             except Exception:
                 continue
+
+    def _get_auto_arrange_tile_layout(self, window_count, available_width, available_height, dimension_mode):
+        """Return (columns, rows, tile_width, tile_height) for auto-arrange."""
+        if window_count <= 0:
+            return 1, 1, max(1, available_width), max(1, available_height)
+
+        mode = str(dimension_mode or "auto").strip().lower()
+        if mode == "target_size":
+            target_width = max(1, int(self.settings.get("auto_arrange_target_width", 800) or 800))
+            target_height = max(1, int(self.settings.get("auto_arrange_target_height", 600) or 600))
+
+            columns = max(1, min(window_count, available_width // target_width))
+            rows = max(1, math.ceil(window_count / columns))
+
+            while rows * target_height > available_height and columns < window_count:
+                columns += 1
+                rows = max(1, math.ceil(window_count / columns))
+
+            tile_width = max(1, min(target_width, available_width // columns))
+            tile_height = max(1, min(target_height, available_height // rows))
+            return columns, rows, tile_width, tile_height
+
+        aspect_ratio = available_width / available_height if available_height else 1
+        columns = max(1, math.ceil(math.sqrt(window_count * aspect_ratio)))
+        columns = min(columns, window_count)
+        rows = max(1, math.ceil(window_count / columns))
+        tile_width = max(1, available_width // columns)
+        tile_height = max(1, available_height // rows)
+        return columns, rows, tile_width, tile_height
+
+    def _move_resize_window_unclamped(self, hwnd, x, y, width, height, strip_styles=False):
+        """
+        Resize using SetWindowPos + SWP_NOSENDCHANGING (test.py method) to bypass
+        Roblox minimum-size clamping. Returns (success, actual_width, actual_height).
+        """
+        if platform.system() != "Windows":
+            return False, 0, 0
+
+        user32 = ctypes.windll.user32
+        flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_NOSENDCHANGING
+
+        original_style = None
+        if strip_styles:
+            original_style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+            stripped_style = original_style & ~(WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)
+            user32.SetWindowLongW(hwnd, GWL_STYLE, stripped_style)
+
+        user32.SetWindowPos(hwnd, None, int(x), int(y), int(width), int(height), flags)
+
+        if original_style is not None:
+            user32.SetWindowLongW(hwnd, GWL_STYLE, original_style)
+            user32.SetWindowPos(hwnd, None, int(x), int(y), int(width), int(height), flags)
+
+        time.sleep(0.05)
+        try:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        except Exception:
+            return False, 0, 0
+
+        actual_width = max(1, right - left)
+        actual_height = max(1, bottom - top)
+        return actual_width == int(width) and actual_height == int(height), actual_width, actual_height
 
     def _filter_monitor_areas_by_scope(self, work_areas, scope):
         """Filter monitor work areas according to the chosen auto-arrange scope."""
@@ -5436,6 +5474,15 @@ class AccountManagerUI:
         custom_launcher_path_var = tk.StringVar(value=self.settings.get("custom_launcher_path", ""))
         custom_launcher_player_var = tk.BooleanVar(value=self.settings.get("custom_launcher_requires_player", False))
         auto_arrange_scope_var = tk.StringVar(value=self.settings.get("auto_arrange_scope", "both"))
+        auto_arrange_dimension_mode_var = tk.StringVar(
+            value=self.settings.get("auto_arrange_dimension_mode", "auto")
+        )
+        auto_arrange_target_width_var = tk.IntVar(
+            value=int(self.settings.get("auto_arrange_target_width", 800) or 800)
+        )
+        auto_arrange_target_height_var = tk.IntVar(
+            value=int(self.settings.get("auto_arrange_target_height", 600) or 600)
+        )
         custom_roblox_player_path_var = tk.StringVar(value=self.settings.get("custom_roblox_player_path", ""))
         installer_previous_versions_var = tk.IntVar(value=clamp_installer_previous_versions(self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)))
         
@@ -5816,44 +5863,6 @@ class AccountManagerUI:
                 justify="left",
             ).pack(fill="x", pady=(0, 4))
 
-        auto_arrange_card = create_settings_card(general_tab, "Client Window Arrangement")
-
-        if self._has_multiple_monitors():
-            scope_display_map = {
-                "primary": "Primary monitor only",
-                "secondary": "Secondary monitor only",
-                "both": "All monitors"
-            }
-            scope_inverse_map = {label: value for value, label in scope_display_map.items()}
-            selected_label = scope_display_map.get(auto_arrange_scope_var.get(), scope_display_map["both"])
-
-            scope_combo = ttk.Combobox(
-                auto_arrange_card,
-                values=list(scope_display_map.values()),
-                state="readonly",
-                style="Dark.TCombobox"
-            )
-            scope_combo.pack(fill="x", pady=(0, 4))
-            scope_combo.set(selected_label)
-
-            def on_scope_change(_=None):
-                label = scope_combo.get()
-                value = scope_inverse_map.get(label, "both")
-                auto_arrange_scope_var.set(value)
-                self.settings["auto_arrange_scope"] = value
-                self.save_settings()
-
-            scope_combo.bind("<<ComboboxSelected>>", on_scope_change)
-        else:
-            self.settings["auto_arrange_scope"] = "primary"
-            auto_arrange_scope_var.set("primary")
-            ttk.Label(
-                auto_arrange_card,
-                text="Only one monitor detected. Auto-arrange will use the available screen.",
-                style="Dark.TLabel",
-                wraplength=320
-            ).pack(anchor="w", pady=(0, 4))
-
         roblox_client_card = create_settings_card(roblox_tab, "Launch Rules")
 
         ttk.Checkbutton(
@@ -5899,6 +5908,146 @@ class AccountManagerUI:
             style="Dark.TButton",
             command=open_global_settings_and_close_settings
         ).pack(fill="x", pady=(8, 0))
+
+        roblox_auto_arrange_card = create_settings_card(roblox_tab, "Roblox Window Arrangement")
+
+        if self._has_multiple_monitors():
+            scope_display_map = {
+                "primary": "Primary monitor only",
+                "secondary": "Secondary monitor only",
+                "both": "All monitors"
+            }
+            scope_inverse_map = {label: value for value, label in scope_display_map.items()}
+            selected_label = scope_display_map.get(auto_arrange_scope_var.get(), scope_display_map["both"])
+
+            scope_combo = ttk.Combobox(
+                roblox_auto_arrange_card,
+                values=list(scope_display_map.values()),
+                state="readonly",
+                style="Dark.TCombobox"
+            )
+            scope_combo.pack(fill="x", pady=(0, 4))
+            scope_combo.set(selected_label)
+
+            def on_scope_change(_=None):
+                label = scope_combo.get()
+                value = scope_inverse_map.get(label, "both")
+                auto_arrange_scope_var.set(value)
+                self.settings["auto_arrange_scope"] = value
+                self.save_settings()
+
+            scope_combo.bind("<<ComboboxSelected>>", on_scope_change)
+        else:
+            self.settings["auto_arrange_scope"] = "primary"
+            auto_arrange_scope_var.set("primary")
+            ttk.Label(
+                roblox_auto_arrange_card,
+                text="Only one monitor detected. Auto-arrange will use the available screen.",
+                style="Dark.TLabel",
+                wraplength=320
+            ).pack(anchor="w", pady=(0, 4))
+
+        ttk.Label(
+            roblox_auto_arrange_card,
+            text="Client dimensions",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w", pady=(6, 2))
+
+        dimension_display_map = {
+            "auto": "Auto-fit per monitor",
+            "target_size": "Preferred fixed size (shrink if needed)",
+        }
+        dimension_inverse_map = {label: value for value, label in dimension_display_map.items()}
+
+        dimension_combo = ttk.Combobox(
+            roblox_auto_arrange_card,
+            values=list(dimension_display_map.values()),
+            state="readonly",
+            style="Dark.TCombobox"
+        )
+        dimension_combo.pack(fill="x", pady=(0, 6))
+        dimension_combo.set(
+            dimension_display_map.get(auto_arrange_dimension_mode_var.get(), dimension_display_map["auto"])
+        )
+
+        target_size_frame = ttk.Frame(roblox_auto_arrange_card, style="Dark.TFrame")
+        target_size_frame.pack(fill="x", pady=(0, 4))
+        target_size_frame.columnconfigure(1, weight=1)
+        target_size_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(target_size_frame, text="Width", style="Dark.TLabel").grid(row=0, column=0, sticky="w")
+        target_width_spin = ttk.Spinbox(
+            target_size_frame,
+            from_=50,
+            to=7680,
+            increment=10,
+            textvariable=auto_arrange_target_width_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center"
+        )
+        target_width_spin.grid(row=0, column=1, sticky="w", padx=(6, 12))
+
+        ttk.Label(target_size_frame, text="Height", style="Dark.TLabel").grid(row=0, column=2, sticky="w")
+        target_height_spin = ttk.Spinbox(
+            target_size_frame,
+            from_=50,
+            to=4320,
+            increment=10,
+            textvariable=auto_arrange_target_height_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center"
+        )
+        target_height_spin.grid(row=0, column=3, sticky="w", padx=(6, 0))
+
+        def _save_auto_arrange_dimensions():
+            mode = auto_arrange_dimension_mode_var.get()
+            if mode not in {"auto", "target_size"}:
+                mode = "auto"
+                auto_arrange_dimension_mode_var.set(mode)
+
+            try:
+                target_width = int(auto_arrange_target_width_var.get())
+            except (TypeError, ValueError, tk.TclError):
+                target_width = int(self.settings.get("auto_arrange_target_width", 800) or 800)
+            try:
+                target_height = int(auto_arrange_target_height_var.get())
+            except (TypeError, ValueError, tk.TclError):
+                target_height = int(self.settings.get("auto_arrange_target_height", 600) or 600)
+
+            target_width = max(50, min(7680, target_width))
+            target_height = max(50, min(4320, target_height))
+            auto_arrange_target_width_var.set(target_width)
+            auto_arrange_target_height_var.set(target_height)
+
+            self.settings["auto_arrange_dimension_mode"] = mode
+            self.settings["auto_arrange_target_width"] = target_width
+            self.settings["auto_arrange_target_height"] = target_height
+            self.save_settings()
+            _update_target_size_state()
+
+        def _update_target_size_state():
+            is_target_size_mode = auto_arrange_dimension_mode_var.get() == "target_size"
+            state = "normal" if is_target_size_mode else "disabled"
+            target_width_spin.configure(state=state)
+            target_height_spin.configure(state=state)
+
+        def on_dimension_mode_change(_=None):
+            label = (dimension_combo.get() or "").strip()
+            mode = dimension_inverse_map.get(label, "auto")
+            auto_arrange_dimension_mode_var.set(mode)
+            _save_auto_arrange_dimensions()
+
+        dimension_combo.bind("<<ComboboxSelected>>", on_dimension_mode_change)
+        target_width_spin.configure(command=_save_auto_arrange_dimensions)
+        target_height_spin.configure(command=_save_auto_arrange_dimensions)
+        target_width_spin.bind("<FocusOut>", lambda _evt: _save_auto_arrange_dimensions())
+        target_width_spin.bind("<Return>", lambda _evt: _save_auto_arrange_dimensions())
+        target_height_spin.bind("<FocusOut>", lambda _evt: _save_auto_arrange_dimensions())
+        target_height_spin.bind("<Return>", lambda _evt: _save_auto_arrange_dimensions())
+        _update_target_size_state()
 
         custom_frame = create_settings_card(roblox_tab, "Launch Timing & Executable")
 
