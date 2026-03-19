@@ -211,6 +211,145 @@ class RobloxAPI:
         return None
 
     @staticmethod
+    def get_user_id_from_username(username):
+        """Resolve a Roblox user ID from a username."""
+        username_text = str(username or "").strip()
+        if not username_text:
+            return None
+
+        try:
+            payload = {
+                "usernames": [username_text],
+                "excludeBannedUsers": False,
+            }
+            response = RobloxAPI._get_http_session().post(
+                "https://users.roblox.com/v1/usernames/users",
+                json=payload,
+                timeout=8,
+            )
+            response.raise_for_status()
+            users = (response.json() or {}).get("data") or []
+            if users:
+                user_id = users[0].get("id")
+                if user_id is not None:
+                    return str(user_id).strip()
+        except requests.exceptions.RequestException as exc:
+            print(f"[WARNING] Failed to resolve user ID for '{username_text}': {exc}")
+        except Exception as exc:
+            print(f"[WARNING] Unexpected error resolving user ID for '{username_text}': {exc}")
+        return None
+
+    @staticmethod
+    def get_username_from_user_id(user_id):
+        """Resolve Roblox username from a numeric user ID."""
+        user_id_text = str(user_id or "").strip()
+        if not user_id_text or not user_id_text.isdigit():
+            return None
+
+        try:
+            response = RobloxAPI._get_http_session().get(
+                f"https://users.roblox.com/v1/users/{user_id_text}",
+                timeout=8,
+            )
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            username = str(payload.get("name") or "").strip()
+            return username or None
+        except requests.exceptions.RequestException as exc:
+            print(f"[WARNING] Failed to resolve username for user ID {user_id_text}: {exc}")
+        except Exception as exc:
+            print(f"[WARNING] Unexpected error resolving username for user ID {user_id_text}: {exc}")
+        return None
+
+    @staticmethod
+    def get_join_user_status(user_identifier):
+        """
+        Resolve a user and return whether they appear joinable right now.
+
+        Returns:
+            {
+                "ok": bool,
+                "user_id": str,
+                "username": str,
+                "joinable": bool,
+                "presence_type": int,
+                "location": str,
+                "error": str,
+            }
+        """
+        result = {
+            "ok": False,
+            "user_id": "",
+            "username": "",
+            "joinable": False,
+            "presence_type": 0,
+            "location": "",
+            "error": "",
+        }
+
+        text = str(user_identifier or "").strip()
+        if not text:
+            result["error"] = "Missing user"
+            return result
+
+        if text.isdigit():
+            user_id = text
+            username = RobloxAPI.get_username_from_user_id(user_id) or text
+        else:
+            user_id = RobloxAPI.get_user_id_from_username(text)
+            if not user_id:
+                result["error"] = "User not found"
+                return result
+            username = RobloxAPI.get_username_from_user_id(user_id) or text
+
+        result["user_id"] = str(user_id)
+        result["username"] = str(username)
+
+        try:
+            payload = {"userIds": [int(user_id)]}
+            response = RobloxAPI._get_http_session().post(
+                "https://presence.roblox.com/v1/presence/users",
+                json=payload,
+                timeout=8,
+            )
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+            user_presences = data.get("userPresences") or []
+            if not user_presences:
+                result["ok"] = True
+                result["error"] = "Presence unavailable"
+                return result
+
+            presence = user_presences[0] or {}
+            presence_type = int(presence.get("userPresenceType", 0) or 0)
+            place_id = str(presence.get("placeId") or "").strip()
+            location = str(presence.get("lastLocation") or "").strip()
+            game_id = str(presence.get("gameId") or "").strip()
+
+
+
+            joinable = False
+            if presence_type == 2:
+                joinable = True
+            elif presence_type == 3:
+                
+                joinable = False
+            elif bool(place_id or game_id):
+                joinable = True
+
+            result["ok"] = True
+            result["presence_type"] = presence_type
+            result["joinable"] = bool(joinable)
+            result["location"] = location
+            return result
+        except requests.exceptions.RequestException as exc:
+            result["error"] = str(exc)
+            return result
+        except Exception as exc:
+            result["error"] = str(exc)
+            return result
+
+    @staticmethod
     def get_random_public_server_job_id(place_id, max_pages=3):
         if not place_id:
             return None
@@ -261,7 +400,7 @@ class RobloxAPI:
                         time.sleep(delay_seconds)
 
                 if not page_ok or response is None:
-                    # Treat rate limiting as a soft failure (quietly skip randomization for this launch).
+                    
                     return None
 
                 response.raise_for_status()
@@ -596,6 +735,7 @@ class RobloxAPI:
         roblox_path=None,
         enable_debug=False,
         server_job_id="",
+        launch_mode="game",
     ):
         """
         Launch Roblox game with specified account and version
@@ -607,6 +747,7 @@ class RobloxAPI:
             private_server_id: Optional private server ID
             roblox_path: Optional path to Roblox version directory (if None, uses default)
             server_job_id: Optional public server job ID
+            launch_mode: "game" (place launch) or "join_user"
         """
         def _log_debug(msg):
             if enable_debug:
@@ -790,7 +931,11 @@ class RobloxAPI:
             roblox_exe = 'RobloxPlayerBeta.exe'
             _log_debug("Using default Roblox installation (RobloxPlayerBeta.exe on PATH)")
 
-        if not game_id or game_id == "":
+        normalized_launch_mode = str(launch_mode or "game").strip().lower()
+        if normalized_launch_mode not in {"game", "join_user"}:
+            normalized_launch_mode = "game"
+
+        if normalized_launch_mode != "join_user" and (not game_id or game_id == ""):
             browser_tracker_id = random.randint(55393295400, 55393295500)
             launch_time = int(time.time() * 1000)
 
@@ -852,22 +997,34 @@ class RobloxAPI:
         browser_tracker_id = random.randint(55393295400, 55393295500)
         launch_time = int(time.time() * 1000)
 
-        place_launch_request = "RequestGame"
-        place_launch_extra = ""
-        if private_server_id:
-            place_launch_extra = "&linkCode=" + private_server_id
-        elif server_job_id:
-            place_launch_request = "RequestGameJob"
-            place_launch_extra = "&gameId=" + str(server_job_id)
+        if normalized_launch_mode == "join_user":
+            place_launch_request = "RequestFollowUser"
+            place_launch_extra = "&userId=" + str(game_id)
+            place_launch_base = (
+                "https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=" + place_launch_request +
+                "&browserTrackerId=" + str(browser_tracker_id) +
+                place_launch_extra
+            )
+        else:
+            place_launch_request = "RequestGame"
+            place_launch_extra = ""
+            if private_server_id:
+                place_launch_extra = "&linkCode=" + private_server_id
+            elif server_job_id:
+                place_launch_request = "RequestGameJob"
+                place_launch_extra = "&gameId=" + str(server_job_id)
+            place_launch_base = (
+                "https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=" + place_launch_request +
+                "&browserTrackerId=" + str(browser_tracker_id) +
+                "&placeId=" + str(game_id) +
+                "&isPlayTogetherGame=false" +
+                place_launch_extra
+            )
 
         url = (
             "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket_encoded +
             "+launchtime:" + str(launch_time) +
-            "+placelauncherurl:https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=" + place_launch_request +
-            "&browserTrackerId=" + str(browser_tracker_id) +
-            "&placeId=" + str(game_id) +
-            "&isPlayTogetherGame=false" +
-            place_launch_extra
+            "+placelauncherurl:" + place_launch_base
         )
 
         url += (
@@ -877,11 +1034,14 @@ class RobloxAPI:
 
         print(f"Launching Roblox...")
         print(f"Account: {username}")
-        print(f"Game ID: {game_id}")
-        if private_server_id:
-            print(f"Private Server: {private_server_id}")
-        elif server_job_id:
-            print(f"Server Job ID: {server_job_id}")
+        if normalized_launch_mode == "join_user":
+            print(f"Join User ID: {game_id}")
+        else:
+            print(f"Game ID: {game_id}")
+            if private_server_id:
+                print(f"Private Server: {private_server_id}")
+            elif server_job_id:
+                print(f"Server Job ID: {server_job_id}")
 
         try:
             if launcher_exe:
@@ -903,11 +1063,7 @@ class RobloxAPI:
                         return True
                     except Exception as exc:
                         _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to -t flow: {exc}")
-                    place_launch_url = (
-                        f"https://assetgame.roblox.com/game/PlaceLauncher.ashx?request={place_launch_request}"
-                        f"&browserTrackerId={browser_tracker_id}&placeId={game_id}&isPlayTogetherGame=false"
-                        f"{place_launch_extra}"
-                    )
+                    place_launch_url = place_launch_base
                     launch_args = [
                         roblox_exe,
                         "-a", "https://www.roblox.com/Login/Negotiate.ashx",

@@ -726,6 +726,8 @@ class AccountManagerUI:
         self.installer_menu = None
         self.add_account_menu = None
         self.account_context_menu = None
+        self.launch_input_context_menu = None
+        self.place_target_context_menu = None
         self.menu_bar_frame = None
         self.menu_buttons = []
         self.version_options = {"Latest Version": None}
@@ -888,21 +890,35 @@ class AccountManagerUI:
         
         self.game_name_label = ttk.Label(right_frame, text="", style="Dark.TLabel", font=("Segoe UI", 9))
         self.game_name_label.pack(anchor="w", pady=(0, 5))
-        
-        ttk.Label(right_frame, text="Place ID", style="Dark.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+
+        self.launch_input_mode = "place_id"
+        self.place_label = ttk.Label(right_frame, text="Place ID", style="Dark.TLabel", font=("Segoe UI", 9, "bold"))
+        self.place_label.pack(anchor="w")
         self.place_entry = ttk.Entry(right_frame, style="Dark.TEntry")
         self.place_entry.pack(fill="x", pady=(0, 5))
         self.place_entry.insert(0, self.settings.get("last_place_id", ""))
         self.place_entry.bind("<KeyRelease>", self.on_place_id_change)
+        self.place_label.bind("<Button-3>", self.show_launch_input_context_menu)
+        self.place_entry.bind("<Button-3>", self.show_launch_input_context_menu)
 
-        ttk.Label(right_frame, text="Private Server ID (Optional)", style="Dark.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        self.private_server_entry = ttk.Entry(right_frame, style="Dark.TEntry")
-        self.private_server_entry.pack(fill="x", pady=(0, 5))
+        self.private_server_field_frame = ttk.Frame(right_frame, style="Dark.TFrame")
+        self.private_server_field_frame.pack(fill="x", pady=(0, 5))
+        self.private_server_label = ttk.Label(
+            self.private_server_field_frame,
+            text="Private Server ID (Optional)",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9, "bold"),
+        )
+        self.private_server_label.pack(anchor="w")
+        self.private_server_entry = ttk.Entry(self.private_server_field_frame, style="Dark.TEntry")
+        self.private_server_entry.pack(fill="x")
         self.private_server_entry.insert(0, self.settings.get("last_private_server", ""))
         self.private_server_entry.bind("<KeyRelease>", self.on_private_server_change)
+        self.private_server_label.bind("<Button-3>", self.show_place_target_context_menu)
+        self.private_server_entry.bind("<Button-3>", self.show_place_target_context_menu)
 
-
-        ttk.Label(right_frame, text="Roblox Version (Optional)", style="Dark.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(5, 0))
+        self.version_label = ttk.Label(right_frame, text="Roblox Version (Optional)", style="Dark.TLabel", font=("Segoe UI", 9, "bold"))
+        self.version_label.pack(anchor="w", pady=(5, 0))
         self.version_var = tk.StringVar()
         self.version_dropdown = ttk.Combobox(
             right_frame,
@@ -928,6 +944,13 @@ class AccountManagerUI:
             command=self.launch_game,
         )
         self.join_place_button.pack(side="left", fill="x", expand=True)
+        self.join_place_button.bind("<Button-3>", self.show_launch_input_context_menu)
+
+        self.launch_input_context_menu = tk.Menu(self.root, tearoff=False)
+        self.place_target_context_menu = tk.Menu(self.root, tearoff=False)
+        self.place_join_target_mode = "private_server"
+        self._set_place_target_mode(self.settings.get("place_join_target_mode", "private_server"), save=False)
+        self._set_launch_input_mode(self.settings.get("launch_input_mode", "place_id"), save=False)
 
         self.run_group_button = ttk.Button(
             self.join_action_frame,
@@ -941,7 +964,8 @@ class AccountManagerUI:
             widget.bind("<Enter>", self._on_join_area_enter)
             widget.bind("<Leave>", self._on_join_area_leave)
         
-        ttk.Label(right_frame, text="Recent games", style="Dark.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 2))
+        self.recent_list_label = ttk.Label(right_frame, text="Recent games", style="Dark.TLabel", font=("Segoe UI", 9, "bold"))
+        self.recent_list_label.pack(anchor="w", pady=(10, 2))
         
         game_list_frame = ttk.Frame(right_frame, style="Dark.TFrame")
         game_list_frame.pack(fill="both", expand=True)
@@ -1014,7 +1038,10 @@ class AccountManagerUI:
         defaults = {
             "last_place_id": "",
             "last_private_server": "",
+            "launch_input_mode": "place_id",
+            "place_join_target_mode": "private_server",
             "game_list": [],
+            "recent_user_list": [],
             "enable_topmost": False,
             "enable_multi_roblox": False,
             "confirm_before_launch": False,
@@ -3236,8 +3263,140 @@ class AccountManagerUI:
         private_server = self.private_server_entry.get().strip()
         self._schedule_setting_save("last_private_server", private_server, delay_ms=250)
 
+    def _normalize_launch_input_mode(self, mode):
+        normalized = str(mode or "place_id").strip().lower()
+        if normalized == "join_user":
+            return "join_user"
+        return "place_id"
+
+    def _normalize_place_target_mode(self, mode):
+        normalized = str(mode or "private_server").strip().lower()
+        if normalized == "job_id":
+            return "job_id"
+        return "private_server"
+
+    def _set_place_target_mode(self, mode, save=True):
+        normalized = self._normalize_place_target_mode(mode)
+        self.place_join_target_mode = normalized
+        if normalized == "job_id":
+            self.private_server_label.configure(text="Job ID (Optional)")
+        else:
+            self.private_server_label.configure(text="Private Server ID (Optional)")
+        if save:
+            self._schedule_setting_save("place_join_target_mode", normalized, delay_ms=0)
+
+    def toggle_place_target_mode(self):
+        next_mode = "job_id" if self._normalize_place_target_mode(self.place_join_target_mode) == "private_server" else "private_server"
+        self._set_place_target_mode(next_mode, save=True)
+
+    def show_place_target_context_menu(self, event):
+        if self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id")) != "place_id":
+            return
+        menu = getattr(self, "place_target_context_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.delete(0, "end")
+            current_mode = self._normalize_place_target_mode(self.place_join_target_mode)
+            target_mode = "job_id" if current_mode == "private_server" else "private_server"
+            target_label = "Join Job ID" if target_mode == "job_id" else "Private Server ID"
+            menu.add_command(
+                label=f"Switch to {target_label}",
+                command=self.toggle_place_target_mode,
+            )
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+
+    def _set_launch_input_mode(self, mode, save=True):
+        normalized = self._normalize_launch_input_mode(mode)
+        self.launch_input_mode = normalized
+
+        is_join_user = normalized == "join_user"
+        self.place_label.configure(text="Join User" if is_join_user else "Place ID")
+        self.join_place_button.configure(text="Join User" if is_join_user else "Join Place ID")
+        if hasattr(self, "recent_list_label") and self.recent_list_label:
+            self.recent_list_label.configure(text="Recent users" if is_join_user else "Recent games")
+
+        private_server_visible = self.private_server_field_frame.winfo_manager()
+        if is_join_user:
+            if private_server_visible:
+                self.private_server_field_frame.pack_forget()
+        else:
+            if not private_server_visible:
+                self.private_server_field_frame.pack(fill="x", pady=(0, 5), before=self.version_label)
+            self._set_place_target_mode(self.place_join_target_mode, save=False)
+
+        if save:
+            self._schedule_setting_save("launch_input_mode", normalized, delay_ms=0)
+
+        if is_join_user:
+            self._last_game_name_query_value = None
+        self.update_game_name()
+        if getattr(self, "game_list", None):
+            self.refresh_game_list()
+
+    def toggle_launch_input_mode(self):
+        next_mode = "join_user" if self._normalize_launch_input_mode(self.launch_input_mode) == "place_id" else "place_id"
+        self._set_launch_input_mode(next_mode, save=True)
+
+    def show_launch_input_context_menu(self, event):
+        menu = getattr(self, "launch_input_context_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.delete(0, "end")
+            current_mode = self._normalize_launch_input_mode(self.launch_input_mode)
+            target_mode = "join_user" if current_mode == "place_id" else "place_id"
+            target_label = "Join User" if target_mode == "join_user" else "Place ID"
+            menu.add_command(
+                label=f"Switch to {target_label}",
+                command=self.toggle_launch_input_mode,
+            )
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+
     def update_game_name(self):
         """Debounced, non-blocking update of the game name label"""
+        if self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id")) == "join_user":
+            join_user_value = self.place_entry.get().strip()
+            if join_user_value == self._last_game_name_query_value:
+                return
+
+            self._last_game_name_query_value = join_user_value
+            self._game_name_request_token += 1
+            request_token = self._game_name_request_token
+
+            if self._game_name_after_id is not None:
+                try:
+                    self.root.after_cancel(self._game_name_after_id)
+                except Exception:
+                    pass
+                self._game_name_after_id = None
+
+            if not join_user_value:
+                self.game_name_label.config(text="")
+                return
+
+            self._set_game_name_label("Checking user status...")
+
+            def schedule_join_user_fetch(token=request_token, user_text=join_user_value):
+                def worker(identifier, active_token):
+                    status = RobloxAPI.get_join_user_status(identifier)
+                    self.root.after(0, lambda: self._handle_join_user_status_result(active_token, status))
+
+                threading.Thread(target=worker, args=(user_text, token), daemon=True).start()
+
+            self._game_name_after_id = self.root.after(350, schedule_join_user_fetch)
+            return
+
         place_id = self.place_entry.get().strip()
         if place_id == self._last_game_name_query_value:
             return
@@ -3271,6 +3430,32 @@ class AccountManagerUI:
             return
         text = f"Current: {name}" if name else ""
         self._set_game_name_label(text)
+
+    def _handle_join_user_status_result(self, token, status):
+        if token != self._game_name_request_token:
+            return
+
+        if not isinstance(status, dict):
+            self._set_game_name_label("User status unavailable")
+            return
+
+        username = str(status.get("username") or "").strip()
+        user_id = str(status.get("user_id") or "").strip()
+        has_identity = bool(username or user_id)
+        if not has_identity:
+            error = str(status.get("error") or "").strip()
+            if error.lower() == "user not found":
+                self._set_game_name_label("User not found")
+            elif error:
+                self._set_game_name_label(f"User status unavailable ({error})")
+            else:
+                self._set_game_name_label("User status unavailable")
+            return
+
+        display_name = username if username else user_id
+        joinable = bool(status.get("joinable", False))
+        state_text = "Joinable" if joinable else "Not Joinable"
+        self._set_game_name_label(f"User: {display_name} | {state_text}")
 
     def _set_game_name_label(self, text):
         if self._game_name_label_after_id is not None:
@@ -3309,9 +3494,57 @@ class AccountManagerUI:
         self.save_settings()
         self.refresh_game_list()
 
+    def add_recent_user_to_list(self, user_id, username=""):
+        """Add a user to the recent users list."""
+        user_id_text = str(user_id or "").strip()
+        username_text = str(username or "").strip()
+        if not user_id_text:
+            return
+
+        recent_users = self.settings.get("recent_user_list", [])
+        if not isinstance(recent_users, list):
+            recent_users = []
+
+        normalized_users = []
+        for row in recent_users:
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("user_id") or "").strip()
+            row_name = str(row.get("username") or "").strip()
+            if not row_id:
+                continue
+            if row_id == user_id_text:
+                continue
+            normalized_users.append({"user_id": row_id, "username": row_name})
+
+        normalized_users.insert(0, {"user_id": user_id_text, "username": username_text})
+        max_games = self.settings.get("max_recent_games", 10)
+        if len(normalized_users) > max_games:
+            normalized_users = normalized_users[:max_games]
+
+        self.settings["recent_user_list"] = normalized_users
+        self.save_settings()
+        self.refresh_game_list()
+
     def refresh_game_list(self):
         """Refresh the game list display"""
         self.game_list.delete(0, tk.END)
+        launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+        if launch_mode == "join_user":
+            for user in self.settings.get("recent_user_list", []):
+                if not isinstance(user, dict):
+                    continue
+                user_id = str(user.get("user_id") or "").strip()
+                username = str(user.get("username") or "").strip()
+                if not user_id:
+                    continue
+                if username:
+                    display_text = f"{username} ({user_id})"
+                else:
+                    display_text = user_id
+                self.game_list.insert(tk.END, display_text)
+            return
+
         for game in self.settings["game_list"]:
             private_server = game.get("private_server", "")
             prefix = "[P] " if private_server else ""
@@ -3323,6 +3556,24 @@ class AccountManagerUI:
         selection = self.game_list.curselection()
         if selection:
             index = selection[0]
+            launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+            if launch_mode == "join_user":
+                recent_users = self.settings.get("recent_user_list", [])
+                if index >= len(recent_users):
+                    return
+                user = recent_users[index]
+                user_id = str(user.get("user_id") or "").strip()
+                username = str(user.get("username") or "").strip()
+                value = username or user_id
+                if not value:
+                    return
+                self.place_entry.delete(0, tk.END)
+                self.place_entry.insert(0, value)
+                self.settings["last_place_id"] = value
+                self.save_settings()
+                self.update_game_name()
+                return
+
             game = self.settings["game_list"][index]
             self.place_entry.delete(0, tk.END)
             self.place_entry.insert(0, game["place_id"])
@@ -3340,10 +3591,30 @@ class AccountManagerUI:
         """Delete selected game from the list"""
         selection = self.game_list.curselection()
         if not selection:
-            messagebox.showwarning("No Selection", "Please select a game to delete.")
+            launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+            thing = "user" if launch_mode == "join_user" else "game"
+            messagebox.showwarning("No Selection", f"Please select a {thing} to delete.")
             return
         
         index = selection[0]
+        launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+        if launch_mode == "join_user":
+            recent_users = self.settings.get("recent_user_list", [])
+            if index >= len(recent_users):
+                return
+            user = recent_users[index]
+            user_id = str(user.get("user_id") or "").strip()
+            username = str(user.get("username") or "").strip()
+            display_name = username or user_id or "this user"
+            confirm = messagebox.askyesno("Confirm Delete", f"Delete '{display_name}' from list?")
+            if confirm:
+                recent_users.pop(index)
+                self.settings["recent_user_list"] = recent_users
+                self.save_settings()
+                self.refresh_game_list()
+                self.show_success_message("User removed from list!")
+            return
+
         game = self.settings["game_list"][index]
         confirm = messagebox.askyesno("Confirm Delete", f"Delete '{game['name']}' from list?")
         if confirm:
@@ -5188,7 +5459,12 @@ class AccountManagerUI:
             return context
 
         mode = str(launch_context.get("mode", "home") or "home").strip().lower()
-        context["mode"] = "game" if mode == "game" else "home"
+        if mode == "game":
+            context["mode"] = "game"
+        elif mode == "join_user":
+            context["mode"] = "join_user"
+        else:
+            context["mode"] = "home"
         context["game_id"] = str(launch_context.get("game_id", "") or "").strip()
         context["private_server_id"] = str(launch_context.get("private_server_id", "") or "").strip()
         context["server_job_id"] = str(launch_context.get("server_job_id", "") or "").strip()
@@ -5300,15 +5576,28 @@ class AccountManagerUI:
         on_done_callback=None,
         trigger_auto_arrange=False,
     ):
-        game_id = self.place_entry.get().strip()
-        private_server = self.private_server_entry.get().strip()
+        target_value = self.place_entry.get().strip()
+        launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+        place_target_mode = self._normalize_place_target_mode(getattr(self, "place_join_target_mode", "private_server"))
+        game_id = target_value
+        place_target_value = self.private_server_entry.get().strip() if launch_mode == "place_id" else ""
+        private_server = place_target_value if (launch_mode == "place_id" and place_target_mode == "private_server") else ""
+        manual_server_job_id = place_target_value if (launch_mode == "place_id" and place_target_mode == "job_id") else ""
 
         selected_version_label = self.version_var.get()
         version_path = self.version_options.get(selected_version_label)
 
-        if not game_id:
-            messagebox.showwarning("Missing Information", "Please enter a Place ID.")
+        if not target_value:
+            required_label = "Join User" if launch_mode == "join_user" else "Place ID"
+            messagebox.showwarning("Missing Information", f"Please enter a {required_label}.")
             return
+
+        if launch_mode == "join_user" and not str(game_id).isdigit():
+            resolved_user_id = RobloxAPI.get_user_id_from_username(game_id)
+            if not resolved_user_id:
+                messagebox.showwarning("User Not Found", f"Could not find Roblox user '{game_id}'.")
+                return
+            game_id = resolved_user_id
 
         if (not skip_confirm) and self.settings.get("confirm_before_launch", True) and len(usernames) > 1:
             prompt = (
@@ -5325,19 +5614,39 @@ class AccountManagerUI:
         randomize_server_jobs = self.settings.get("randomize_server_job_ids", False)
         prefer_small_servers = self.settings.get("prefer_small_public_servers", False)
 
-        def worker(selected_usernames, pid, psid, ver, debug_flag, delay_seconds, randomize_jobs, prefer_small):
+        def worker(selected_usernames, pid, psid, manual_job_id, ver, debug_flag, delay_seconds, randomize_jobs, prefer_small, active_launch_mode, join_input_text):
             success_count = 0
+            recent_join_username = ""
+            if active_launch_mode == "join_user":
+                entered = str(join_input_text or "").strip()
+                if entered and not entered.isdigit():
+                    recent_join_username = entered
+                else:
+                    recent_join_username = RobloxAPI.get_username_from_user_id(pid) or ""
+            if active_launch_mode == "join_user":
+                if psid:
+                    print("[INFO] Private server ID is ignored in Join User mode.")
+                if randomize_jobs or prefer_small:
+                    print("[INFO] Public server selection settings are ignored in Join User mode.")
             if randomize_jobs and psid:
                 print("[INFO] Random Job ID setting ignored because a private server link code is set.")
             if prefer_small and psid:
                 print("[INFO] Lowest-population server setting ignored because a private server link code is set.")
-            if prefer_small and randomize_jobs and not psid:
+            if randomize_jobs and manual_job_id:
+                print("[INFO] Random Job ID setting ignored because a manual Job ID is set.")
+            if prefer_small and manual_job_id:
+                print("[INFO] Lowest-population server setting ignored because a manual Job ID is set.")
+            if prefer_small and randomize_jobs and not psid and not manual_job_id and active_launch_mode != "join_user":
                 print("[INFO] Lowest-population server setting is enabled; random server selection will be ignored.")
             for idx, uname in enumerate(selected_usernames):
                 try:
                     server_job_id = ""
                     effective_server_job_id = ""
-                    if prefer_small and not psid:
+                    if active_launch_mode == "join_user":
+                        server_job_id = ""
+                    elif manual_job_id:
+                        server_job_id = str(manual_job_id).strip()
+                    elif prefer_small and not psid:
                         max_small_server_attempts = 3
                         for attempt in range(1, max_small_server_attempts + 1):
                             server_job_id = RobloxAPI.get_lowest_public_server_job_id(pid) or ""
@@ -5364,10 +5673,18 @@ class AccountManagerUI:
                         psid,
                         ver,
                         enable_debug=debug_flag,
-                        server_job_id=server_job_id
+                        server_job_id=server_job_id,
+                        launch_mode=active_launch_mode,
                     )
                     effective_server_job_id = server_job_id
-                    if (not launched) and server_job_id and (randomize_jobs or prefer_small) and not psid:
+                    if (
+                        active_launch_mode != "join_user"
+                        and (not launched)
+                        and server_job_id
+                        and (randomize_jobs or prefer_small)
+                        and not psid
+                        and not manual_job_id
+                    ):
                         print("[INFO] Server job ID launch failed; retrying with default launch.")
                         launched = self.manager.launch_roblox(
                             uname,
@@ -5375,7 +5692,8 @@ class AccountManagerUI:
                             psid,
                             ver,
                             enable_debug=debug_flag,
-                            server_job_id=""
+                            server_job_id="",
+                            launch_mode=active_launch_mode,
                         )
                         if launched:
                             effective_server_job_id = ""
@@ -5391,7 +5709,7 @@ class AccountManagerUI:
                         before_pids,
                         after_pids,
                         launch_context={
-                            "mode": "game",
+                            "mode": "join_user" if active_launch_mode == "join_user" else "game",
                             "game_id": pid,
                             "private_server_id": psid,
                             "server_job_id": effective_server_job_id,
@@ -5405,11 +5723,14 @@ class AccountManagerUI:
 
             def on_done():
                 if success_count > 0:
-                    gname = RobloxAPI.get_game_name(pid)
-                    if gname:
-                        self.add_game_to_list(pid, gname, psid)
+                    if active_launch_mode != "join_user":
+                        gname = RobloxAPI.get_game_name(pid)
+                        if gname:
+                            self.add_game_to_list(pid, gname, psid)
+                        else:
+                            self.add_game_to_list(pid, f"Place {pid}", psid)
                     else:
-                        self.add_game_to_list(pid, f"Place {pid}", psid)
+                        self.add_recent_user_to_list(pid, recent_join_username)
                     if len(selected_usernames) == 1:
                         self.show_success_message("Roblox is launching! Check your desktop.")
                     else:
@@ -5434,11 +5755,14 @@ class AccountManagerUI:
                 list(usernames),
                 game_id,
                 private_server,
+                manual_server_job_id,
                 version_path,
                 debug_enabled,
                 launch_delay,
                 randomize_server_jobs,
                 prefer_small_servers,
+                launch_mode,
+                target_value,
             ),
             daemon=True
         ).start()
@@ -6927,6 +7251,8 @@ class AccountManagerUI:
                     return cached_name
                 _resolve_game_name_async(place_id)
                 return f"Place {place_id}"
+            if mode == "join_user":
+                return f"Join User {place_id}" if place_id else "Join User"
             if mode == "home":
                 return "Home"
             return "-"
@@ -7504,15 +7830,17 @@ class AccountManagerUI:
 
                     launched = False
                     try:
-                        if context_mode == "game" and str(context.get("game_id") or "").strip():
+                        context_game_id = str(context.get("game_id") or "").strip()
+                        if context_mode in {"game", "join_user"} and context_game_id:
                             launched = bool(
                                 self.manager.launch_roblox(
                                     account,
-                                    str(context.get("game_id") or "").strip(),
+                                    context_game_id,
                                     str(context.get("private_server_id") or "").strip(),
                                     target_version,
                                     enable_debug=debug_enabled,
                                     server_job_id=str(context.get("server_job_id") or "").strip(),
+                                    launch_mode=context_mode,
                                 )
                             )
                         else:
