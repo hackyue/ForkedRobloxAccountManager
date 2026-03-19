@@ -868,6 +868,8 @@ class AccountManagerUI:
         self.account_context_menu.add_command(label="Copy Password", command=self.copy_selected_account_passwords)
         self.account_context_menu.add_command(label="Copy Cookie", command=self.copy_selected_account_cookies)
         self.account_context_menu.add_separator()
+        self.account_context_menu.add_command(label="Validate Account", command=self.validate_account)
+        self.account_context_menu.add_command(label="Edit Note", command=self.edit_account_note)
         self.account_context_menu.add_command(label="Set Group", command=self.edit_account_group)
 
         self.account_drop_indicator = tk.Frame(self.account_list, height=2, bg=self.FG_ACCENT)
@@ -964,9 +966,6 @@ class AccountManagerUI:
         action_frame = ttk.Frame(right_frame, style="Dark.TFrame")
         action_frame.pack(fill="x", pady=(5, 0))
 
-        ttk.Button(action_frame, text="Validate Account", style="Dark.TButton", command=self.validate_account).pack(fill="x", pady=2)
-        ttk.Button(action_frame, text="Edit Note", style="Dark.TButton", command=self.edit_account_note).pack(fill="x", pady=2)
-        ttk.Button(action_frame, text="Set Group", style="Dark.TButton", command=self.edit_account_group).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
 
