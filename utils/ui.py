@@ -721,6 +721,7 @@ class AccountManagerUI:
         self.actions_menu = None
         self.installer_menu = None
         self.add_account_menu = None
+        self.account_context_menu = None
         self.menu_bar_frame = None
         self.menu_buttons = []
         self.version_options = {"Latest Version": None}
@@ -858,8 +859,16 @@ class AccountManagerUI:
         self.account_list.bind("<ButtonPress-1>", self.on_account_drag_start)
         self.account_list.bind("<B1-Motion>", self.on_account_drag_motion)
         self.account_list.bind("<ButtonRelease-1>", self.on_account_drag_stop)
+        self.account_list.bind("<Button-3>", self.show_account_context_menu)
         if self.settings.get("enable_multi_select", False):
             self.account_list.bind("<Control-ButtonPress-1>", self.on_account_ctrl_click)
+
+        self.account_context_menu = tk.Menu(self.root, tearoff=False)
+        self.account_context_menu.add_command(label="Copy Username", command=self.copy_selected_account_usernames)
+        self.account_context_menu.add_command(label="Copy Password", command=self.copy_selected_account_passwords)
+        self.account_context_menu.add_command(label="Copy Cookie", command=self.copy_selected_account_cookies)
+        self.account_context_menu.add_separator()
+        self.account_context_menu.add_command(label="Set Group", command=self.edit_account_group)
 
         self.account_drop_indicator = tk.Frame(self.account_list, height=2, bg=self.FG_ACCENT)
 
@@ -3407,6 +3416,109 @@ class AccountManagerUI:
             return []
         
         return [self._extract_username(self.account_list.get(index)) for index in selections]
+
+    def _get_selected_usernames_silent(self):
+        """Get selected usernames without showing warning popups."""
+        selections = self.account_list.curselection()
+        if not selections:
+            return []
+        return [self._extract_username(self.account_list.get(index)) for index in selections]
+
+    def _copy_text_to_clipboard(self, text):
+        """Copy text to clipboard and return True on success."""
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+            return True
+        except Exception:
+            return False
+
+    def copy_selected_account_usernames(self):
+        usernames = self._get_selected_usernames_silent()
+        if not usernames:
+            messagebox.showwarning("Copy Username", "Please select at least one account first.")
+            return
+
+        unique_usernames = list(dict.fromkeys(usernames))
+        if self._copy_text_to_clipboard("\n".join(unique_usernames)):
+            self.show_success_message("Username copied." if len(unique_usernames) == 1 else "Usernames copied.")
+
+    def copy_selected_account_passwords(self):
+        usernames = self._get_selected_usernames_silent()
+        if not usernames:
+            messagebox.showwarning("Copy Password", "Please select at least one account first.")
+            return
+
+        passwords = []
+        for username in usernames:
+            account_data = self.manager.accounts.get(username)
+            if not isinstance(account_data, dict):
+                continue
+            password_value = str(account_data.get("password", "") or "").strip()
+            if password_value:
+                passwords.append(password_value)
+
+        if not passwords:
+            messagebox.showinfo("Copy Password", "No password found for the selected account(s).")
+            return
+
+        unique_passwords = list(dict.fromkeys(passwords))
+        if self._copy_text_to_clipboard("\n".join(unique_passwords)):
+            self.show_success_message("Password copied." if len(unique_passwords) == 1 else "Passwords copied.")
+
+    def copy_selected_account_cookies(self):
+        usernames = self._get_selected_usernames_silent()
+        if not usernames:
+            messagebox.showwarning("Copy Cookie", "Please select at least one account first.")
+            return
+
+        cookies = []
+        for username in usernames:
+            cookie_value = str(self.manager.get_account_cookie(username) or "").strip()
+            if cookie_value:
+                cookies.append(cookie_value)
+
+        if not cookies:
+            messagebox.showinfo("Copy Cookie", "No cookie found for the selected account(s).")
+            return
+
+        unique_cookies = list(dict.fromkeys(cookies))
+        if self._copy_text_to_clipboard("\n".join(unique_cookies)):
+            self.show_success_message("Cookie copied." if len(unique_cookies) == 1 else "Cookies copied.")
+
+    def show_account_context_menu(self, event):
+        if not self.account_list or self.account_list.size() <= 0:
+            return "break"
+
+        index = self.account_list.nearest(event.y)
+        if index < 0 or index >= self.account_list.size():
+            return "break"
+
+        bbox = self.account_list.bbox(index)
+        if bbox:
+            _, y, _, height = bbox
+            if event.y < y or event.y > (y + height):
+                return "break"
+
+        self._hide_drop_indicator()
+        self._reset_drag_data()
+
+        current_selection = set(self.account_list.curselection())
+        if index not in current_selection:
+            self.account_list.selection_clear(0, tk.END)
+            self.account_list.selection_set(index)
+        self.account_list.activate(index)
+
+        menu = getattr(self, "account_context_menu", None)
+        if menu is None:
+            return "break"
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
 
     def on_account_drag_start(self, event):
         if self.account_list.size() <= 1:
