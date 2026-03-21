@@ -689,6 +689,8 @@ class AccountManagerUI:
 
         self._auto_relaunch_after_id = None
         self._auto_relaunch_in_progress = False
+        self._auto_memory_trim_after_id = None
+        self._auto_memory_trim_in_progress = False
         self._auto_update_check_started = False
         self._auto_update_prompt_shown = False
 
@@ -1039,6 +1041,7 @@ class AccountManagerUI:
         self._schedule_startup_account_validation()
 
         self.root.after(500, self._auto_relaunch_maybe_start)
+        self.root.after(500, self._auto_memory_trim_maybe_start)
         self.root.after(1500, self._auto_update_maybe_start)
 
     def load_settings(self):
@@ -1072,6 +1075,8 @@ class AccountManagerUI:
             "auto_relaunch_enabled": False,
             "auto_relaunch_interval_minutes": 60,
             "auto_relaunch_group": "",
+            "auto_memory_trim_enabled": False,
+            "auto_memory_trim_interval_minutes": 5,
             "auto_arrange_after_group_launch": False,
             "auto_update_enabled": True,
             "installer_previous_versions": MIN_INSTALLER_PREVIOUS_VERSIONS,
@@ -1111,6 +1116,20 @@ class AccountManagerUI:
             )
         except (TypeError, ValueError):
             self.settings["auto_relaunch_interval_minutes"] = 60
+
+        if "auto_memory_trim_interval_seconds" in self.settings:
+            try:
+                old_sec = int(self.settings.pop("auto_memory_trim_interval_seconds", 300) or 300)
+            except (TypeError, ValueError):
+                old_sec = 300
+            migrated = max(1, min(120, int(round(old_sec / 60.0))))
+            self.settings.setdefault("auto_memory_trim_interval_minutes", migrated)
+
+        try:
+            mm = int(self.settings.get("auto_memory_trim_interval_minutes", 5) or 5)
+        except (TypeError, ValueError):
+            mm = 5
+        self.settings["auto_memory_trim_interval_minutes"] = max(1, min(120, mm))
 
     def _ensure_auto_arrange_scope_valid(self):
         """Keep auto-arrange scope sane, especially when only one monitor is available."""
@@ -1368,6 +1387,81 @@ class AccountManagerUI:
                 self._auto_relaunch_in_progress = False
 
         threading.Thread(target=worker, args=(group, list(usernames)), daemon=True).start()
+
+    def _auto_memory_trim_maybe_start(self):
+        if self.settings.get("auto_memory_trim_enabled", False):
+            self._auto_memory_trim_start()
+
+    def _auto_memory_trim_stop(self):
+        after_id = getattr(self, "_auto_memory_trim_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        self._auto_memory_trim_after_id = None
+
+    def _auto_memory_trim_config_valid(self):
+        if platform.system() != "Windows":
+            return False
+        if not self.settings.get("auto_memory_trim_enabled", False):
+            return False
+        try:
+            minutes = int(self.settings.get("auto_memory_trim_interval_minutes", 5) or 5)
+        except (TypeError, ValueError):
+            return False
+        return 1 <= minutes <= 120
+
+    def _auto_memory_trim_start(self):
+        self._auto_memory_trim_stop()
+        if not self._auto_memory_trim_config_valid():
+            return
+        minutes = int(self.settings.get("auto_memory_trim_interval_minutes", 5) or 5)
+        minutes = max(1, min(120, minutes))
+        interval_ms = max(1, minutes) * 60 * 1000
+        self._auto_memory_trim_after_id = self.root.after(
+            interval_ms, self._auto_memory_trim_tick
+        )
+
+    def _auto_memory_trim_tick(self):
+        self._auto_memory_trim_after_id = None
+
+        if self._auto_memory_trim_config_valid():
+            minutes = int(self.settings.get("auto_memory_trim_interval_minutes", 5) or 5)
+            minutes = max(1, min(120, minutes))
+            interval_ms = minutes * 60 * 1000
+            self._auto_memory_trim_after_id = self.root.after(
+                interval_ms, self._auto_memory_trim_tick
+            )
+
+        self._auto_memory_trim_run_once()
+
+    def _auto_memory_trim_run_once(self):
+        if platform.system() != "Windows":
+            return
+        if not self.settings.get("auto_memory_trim_enabled", False):
+            return
+        if getattr(self, "_auto_memory_trim_in_progress", False):
+            return
+
+        self._auto_memory_trim_in_progress = True
+
+        def worker():
+            try:
+                wins = self._memtrim_find_roblox_windows()
+                if wins:
+                    self._memtrim_run_pass(wins)
+            finally:
+                def _clear_busy():
+                    self._auto_memory_trim_in_progress = False
+
+                try:
+                    self.root.after(0, _clear_busy)
+                except Exception:
+                    self._auto_memory_trim_in_progress = False
+
+        threading.Thread(target=worker, daemon=True, name="auto-memory-trim").start()
 
     def _close_all_roblox_clients_silent(self):
         exes = set(self.ROBLOX_CLIENT_EXECUTABLES)
@@ -6314,8 +6408,25 @@ class AccountManagerUI:
         automation_tab = create_tab_frame("automation")
         advanced_tab = create_tab_frame("advanced")
 
+        def _settings_resolve_wheel_widget(w):
+            if w is None:
+                return None
+            if not isinstance(w, str):
+                return w
+            path = w.strip()
+            while path:
+                for base in (self.root, settings_window):
+                    try:
+                        return base.nametowidget(path)
+                    except (tk.TclError, KeyError):
+                        continue
+                if "." not in path or path == ".":
+                    break
+                path = path.rsplit(".", 1)[0]
+            return None
+
         def _settings_wheel_target_canvas(event_widget):
-            w = event_widget
+            w = _settings_resolve_wheel_widget(event_widget)
             while w is not None:
                 if isinstance(w, tk.Canvas):
                     for _tab_name, data in tab_scroll_state.items():
@@ -6323,13 +6434,13 @@ class AccountManagerUI:
                             return w
                 try:
                     w = w.master
-                except tk.TclError:
+                except (tk.TclError, AttributeError):
                     break
             return None
 
         def _settings_event_in_window(event_widget, toplevel):
             sw = str(toplevel)
-            w = event_widget
+            w = _settings_resolve_wheel_widget(event_widget)
             while w is not None:
                 try:
                     wid = str(w)
@@ -6339,18 +6450,18 @@ class AccountManagerUI:
                     return True
                 try:
                     w = w.master
-                except tk.TclError:
+                except (tk.TclError, AttributeError):
                     break
             return False
 
         def _settings_wheel_on_nested_control(event_widget):
-            w = event_widget
+            w = _settings_resolve_wheel_widget(event_widget)
             while w is not None:
                 if isinstance(w, (tk.Spinbox, ttk.Spinbox, ttk.Combobox)):
                     return True
                 try:
                     w = w.master
-                except tk.TclError:
+                except (tk.TclError, AttributeError):
                     break
             return False
 
@@ -6396,7 +6507,8 @@ class AccountManagerUI:
             settings_window.bind_all("<Button-5>", _settings_on_mousewheel)
 
         def _on_settings_window_destroy(event):
-            if event.widget is not settings_window:
+            destroyed = _settings_resolve_wheel_widget(event.widget)
+            if destroyed is not settings_window:
                 return
             _teardown_settings_mousewheel()
 
@@ -7028,6 +7140,82 @@ class AccountManagerUI:
             style="Dark.TButton",
             command=self._auto_relaunch_run_once
         ).pack(fill="x", pady=(10, 0))
+
+        _auto_trim_win = platform.system() == "Windows"
+        auto_memory_trim_enabled_var = tk.BooleanVar(
+            value=bool(self.settings.get("auto_memory_trim_enabled", False))
+        )
+        auto_memory_trim_interval_var = tk.IntVar(
+            value=int(self.settings.get("auto_memory_trim_interval_minutes", 5) or 5)
+        )
+
+        def on_auto_memory_trim_update(*_):
+            if not _auto_trim_win:
+                return
+            try:
+                minutes = int(auto_memory_trim_interval_var.get())
+            except (tk.TclError, ValueError):
+                minutes = 5
+            minutes = max(1, min(120, minutes))
+            if auto_memory_trim_interval_var.get() != minutes:
+                auto_memory_trim_interval_var.set(minutes)
+
+            self.settings["auto_memory_trim_enabled"] = bool(auto_memory_trim_enabled_var.get())
+            self.settings["auto_memory_trim_interval_minutes"] = int(minutes)
+            self.save_settings()
+
+            if self._auto_memory_trim_config_valid():
+                self._auto_memory_trim_start()
+            else:
+                self._auto_memory_trim_stop()
+
+        auto_trim_card = create_settings_card(
+            automation_tab,
+            "Auto Trim Roblox Memory",
+            "Automatically trims Roblox's memory on interval",
+        )
+
+        auto_trim_ctrl_state = "normal" if _auto_trim_win else "disabled"
+        ttk.Checkbutton(
+            auto_trim_card,
+            text="Enable Auto Trim Memory",
+            variable=auto_memory_trim_enabled_var,
+            style="Dark.TCheckbutton",
+            command=on_auto_memory_trim_update,
+            state=auto_trim_ctrl_state,
+        ).pack(anchor="w", pady=2)
+
+        auto_trim_interval_frame = ttk.Frame(auto_trim_card, style="Dark.TFrame")
+        auto_trim_interval_frame.pack(fill="x", pady=(4, 0))
+        ttk.Label(
+            auto_trim_interval_frame,
+            text="Interval (minutes)",
+            style="Dark.TLabel",
+        ).pack(side="left")
+
+        auto_trim_interval_spin = ttk.Spinbox(
+            auto_trim_interval_frame,
+            from_=1,
+            to=120,
+            increment=1,
+            textvariable=auto_memory_trim_interval_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_auto_memory_trim_update,
+            state=auto_trim_ctrl_state,
+        )
+        auto_trim_interval_spin.pack(side="right")
+        auto_trim_interval_spin.bind("<FocusOut>", lambda _: on_auto_memory_trim_update())
+        auto_trim_interval_spin.bind("<Return>", lambda _: on_auto_memory_trim_update())
+
+        if not _auto_trim_win:
+            ttk.Label(
+                auto_trim_card,
+                text="Windows only.",
+                style="Dark.TLabel",
+                foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+            ).pack(anchor="w", pady=(6, 0))
 
         logging_card = create_settings_card(advanced_tab, "Diagnostics")
 
