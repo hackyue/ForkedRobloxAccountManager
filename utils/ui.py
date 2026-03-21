@@ -1,4 +1,4 @@
-"""
+﻿"""
 UI Module for Roblox Account Manager
 Contains the main AccountManagerUI class
 """
@@ -681,7 +681,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.4.2"
+        self.APP_VERSION = "2.4.3"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -760,7 +760,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.4.2 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.4.3 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
