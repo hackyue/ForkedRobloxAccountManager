@@ -1,4 +1,4 @@
-﻿"""
+"""
 UI Module for Roblox Account Manager
 Contains the main AccountManagerUI class
 """
@@ -996,6 +996,13 @@ class AccountManagerUI:
 
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
+        self.trim_roblox_memory_btn = ttk.Button(
+            action_frame,
+            text="Trim Roblox Memory",
+            style="Dark.TButton",
+            command=self.trim_roblox_memory,
+        )
+        self.trim_roblox_memory_btn.pack(fill="x", pady=2)
 
         bottom_frame = ttk.Frame(self.root, style="Dark.TFrame")
         bottom_frame.pack(fill="x", padx=10, pady=(5, 10), anchor='s')
@@ -4675,6 +4682,209 @@ class AccountManagerUI:
                 f"Unable to close Roblox instances. Details:\n{combined_output.strip() or 'Unknown error.'}"
             )
 
+    _MEMORY_TRIM_SET_QUOTA = 0x0100
+    _MEMORY_TRIM_QUERY = 0x0400
+    _MEMORY_TRIM_VM_OP = 0x0008
+    _MEMORY_TRIM_SIZE_T_MAX = ctypes.c_size_t(-1).value
+
+    class _MemoryTrimProcessCounters(ctypes.Structure):
+        """Layout for psapi.GetProcessMemoryInfo (working set size)."""
+
+        _fields_ = [
+            ("cb", ctypes.c_ulong),
+            ("PageFaultCount", ctypes.c_ulong),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    @classmethod
+    def _memtrim_find_roblox_windows(cls):
+        """Return [(hwnd, title, pid)] for visible Roblox client windows (memory trim)."""
+        if platform.system() != "Windows" or win32gui is None or win32process is None:
+            return []
+
+        results = []
+
+        def enum_handler(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+
+            title = win32gui.GetWindowText(hwnd)
+            window_class = win32gui.GetClassName(hwnd)
+            if "Roblox" not in title and window_class != "WINDOWSCLIENT":
+                return True
+
+            try:
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                try:
+                    import psutil
+
+                    if "roblox" in psutil.Process(pid).name().lower():
+                        results.append((hwnd, title, pid))
+                except ImportError:
+                    if "Roblox" in title:
+                        results.append((hwnd, title, pid))
+            except Exception:
+                if "Roblox" in title:
+                    results.append((hwnd, title, 0))
+
+            return True
+
+        win32gui.EnumWindows(enum_handler, None)
+        return results
+
+    @classmethod
+    def _memtrim_get_working_set(cls, pid):
+        """Return working set size in bytes, or None."""
+        if not pid or platform.system() != "Windows":
+            return None
+
+        access = cls._MEMORY_TRIM_QUERY | cls._MEMORY_TRIM_VM_OP
+        try:
+            handle = ctypes.windll.kernel32.OpenProcess(access, False, pid)
+            if not handle:
+                return None
+
+            pmc = cls._MemoryTrimProcessCounters()
+            pmc.cb = ctypes.sizeof(pmc)
+            ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+                handle, ctypes.byref(pmc), ctypes.sizeof(pmc)
+            )
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return pmc.WorkingSetSize if ok else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _memtrim_pid(cls, pid):
+        """Call SetProcessWorkingSetSize on pid. Returns (ok, message)."""
+        if not pid or platform.system() != "Windows":
+            return False, "invalid pid"
+
+        access = (
+            cls._MEMORY_TRIM_SET_QUOTA
+            | cls._MEMORY_TRIM_QUERY
+            | cls._MEMORY_TRIM_VM_OP
+        )
+        try:
+            handle = ctypes.windll.kernel32.OpenProcess(access, False, pid)
+            if not handle:
+                err = ctypes.windll.kernel32.GetLastError()
+                return False, f"OpenProcess failed (err={err})"
+
+            size_max = ctypes.c_size_t(cls._MEMORY_TRIM_SIZE_T_MAX)
+            ok = ctypes.windll.kernel32.SetProcessWorkingSetSize(
+                handle, size_max, size_max
+            )
+            ctypes.windll.kernel32.CloseHandle(handle)
+            if ok:
+                return True, "ok"
+
+            err = ctypes.windll.kernel32.GetLastError()
+            return False, f"SetProcessWorkingSetSize failed (err={err})"
+        except Exception as exc:
+            return False, str(exc)
+
+    @classmethod
+    def _memtrim_run_pass(cls, windows, on_result=None):
+        """Trim each unique PID in windows; optional per-row callback."""
+        seen = {}
+        results = []
+        for hwnd, title, pid in windows:
+            if pid in seen:
+                row = (hwnd, title, pid, None, None, True, "shared pid")
+            else:
+                before = cls._memtrim_get_working_set(pid)
+                ok, msg = cls._memtrim_pid(pid)
+                time.sleep(0.05)
+                after = cls._memtrim_get_working_set(pid) if ok else before
+                seen[pid] = (before, after)
+                row = (hwnd, title, pid, before, after, ok, msg)
+            results.append(row)
+            if on_result:
+                on_result(*row)
+        return results
+
+    @classmethod
+    def _memtrim_summarize(cls, results):
+        """Aggregate totals and failure list from _memtrim_run_pass output."""
+        total_before = 0
+        total_after = 0
+        failures = []
+        for _hwnd, title, _pid, before, after, ok, msg in results:
+            if before:
+                total_before += before
+            if after:
+                total_after += after
+            if not ok and msg != "shared pid":
+                failures.append((title, msg))
+        saved_mb = (
+            (total_before - total_after) / (1024 * 1024)
+            if total_before and total_after
+            else 0.0
+        )
+        return total_before, total_after, saved_mb, failures
+
+    def trim_roblox_memory(self):
+        """Trim working sets of running Roblox clients to reclaim idle RAM (Windows)."""
+        if platform.system() != "Windows":
+            messagebox.showerror(
+                "Trim Roblox Memory",
+                "This feature is only available on Windows.",
+            )
+            return
+
+        wins = self._memtrim_find_roblox_windows()
+        if not wins:
+            messagebox.showinfo(
+                "Trim Roblox Memory",
+                "No Roblox windows found. Open Roblox and try again.",
+            )
+            return
+
+        try:
+            self.trim_roblox_memory_btn.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+        def worker():
+            results = self._memtrim_run_pass(wins)
+
+            def finish():
+                try:
+                    self.trim_roblox_memory_btn.configure(state="normal")
+                except tk.TclError:
+                    pass
+
+                _tb, _ta, saved_mb, failures = self._memtrim_summarize(results)
+                unique_pids = len({row[2] for row in results if row[2]})
+                lines = [
+                    f"Trimmed {len(wins)} window(s) ({unique_pids} unique process(es)).",
+                    f"Approx. working set reduction this pass: {saved_mb:+.1f} MB",
+                ]
+                if failures:
+                    lines.append("")
+                    lines.append(
+                        "Some processes could not be trimmed (try running as Administrator):"
+                    )
+                    for title, msg in failures[:5]:
+                        lines.append(f"  • {title[:48]}: {msg}")
+                    if len(failures) > 5:
+                        lines.append(f"  … and {len(failures) - 5} more.")
+                    messagebox.showwarning("Trim Roblox Memory", "\n".join(lines))
+                else:
+                    self.show_success_message("\n".join(lines), title="Trim Roblox Memory")
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True, name="roblox-memory-trim").start()
+
     def auto_arrange_clients(self):
         """Automatically tile active Roblox client windows on the primary monitor."""
         if platform.system() != "Windows" or not win32gui:
@@ -5286,7 +5496,7 @@ class AccountManagerUI:
             messagebox.showwarning(
                 "Browser Required",
                 "Launching browser requires Google Chrome or Mozilla Firefox to be installed.\n"
-                "Please install one of them and try again."
+                "Please install one and try again."
             )
             return
 
