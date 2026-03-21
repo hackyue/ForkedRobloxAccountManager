@@ -47,8 +47,9 @@ from classes.fastflags import FastFlagsManager
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
 ROBLOX_DEPLOY_HISTORY_URL = "https://setup.rbxcdn.com/DeployHistory.txt"
 DISCORD_SERVER_URL = "https://discord.gg/SpMTxg8YjJ"
-DISCORD_LOGO_URL = "https://cdn.prod.website-files.com/6257adef93867e50d84d30e2/67ed8194f41d7d8eade32c90_Logo.svg"
-DISCORD_LOGO_PNG_FALLBACK_URL = "https://cdn-icons-png.flaticon.com/512/2111/2111370.png"
+DISCORD_LOGO_URL = (
+    "https://raw.githubusercontent.com/hackyue/icons/refs/heads/main/discord-square-color-icon.png"
+)
 
 ROBLOX_DOWNLOAD_HEADERS = {
     "User-Agent": (
@@ -2570,13 +2571,13 @@ class AccountManagerUI:
         except Exception as e:
             print(f"Failed to save settings: {e}")
 
-    def _load_discord_button_image(self, size=20):
-        """Load a real Discord logo image for the settings header button."""
+    def _load_discord_button_image(self, size=32):
+        """Load Discord logo PNG for the settings header button (cached under AccountManagerData/cache)."""
         if self._discord_button_image is not None:
             return self._discord_button_image
 
         cache_dir = os.path.join(self.data_folder, "cache")
-        png_path = os.path.join(cache_dir, f"discord_logo_{int(size)}.png")
+        png_path = os.path.join(cache_dir, f"discord_square_logo_{int(size)}.png")
 
         def _load_png(path):
             try:
@@ -2603,42 +2604,8 @@ class AccountManagerUI:
             if image is not None:
                 return image
 
-        svg_bytes = b""
         try:
             response = requests.get(DISCORD_LOGO_URL, timeout=10)
-            if response.status_code == 200 and response.content:
-                content_type = (response.headers.get("Content-Type", "") or "").lower()
-                if response.content.startswith(b"\x89PNG\r\n\x1a\n"):
-                    with open(png_path, "wb") as cache_fp:
-                        cache_fp.write(response.content)
-                    image = _load_png(png_path)
-                    if image is not None:
-                        return image
-                elif ("svg" in content_type) or (b"<svg" in response.content[:400].lower()):
-                    svg_bytes = response.content
-        except Exception:
-            svg_bytes = b""
-
-        if svg_bytes:
-            try:
-                import cairosvg
-                png_bytes = cairosvg.svg2png(
-                    bytestring=svg_bytes,
-                    output_width=int(size),
-                    output_height=int(size),
-                )
-                if png_bytes:
-                    with open(png_path, "wb") as cache_fp:
-                        cache_fp.write(png_bytes)
-                    image = _load_png(png_path)
-                    if image is not None:
-                        return image
-            except Exception:
-                pass
-
-        # Fallback: direct PNG logo URL (no SVG conversion required).
-        try:
-            response = requests.get(DISCORD_LOGO_PNG_FALLBACK_URL, timeout=10)
             if response.status_code == 200 and response.content.startswith(b"\x89PNG\r\n\x1a\n"):
                 with open(png_path, "wb") as cache_fp:
                     cache_fp.write(response.content)
@@ -6152,24 +6119,32 @@ class AccountManagerUI:
                 parent=settings_window,
             )
 
-        discord_button_kwargs = {
-            "style": "Dark.TButton",
-            "command": open_discord_server,
-        }
-
-        discord_image = self._load_discord_button_image(size=20)
+        discord_image = self._load_discord_button_image(size=32)
         if discord_image is not None:
             self._settings_discord_icon = discord_image
-            discord_button_kwargs["image"] = discord_image
-            discord_button_kwargs["width"] = 3
+            discord_click_target = tk.Label(
+                header_row,
+                image=discord_image,
+                bg=self.BG_DARK,
+                bd=0,
+                highlightthickness=0,
+                cursor="hand2",
+            )
         else:
             self._settings_discord_icon = None
-            discord_button_kwargs["text"] = "Discord"
+            discord_click_target = tk.Label(
+                header_row,
+                text="Discord",
+                bg=self.BG_DARK,
+                fg=self.FG_ACCENT,
+                font=("Segoe UI", 11, "underline"),
+                bd=0,
+                highlightthickness=0,
+                cursor="hand2",
+            )
 
-        ttk.Button(
-            header_row,
-            **discord_button_kwargs,
-        ).pack(side="right", padx=(8, 0), pady=(0, 8))
+        discord_click_target.bind("<Button-1>", lambda _e: open_discord_server())
+        discord_click_target.pack(side="right", padx=(8, 0), pady=(0, 8))
         
         topmost_var = tk.BooleanVar(value=self.settings.get("enable_topmost", False))
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
@@ -6338,6 +6313,94 @@ class AccountManagerUI:
         roblox_tab = create_tab_frame("roblox")
         automation_tab = create_tab_frame("automation")
         advanced_tab = create_tab_frame("advanced")
+
+        def _settings_wheel_target_canvas(event_widget):
+            w = event_widget
+            while w is not None:
+                if isinstance(w, tk.Canvas):
+                    for _tab_name, data in tab_scroll_state.items():
+                        if data.get("canvas") is w:
+                            return w
+                try:
+                    w = w.master
+                except tk.TclError:
+                    break
+            return None
+
+        def _settings_event_in_window(event_widget, toplevel):
+            sw = str(toplevel)
+            w = event_widget
+            while w is not None:
+                try:
+                    wid = str(w)
+                except tk.TclError:
+                    break
+                if wid == sw or wid.startswith(sw + "."):
+                    return True
+                try:
+                    w = w.master
+                except tk.TclError:
+                    break
+            return False
+
+        def _settings_wheel_on_nested_control(event_widget):
+            w = event_widget
+            while w is not None:
+                if isinstance(w, (tk.Spinbox, ttk.Spinbox, ttk.Combobox)):
+                    return True
+                try:
+                    w = w.master
+                except tk.TclError:
+                    break
+            return False
+
+        def _settings_on_mousewheel(event):
+            if not _settings_event_in_window(event.widget, settings_window):
+                return
+            if _settings_wheel_on_nested_control(event.widget):
+                return
+
+            canvas = _settings_wheel_target_canvas(event.widget)
+            if canvas is None:
+                return
+
+            system = platform.system()
+            if system == "Linux":
+                if event.num == 4:
+                    canvas.yview_scroll(-1, "units")
+                elif event.num == 5:
+                    canvas.yview_scroll(1, "units")
+                else:
+                    return
+            else:
+                delta = getattr(event, "delta", 0) or 0
+                if not delta:
+                    return
+                if system == "Darwin":
+                    steps = int(-delta) if abs(delta) < 100 else int(-delta / 120)
+                else:
+                    steps = int(-delta / 120)
+                if steps:
+                    canvas.yview_scroll(steps, "units")
+
+        def _teardown_settings_mousewheel():
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                try:
+                    settings_window.unbind_all(seq)
+                except tk.TclError:
+                    pass
+
+        settings_window.bind_all("<MouseWheel>", _settings_on_mousewheel)
+        if platform.system() == "Linux":
+            settings_window.bind_all("<Button-4>", _settings_on_mousewheel)
+            settings_window.bind_all("<Button-5>", _settings_on_mousewheel)
+
+        def _on_settings_window_destroy(event):
+            if event.widget is not settings_window:
+                return
+            _teardown_settings_mousewheel()
+
+        settings_window.bind("<Destroy>", _on_settings_window_destroy)
 
         def create_settings_card(parent, title, subtitle=""):
             outer = tk.Frame(
