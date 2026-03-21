@@ -1140,14 +1140,15 @@ class RobloxAccountManager:
             return self.accounts[username]['cookie']
         return None
     
-    def validate_account(self, username):
+    def validate_account(self, username, verbose=True):
         """Validate if an account's cookie is still valid"""
         cookie = self.get_account_cookie(username)
         if not cookie:
-            print(f"[ERROR] Account '{username}' not found")
+            if verbose:
+                print(f"[ERROR] Account '{username}' not found")
             return False
         
-        return RobloxAPI.validate_account(username, cookie)
+        return RobloxAPI.validate_account(username, cookie, verbose=verbose)
     
     def launch_home(self, username, preferred_browser="auto"):
         """Launch browser to Roblox home with account logged in (Chrome/Firefox)."""

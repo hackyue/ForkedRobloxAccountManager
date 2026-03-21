@@ -1091,8 +1091,8 @@ class RobloxAPI:
             return False
     
     @staticmethod
-    def validate_account(username, cookie):
-        """Validate if an account's cookie is still valid and show detailed token info"""
+    def validate_account(username, cookie, verbose=True):
+        """Validate if an account's cookie is still valid and optionally print token details."""
         try:
             normalized_cookie = RobloxAPI._normalize_roblosecurity_cookie(cookie)
             headers = {
@@ -1106,43 +1106,45 @@ class RobloxAPI:
             )
             
             is_valid = response.status_code == 200
+
+            if verbose:
+                print(f"\n{'='*60}")
+                print(f"ACCOUNT VALIDATION: {username}")
+                print(f"{'='*60}")
+                print(f"Valid: {'Yes' if is_valid else 'No'}")
             
-            print(f"\n{'='*60}")
-            print(f"ACCOUNT VALIDATION: {username}")
-            print(f"{'='*60}")
-            print(f"Valid: {'Yes' if is_valid else 'No'}")
+                print(f"Token: {RobloxAPI._format_token_preview(normalized_cookie)}")
+                print(f"Token Length: {len(normalized_cookie)} characters")
             
-            print(f"Token: {RobloxAPI._format_token_preview(normalized_cookie)}")
-            print(f"Token Length: {len(normalized_cookie)} characters")
-            
-            if is_valid and response.status_code == 200:
-                try:
-                    user_data = response.json()
-                    print(f"User ID: {user_data.get('id', 'Unknown')}")
-                    print(f"Display Name: {user_data.get('displayName', 'Unknown')}")
-                    print(f"Username: {user_data.get('name', 'Unknown')}")
-                except:
-                    print("Additional info: Could not retrieve user details")
-            else:
-                print(f"Status Code: {response.status_code}")
-                if response.status_code == 401:
-                    print("Reason: Token expired or invalid")
-                elif response.status_code == 403:
-                    print("Reason: Access forbidden")
+                if is_valid and response.status_code == 200:
+                    try:
+                        user_data = response.json()
+                        print(f"User ID: {user_data.get('id', 'Unknown')}")
+                        print(f"Display Name: {user_data.get('displayName', 'Unknown')}")
+                        print(f"Username: {user_data.get('name', 'Unknown')}")
+                    except Exception:
+                        print("Additional info: Could not retrieve user details")
                 else:
-                    print("Reason: Unknown error")
+                    print(f"Status Code: {response.status_code}")
+                    if response.status_code == 401:
+                        print("Reason: Token expired or invalid")
+                    elif response.status_code == 403:
+                        print("Reason: Access forbidden")
+                    else:
+                        print("Reason: Unknown error")
             
-            print(f"{'='*60}")
+                print(f"{'='*60}")
             return is_valid
             
         except Exception as e:
-            print(f"\n{'='*60}")
-            print(f"ACCOUNT VALIDATION: {username}")
-            print(f"{'='*60}")
-            print(f"Valid: No")
-            print(f"Token: {RobloxAPI._format_token_preview(cookie)}")
-            print(f"Error: {str(e)}")
-            print(f"{'='*60}")
+            if verbose:
+                print(f"\n{'='*60}")
+                print(f"ACCOUNT VALIDATION: {username}")
+                print(f"{'='*60}")
+                print(f"Valid: No")
+                print(f"Token: {RobloxAPI._format_token_preview(cookie)}")
+                print(f"Error: {str(e)}")
+                print(f"{'='*60}")
             return False
 
     @staticmethod

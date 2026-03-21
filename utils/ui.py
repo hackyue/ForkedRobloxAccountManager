@@ -3786,7 +3786,7 @@ class AccountManagerUI:
             status_updates = {}
             for uname in all_usernames:
                 try:
-                    status_updates[uname] = bool(self.manager.validate_account(uname))
+                    status_updates[uname] = bool(self.manager.validate_account(uname, verbose=False))
                 except Exception:
                     status_updates[uname] = False
 
@@ -3794,6 +3794,9 @@ class AccountManagerUI:
                 self._startup_validation_in_progress = False
                 self._account_validation_status.update(status_updates)
                 self.refresh_accounts()
+                total = len(all_usernames)
+                passed = sum(1 for u in all_usernames if status_updates.get(u))
+                print(f"[INFO] {passed}/{total} Accounts Passed validation")
 
             self.root.after(0, done)
 
