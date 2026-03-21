@@ -237,7 +237,7 @@ THEMES = {
         "font": "Consolas",
         "font_size": 10
     },
-    "Voxlis Vapor": {
+    "Vapor": {
         "root_bg": "#042f33",
         "frame_bg": "#0a3f4b",
         "panel_bg": "#0e4c5c",
