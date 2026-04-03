@@ -46,6 +46,9 @@ from classes.fastflags import FastFlagsManager
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
 ROBLOX_DEPLOY_HISTORY_URL = "https://setup.rbxcdn.com/DeployHistory.txt"
+WEAO_VERSIONS_CURRENT_PATH = "/api/versions/current"
+WEAO_API_HOSTS = ("weao.xyz", "whatexpsare.online", "weao.gg", "whatexploitsaretra.sh")
+WEAO_API_USER_AGENT = "WEAO-3PService"
 DISCORD_SERVER_URL = "https://discord.gg/SpMTxg8YjJ"
 DISCORD_LOGO_URL = (
     "https://raw.githubusercontent.com/hackyue/icons/refs/heads/main/discord-square-color-icon.png"
@@ -2547,11 +2550,48 @@ class AccountManagerUI:
 
         return versions
 
+    def _fetch_weao_current_live_version(self):
+        """Windows Player hash for current LIVE from WEAO GET /api/versions/current (any official host)."""
+        session = requests.Session()
+        session.trust_env = False
+        session.proxies = {}
+        headers = {"User-Agent": WEAO_API_USER_AGENT}
+        last_exc = None
+        for host in WEAO_API_HOSTS:
+            url = f"https://{host}{WEAO_VERSIONS_CURRENT_PATH}"
+            try:
+                response = session.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+            except Exception as exc:
+                last_exc = exc
+                continue
+
+            if not isinstance(data, dict) or data.get("error"):
+                continue
+
+            win = data.get("Windows")
+            if not win or not isinstance(win, str):
+                continue
+            win = win.strip()
+            if not re.fullmatch(r"version-[0-9a-fA-F]+", win):
+                continue
+            return win
+
+        if last_exc is not None:
+            print(f"Failed to fetch WEAO current LIVE version: {last_exc}")
+        return None
+
     def fetch_remote_versions(self, limit=5):
         """Fetch Roblox version history from Roblox CDN (LIVE channel)."""
         history_url = "https://setup.rbxcdn.com/DeployHistory.txt"
         versions = []
         seen_versions = set()
+
+        weao_live = self._fetch_weao_current_live_version()
+        if weao_live:
+            seen_versions.add(weao_live)
+            versions.append({"version": weao_live, "status": "LIVE"})
 
         try:
             response = self._get_http_session().get(history_url, timeout=5)
@@ -2574,7 +2614,7 @@ class AccountManagerUI:
             if version in seen_versions:
                 continue
             seen_versions.add(version)
-            status = "LIVE" if not versions else "PAST"
+            status = "LIVE" if not weao_live and not versions else "PAST"
             versions.append({"version": version, "status": status})
             if limit and len(versions) >= limit:
                 break
@@ -3339,6 +3379,8 @@ class AccountManagerUI:
 
     def _normalize_place_target_mode(self, mode):
         normalized = str(mode or "private_server").strip().lower()
+        if normalized == "subplaces":
+            return "subplaces"
         if normalized == "job_id":
             return "job_id"
         return "private_server"
@@ -3348,14 +3390,138 @@ class AccountManagerUI:
         self.place_join_target_mode = normalized
         if normalized == "job_id":
             self.private_server_label.configure(text="Job ID (Optional)")
+        elif normalized == "subplaces":
+            self.private_server_label.configure(text="SubPlace ID (Optional)")
         else:
             self.private_server_label.configure(text="Private Server ID (Optional)")
         if save:
             self._schedule_setting_save("place_join_target_mode", normalized, delay_ms=0)
 
     def toggle_place_target_mode(self):
-        next_mode = "job_id" if self._normalize_place_target_mode(self.place_join_target_mode) == "private_server" else "private_server"
+        current_mode = self._normalize_place_target_mode(self.place_join_target_mode)
+        if current_mode == "private_server":
+            next_mode = "job_id"
+        elif current_mode == "job_id":
+            next_mode = "subplaces"
+        else:
+            next_mode = "private_server"
         self._set_place_target_mode(next_mode, save=True)
+
+    def _set_place_target_mode_from_menu(self, mode):
+        normalized = self._normalize_place_target_mode(mode)
+        self._set_place_target_mode(normalized, save=True)
+        if normalized == "subplaces":
+            self.open_subplaces_selector()
+
+    def open_subplaces_selector(self):
+        if self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id")) != "place_id":
+            return
+
+        place_id = str(self.place_entry.get() or "").strip()
+        if not place_id:
+            messagebox.showwarning("Missing Place ID", "Enter a Place ID first to load subplaces.")
+            return
+        if not place_id.isdigit():
+            messagebox.showwarning("Invalid Place ID", "Place ID must be numeric to load subplaces.")
+            return
+
+        def worker(base_place_id):
+            subplaces = RobloxAPI.get_subplaces(base_place_id)
+
+            def on_result():
+                if not subplaces:
+                    messagebox.showinfo("SubPlaces", f"No subplaces found for Place ID {base_place_id}.")
+                    return
+                self._show_subplaces_window(base_place_id, subplaces)
+
+            self.root.after(0, on_result)
+
+        threading.Thread(target=worker, args=(place_id,), daemon=True).start()
+
+    def _show_subplaces_window(self, base_place_id, subplaces):
+        if not subplaces:
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title(f"SubPlaces for {base_place_id}")
+        window.geometry("560x430")
+        window.minsize(460, 320)
+        window.configure(bg=self.BG_DARK)
+        window.transient(self.root)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+
+        main_frame = ttk.Frame(window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+        ttk.Label(
+            main_frame,
+            text=f"Select a subplace from universe of Place ID {base_place_id}",
+            style="Dark.TLabel",
+        ).pack(anchor="w", pady=(0, 8))
+
+        list_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        list_frame.pack(fill="both", expand=True)
+
+        listbox = tk.Listbox(
+            list_frame,
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            selectbackground=self.FG_ACCENT,
+            highlightbackground=self.BORDER_COLOR,
+            highlightcolor=self.BORDER_COLOR,
+            font=("Segoe UI", 9),
+        )
+        listbox.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame, command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.config(yscrollcommand=scrollbar.set)
+
+        for place in subplaces:
+            place_id = str(place.get("id") or "").strip()
+            place_name = str(place.get("name") or f"Place {place_id}").strip()
+            listbox.insert(tk.END, f"{place_name} ({place_id})")
+
+        selected_subplace_id = str(self.private_server_entry.get() or "").strip()
+        if selected_subplace_id:
+            for idx, place in enumerate(subplaces):
+                if str(place.get("id") or "").strip() == selected_subplace_id:
+                    listbox.selection_set(idx)
+                    listbox.see(idx)
+                    break
+
+        def apply_selected():
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("No Selection", "Select a subplace first.")
+                return
+
+            selected = subplaces[selection[0]]
+            selected_id = str(selected.get("id") or "").strip()
+            if not selected_id:
+                return
+
+            self.private_server_entry.delete(0, tk.END)
+            self.private_server_entry.insert(0, selected_id)
+            self.settings["last_private_server"] = selected_id
+            self.save_settings()
+            window.destroy()
+
+        button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        button_frame.pack(fill="x", pady=(10, 0))
+
+        ttk.Button(button_frame, text="Use Selected", style="Dark.TButton", command=apply_selected).pack(
+            side="left", fill="x", expand=True, padx=(0, 5)
+        )
+        ttk.Button(button_frame, text="Cancel", style="Dark.TButton", command=window.destroy).pack(
+            side="left", fill="x", expand=True, padx=(5, 0)
+        )
+
+        listbox.bind("<Double-Button-1>", lambda _evt: apply_selected())
+        window.bind("<Return>", lambda _evt: apply_selected())
+        window.bind("<Escape>", lambda _evt: window.destroy())
 
     def show_place_target_context_menu(self, event):
         if self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id")) != "place_id":
@@ -3366,12 +3532,17 @@ class AccountManagerUI:
         try:
             menu.delete(0, "end")
             current_mode = self._normalize_place_target_mode(self.place_join_target_mode)
-            target_mode = "job_id" if current_mode == "private_server" else "private_server"
-            target_label = "Join Job ID" if target_mode == "job_id" else "Private Server ID"
-            menu.add_command(
-                label=f"Switch to {target_label}",
-                command=self.toggle_place_target_mode,
-            )
+            mode_labels = {
+                "private_server": "Private Server ID",
+                "job_id": "Job ID",
+                "subplaces": "SubPlaces",
+            }
+            for mode_key in ("private_server", "job_id", "subplaces"):
+                prefix = "✓ " if mode_key == current_mode else ""
+                menu.add_command(
+                    label=f"{prefix}{mode_labels.get(mode_key, mode_key)}",
+                    command=lambda m=mode_key: self._set_place_target_mode_from_menu(m),
+                )
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             try:
@@ -5857,6 +6028,11 @@ class AccountManagerUI:
         place_target_value = self.private_server_entry.get().strip() if launch_mode == "place_id" else ""
         private_server = place_target_value if (launch_mode == "place_id" and place_target_mode == "private_server") else ""
         manual_server_job_id = place_target_value if (launch_mode == "place_id" and place_target_mode == "job_id") else ""
+        if launch_mode == "place_id" and place_target_mode == "subplaces" and place_target_value:
+            if not str(place_target_value).isdigit():
+                messagebox.showwarning("Invalid SubPlace ID", "SubPlace ID must be numeric.")
+                return
+            game_id = place_target_value
 
         selected_version_label = self.version_var.get()
         version_path = self.version_options.get(selected_version_label)

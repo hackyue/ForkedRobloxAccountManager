@@ -211,6 +211,78 @@ class RobloxAPI:
         return None
 
     @staticmethod
+    def get_subplaces(place_id, max_pages=10):
+        """Fetch all places in the same universe as the given place ID."""
+        if not place_id:
+            return []
+
+        place_id_str = str(place_id).strip()
+        if not place_id_str.isdigit():
+            return []
+
+        subplaces = []
+        seen_ids = set()
+
+        try:
+            session = RobloxAPI._get_http_session()
+
+            universe_response = session.get(
+                f"https://apis.roblox.com/universes/v1/places/{place_id_str}/universe",
+                timeout=8,
+            )
+            universe_response.raise_for_status()
+            universe_payload = universe_response.json() if universe_response.content else {}
+            universe_id = str(universe_payload.get("universeId") or "").strip()
+            if not universe_id:
+                return []
+
+            cursor = ""
+            pages_fetched = 0
+            while pages_fetched < max_pages:
+                params = {
+                    "limit": 100,
+                    "sortOrder": "Asc",
+                }
+                if cursor:
+                    params["cursor"] = cursor
+
+                places_response = session.get(
+                    f"https://develop.roblox.com/v1/universes/{universe_id}/places",
+                    params=params,
+                    timeout=8,
+                )
+                places_response.raise_for_status()
+                places_payload = places_response.json() if places_response.content else {}
+                places = places_payload.get("data") or []
+
+                for entry in places:
+                    subplace_id = str(
+                        entry.get("id")
+                        or entry.get("placeId")
+                        or ""
+                    ).strip()
+                    if not subplace_id or subplace_id in seen_ids:
+                        continue
+                    seen_ids.add(subplace_id)
+                    subplaces.append({
+                        "id": subplace_id,
+                        "name": str(entry.get("name") or f"Place {subplace_id}").strip() or f"Place {subplace_id}",
+                    })
+
+                pages_fetched += 1
+                cursor = str(places_payload.get("nextPageCursor") or "").strip()
+                if not cursor:
+                    break
+        except requests.exceptions.RequestException as exc:
+            print(f"[WARNING] Failed to fetch subplaces for place {place_id_str}: {exc}")
+            return []
+        except Exception as exc:
+            print(f"[WARNING] Unexpected error while fetching subplaces for place {place_id_str}: {exc}")
+            return []
+
+        return subplaces
+
+    @staticmethod
     def get_user_id_from_username(username):
         """Resolve a Roblox user ID from a username."""
         username_text = str(username or "").strip()
