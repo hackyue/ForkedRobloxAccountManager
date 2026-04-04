@@ -61,9 +61,6 @@ DISCORD_LOGO_URL = (
 ADDITIONAL_THEMES_URL = (
     "https://raw.githubusercontent.com/hackyue/FRAMAssets/refs/heads/main/Themes/themes.json"
 )
-APP_TITLE_TEMPLATE = "FRAM v{version} - made by evanovar - modified by hackyue"
-LANGUAGE_ASSETS_TREE_URL = "https://github.com/hackyue/FRAMAssets/tree/main/Languages"
-LANGUAGE_ASSETS_API_URL = "https://api.github.com/repos/hackyue/FRAMAssets/contents/Languages"
 
 
 
@@ -785,7 +782,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title(APP_TITLE_TEMPLATE.format(version=self.APP_VERSION))
+        self.root.title("FRAM v2.4.3 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -796,19 +793,10 @@ class AccountManagerUI:
             os.makedirs(self.data_folder)
         
         self.settings_file = os.path.join(self.data_folder, "ui_settings.json")
-        self.language_dir = "languages"
-        self.user_language_dir = os.path.join(self.data_folder, "languages")
-        self.language_packs = {}
-        self.active_language_code = "en_US"
-        self.active_language_name = "English (US)"
-        self.translation_map = {}
         self.custom_themes_file = os.path.join(self.data_folder, "custom_themes.json")
         self.custom_themes = {}
         self._load_custom_themes_from_disk()
         self.load_settings()
-        self._load_language_packs()
-        self._set_language_from_settings(persist=False)
-        self._patch_messagebox_translation()
         self.console_output.set_redaction_enabled_getter(
             lambda: bool(self.settings.get("hide_sensitive_info", False))
         )
@@ -1081,7 +1069,6 @@ class AccountManagerUI:
         self.root.after(500, self._auto_relaunch_maybe_start)
         self.root.after(500, self._auto_memory_trim_maybe_start)
         self.root.after(1500, self._auto_update_maybe_start)
-        self._apply_language_runtime()
 
     def load_settings(self):
         """Load UI settings from file"""
@@ -1120,7 +1107,6 @@ class AccountManagerUI:
             "auto_update_enabled": True,
             "installer_previous_versions": MIN_INSTALLER_PREVIOUS_VERSIONS,
             "browser_preference": "auto",
-            "language_code": "en_US",
         }
 
         try:
@@ -1699,7 +1685,6 @@ class AccountManagerUI:
     def register_toplevel(self, window):
         if window in self.themable_windows:
             self._apply_title_bar_theme(window)
-            self._apply_language_to_widget_tree(window)
             return
 
         self.themable_windows.add(window)
@@ -1715,7 +1700,6 @@ class AccountManagerUI:
             pass
 
         self._apply_title_bar_theme(window)
-        self._apply_language_to_widget_tree(window)
 
     def register_theme_refresh(self, window, callback):
         if window is None or callback is None:
@@ -1745,14 +1729,6 @@ class AccountManagerUI:
             return
         try:
             self._apply_title_bar_theme(widget)
-        except Exception:
-            pass
-        try:
-            self._apply_language_to_widget_tree(widget)
-        except Exception:
-            pass
-        try:
-            widget.after(100, lambda w=widget: self._apply_language_to_widget_tree(w))
         except Exception:
             pass
 
@@ -1937,8 +1913,6 @@ class AccountManagerUI:
 
         self.refresh_installer_menu()
         self.apply_menu_theme()
-        self._apply_language_to_widget_tree(self.menu_bar_frame)
-        self._apply_language_to_all_menus()
 
     def show_installer_menu(self, event=None):
         if not getattr(self, "installer_menu", None):
@@ -1949,7 +1923,6 @@ class AccountManagerUI:
         try:
             x = button.winfo_rootx()
             y = button.winfo_rooty() + button.winfo_height()
-            self._apply_language_to_menu(self.installer_menu)
             self.installer_menu.tk_popup(x, y)
         finally:
             try:
@@ -1973,7 +1946,6 @@ class AccountManagerUI:
             x = event.x_root
             y = event.y_root
         try:
-            self._apply_language_to_menu(self.add_account_menu)
             self.add_account_menu.tk_popup(x, y)
         finally:
             try:
@@ -2077,14 +2049,14 @@ class AccountManagerUI:
 
         ttk.Label(
             main_frame,
-            text=self._translate_text("Install {version}").format(version=version),
+            text=f"Install {version}",
             style="Dark.TLabel",
             font=("Segoe UI", 12, "bold")
         ).pack(anchor="w", pady=(0, 8))
 
         ttk.Label(
             main_frame,
-            text=self._translate_text("Choose a client target:"),
+            text="Choose a client target:",
             style="Dark.TLabel"
         ).pack(anchor="w")
 
@@ -2104,7 +2076,7 @@ class AccountManagerUI:
             radio.pack(anchor="w", pady=2, fill="x")
 
         progress_var = tk.DoubleVar(value=0.0)
-        status_var = tk.StringVar(value=self._translate_text("Select a client to begin."))
+        status_var = tk.StringVar(value="Select a client to begin.")
 
         progress_bar = ttk.Progressbar(
             main_frame,
@@ -2126,7 +2098,7 @@ class AccountManagerUI:
 
         download_btn = ttk.Button(
             button_frame,
-            text=self._translate_text("Download"),
+            text="Download",
             style="Dark.TButton",
             state="disabled",
             command=self._begin_installer_download
@@ -2135,7 +2107,7 @@ class AccountManagerUI:
 
         close_btn = ttk.Button(
             button_frame,
-            text=self._translate_text("Cancel"),
+            text="Cancel",
             style="Dark.TButton",
             command=self._close_installer_dialog
         )
@@ -2200,7 +2172,7 @@ class AccountManagerUI:
 
         state["download_button"].configure(state="disabled")
         state["close_button"].configure(state="disabled")
-        state["status_var"].set(self._translate_text("Starting download..."))
+        state["status_var"].set("Starting download...")
         state["progress_var"].set(0)
 
         thread = threading.Thread(
@@ -2231,7 +2203,7 @@ class AccountManagerUI:
         if thread and thread.is_alive():
             messagebox.showwarning(
                 "Roblox Installer",
-                self._translate_text("Please wait for the download to finish before closing.")
+                "Please wait for the download to finish before closing."
             )
             return
         self._close_installer_dialog()
@@ -2756,389 +2728,6 @@ class AccountManagerUI:
         except Exception as e:
             print(f"Failed to save settings: {e}")
 
-    def _read_language_pack_file(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except Exception:
-            return None
-
-        if not isinstance(payload, dict):
-            return None
-
-        code = str(payload.get("code") or "").strip()
-        name = str(payload.get("name") or "").strip()
-        translations = payload.get("translations")
-        if not isinstance(translations, dict):
-            translations = payload
-
-        normalized = {}
-        for key, value in translations.items():
-            k = str(key or "").strip()
-            if not k:
-                continue
-            normalized[k] = str(value)
-
-        filename = os.path.splitext(os.path.basename(path))[0]
-        if not code:
-            code = filename or "unknown"
-        if not name:
-            name = code
-
-        return {
-            "code": code,
-            "name": name,
-            "path": path,
-            "translations": normalized,
-        }
-
-    def _load_language_packs(self):
-        packs = {}
-        search_dirs = [self.language_dir, self.user_language_dir]
-        for base in search_dirs:
-            if not base:
-                continue
-            try:
-                if not os.path.isdir(base):
-                    continue
-                for filename in sorted(os.listdir(base)):
-                    if not filename.lower().endswith(".json"):
-                        continue
-                    full_path = os.path.join(base, filename)
-                    pack = self._read_language_pack_file(full_path)
-                    if not pack:
-                        continue
-                    packs[pack["code"]] = pack
-            except Exception:
-                continue
-
-        if "en_US" not in packs:
-            packs["en_US"] = {
-                "code": "en_US",
-                "name": "English (US)",
-                "path": "",
-                "translations": {},
-            }
-
-        self.language_packs = packs
-
-    def get_language_options(self):
-        options = []
-        for code, pack in self.language_packs.items():
-            options.append({
-                "code": code,
-                "name": str(pack.get("name") or code),
-            })
-        options.sort(key=lambda item: (item["code"] != "en_US", item["name"].lower()))
-        return options
-
-    def _set_language_from_settings(self, persist=False):
-        code = str(self.settings.get("language_code", "en_US") or "en_US").strip()
-        self.set_language(code, persist=persist)
-
-    def set_language(self, code, persist=True):
-        chosen = str(code or "").strip()
-        if chosen not in self.language_packs:
-            chosen = "en_US"
-        pack = self.language_packs.get(chosen) or self.language_packs.get("en_US") or {}
-        self.active_language_code = str(pack.get("code") or "en_US")
-        self.active_language_name = str(pack.get("name") or self.active_language_code)
-        self.translation_map = dict(pack.get("translations") or {})
-        if persist:
-            self.settings["language_code"] = self.active_language_code
-            self.save_settings()
-        self._apply_language_runtime()
-
-    def _translate_text(self, text):
-        if not isinstance(text, str):
-            return text
-        if not text:
-            return text
-        return str(self.translation_map.get(text, text))
-
-    def _patch_messagebox_translation(self):
-        try:
-            setattr(messagebox, "_fram_i18n_ui", self)
-            if bool(getattr(messagebox, "_fram_i18n_patched", False)):
-                return
-
-            fn_names = (
-                "showinfo",
-                "showwarning",
-                "showerror",
-                "askquestion",
-                "askokcancel",
-                "askretrycancel",
-                "askyesno",
-                "askyesnocancel",
-            )
-
-            def _wrap(original_fn):
-                def _wrapped(*args, **kwargs):
-                    ui = getattr(messagebox, "_fram_i18n_ui", None)
-                    if ui is None:
-                        return original_fn(*args, **kwargs)
-
-                    args_list = list(args)
-                    if len(args_list) > 0 and isinstance(args_list[0], str):
-                        args_list[0] = ui._translate_text(args_list[0])
-                    if len(args_list) > 1 and isinstance(args_list[1], str):
-                        args_list[1] = ui._translate_text(args_list[1])
-
-                    if isinstance(kwargs.get("title"), str):
-                        kwargs["title"] = ui._translate_text(kwargs["title"])
-                    if isinstance(kwargs.get("message"), str):
-                        kwargs["message"] = ui._translate_text(kwargs["message"])
-                    if isinstance(kwargs.get("detail"), str):
-                        kwargs["detail"] = ui._translate_text(kwargs["detail"])
-
-                    return original_fn(*args_list, **kwargs)
-
-                return _wrapped
-
-            for fn_name in fn_names:
-                original = getattr(messagebox, fn_name, None)
-                if callable(original):
-                    setattr(messagebox, fn_name, _wrap(original))
-
-            setattr(messagebox, "_fram_i18n_patched", True)
-        except Exception:
-            pass
-
-    def _apply_language_to_menu(self, menu):
-        if menu is None:
-            return
-        try:
-            end_index = menu.index("end")
-        except Exception:
-            end_index = None
-        if end_index is None:
-            return
-
-        base_labels = getattr(menu, "_i18n_base_labels", {})
-        for i in range(int(end_index) + 1):
-            try:
-                entry_type = str(menu.type(i) or "")
-            except Exception:
-                continue
-            if entry_type == "separator":
-                continue
-            try:
-                current_label = str(menu.entrycget(i, "label") or "")
-            except Exception:
-                current_label = ""
-            if i not in base_labels:
-                base_labels[i] = current_label
-            translated = self._translate_text(base_labels.get(i, current_label))
-            try:
-                menu.entryconfigure(i, label=translated)
-            except Exception:
-                pass
-            if entry_type == "cascade":
-                try:
-                    submenu_name = menu.entrycget(i, "menu")
-                    submenu = menu.nametowidget(submenu_name) if submenu_name else None
-                except Exception:
-                    submenu = None
-                self._apply_language_to_menu(submenu)
-        setattr(menu, "_i18n_base_labels", base_labels)
-
-    def _apply_language_to_widget_tree(self, widget):
-        if widget is None:
-            return
-        try:
-            if isinstance(widget, (tk.Tk, tk.Toplevel)):
-                base_title = getattr(widget, "_i18n_base_title", None)
-                if base_title is None:
-                    base_title = str(widget.title() or "")
-                    setattr(widget, "_i18n_base_title", base_title)
-                translated_title = self._translate_text(base_title)
-                if "{version}" in translated_title:
-                    translated_title = translated_title.format(version=self.APP_VERSION)
-                widget.title(translated_title)
-        except Exception:
-            pass
-
-        try:
-            if isinstance(widget, ttk.Notebook):
-                base_tabs = getattr(widget, "_i18n_base_tabs", {})
-                for tab_id in widget.tabs():
-                    if tab_id not in base_tabs:
-                        base_tabs[tab_id] = str(widget.tab(tab_id, "text") or "")
-                    widget.tab(tab_id, text=self._translate_text(base_tabs.get(tab_id, "")))
-                setattr(widget, "_i18n_base_tabs", base_tabs)
-        except Exception:
-            pass
-
-        try:
-            keys = set(widget.keys())
-        except Exception:
-            keys = set()
-        if "text" in keys:
-            try:
-                base_text = getattr(widget, "_i18n_base_text", None)
-                if base_text is None:
-                    base_text = str(widget.cget("text") or "")
-                    setattr(widget, "_i18n_base_text", base_text)
-                widget.configure(text=self._translate_text(base_text))
-            except Exception:
-                pass
-
-        if isinstance(widget, tk.Menu):
-            self._apply_language_to_menu(widget)
-
-        try:
-            children = widget.winfo_children()
-        except Exception:
-            children = []
-        for child in children:
-            self._apply_language_to_widget_tree(child)
-
-    def _apply_language_to_all_menus(self):
-        menu_attrs = [
-            "actions_menu",
-            "installer_menu",
-            "add_account_menu",
-            "account_context_menu",
-            "launch_input_context_menu",
-            "place_target_context_menu",
-        ]
-        for attr in menu_attrs:
-            self._apply_language_to_menu(getattr(self, attr, None))
-
-    def _apply_language_runtime(self):
-        try:
-            if getattr(self, "root", None):
-                base_title = APP_TITLE_TEMPLATE
-                if not hasattr(self.root, "_i18n_base_title"):
-                    setattr(self.root, "_i18n_base_title", base_title)
-                translated_title = self._translate_text(base_title)
-                self.root.title(translated_title.format(version=self.APP_VERSION))
-        except Exception:
-            pass
-
-        try:
-            self._apply_language_to_widget_tree(self.root)
-        except Exception:
-            pass
-
-        for win in list(getattr(self, "themable_windows", [])):
-            try:
-                if win and win.winfo_exists():
-                    self._apply_language_to_widget_tree(win)
-            except Exception:
-                pass
-
-        self._apply_language_to_all_menus()
-        self._stretch_ui_for_language()
-        try:
-            self.root.after(80, self._stretch_ui_for_language)
-        except Exception:
-            pass
-
-    def _is_non_en_language(self):
-        code = str(getattr(self, "active_language_code", "") or "").strip().lower()
-        return code not in {"", "en_us"}
-
-    def _stretch_window_for_language(self, window, extra_width=120, extra_height=80):
-        if window is None:
-            return
-        try:
-            if not window.winfo_exists():
-                return
-        except Exception:
-            return
-
-        try:
-            window.update_idletasks()
-        except Exception:
-            pass
-
-        try:
-            req_w = int(window.winfo_reqwidth()) + int(extra_width)
-            req_h = int(window.winfo_reqheight()) + int(extra_height)
-        except Exception:
-            return
-
-        try:
-            cur_w = int(window.winfo_width())
-            cur_h = int(window.winfo_height())
-        except Exception:
-            cur_w = req_w
-            cur_h = req_h
-
-        if cur_w <= 1:
-            cur_w = req_w
-        if cur_h <= 1:
-            cur_h = req_h
-
-        target_w = max(cur_w, req_w)
-        target_h = max(cur_h, req_h)
-
-        try:
-            min_w, min_h = window.minsize()
-        except Exception:
-            min_w, min_h = (0, 0)
-        if not hasattr(window, "_i18n_original_minsize"):
-            try:
-                setattr(window, "_i18n_original_minsize", (int(min_w), int(min_h)))
-            except Exception:
-                pass
-
-        try:
-            window.minsize(max(int(min_w), target_w), max(int(min_h), target_h))
-        except Exception:
-            pass
-
-        try:
-            pos_x = int(window.winfo_x())
-            pos_y = int(window.winfo_y())
-            window.geometry(f"{target_w}x{target_h}+{pos_x}+{pos_y}")
-        except Exception:
-            try:
-                window.geometry(f"{target_w}x{target_h}")
-            except Exception:
-                pass
-
-    def _restore_window_size_for_language(self, window):
-        if window is None:
-            return
-        try:
-            if not window.winfo_exists():
-                return
-        except Exception:
-            return
-        original = getattr(window, "_i18n_original_minsize", None)
-        if not original or not isinstance(original, tuple) or len(original) != 2:
-            return
-        try:
-            window.minsize(int(original[0]), int(original[1]))
-        except Exception:
-            pass
-
-    def _stretch_ui_for_language(self):
-        seen = set()
-        windows = [getattr(self, "root", None)] + list(getattr(self, "themable_windows", []))
-        if not self._is_non_en_language():
-            for window in windows:
-                if window is None:
-                    continue
-                ident = id(window)
-                if ident in seen:
-                    continue
-                seen.add(ident)
-                self._restore_window_size_for_language(window)
-            return
-
-        for window in windows:
-            if window is None:
-                continue
-            ident = id(window)
-            if ident in seen:
-                continue
-            seen.add(ident)
-            self._stretch_window_for_language(window)
-
     def _theme_required_keys(self):
         return {
             "root_bg",
@@ -3249,57 +2838,6 @@ class AccountManagerUI:
         merged = self._merge_themes(payload)
         self._save_custom_themes_to_disk()
         return merged
-
-    def install_languages_from_remote(self, api_url=LANGUAGE_ASSETS_API_URL):
-        target_url = str(api_url or "").strip()
-        if not target_url:
-            raise ValueError("Language API URL is empty.")
-
-        response = self._get_http_session().get(target_url, timeout=20)
-        response.raise_for_status()
-        listing = response.json()
-        if not isinstance(listing, list):
-            raise ValueError("Unexpected languages listing format.")
-
-        json_entries = []
-        for item in listing:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("type") or "").strip().lower() != "file":
-                continue
-            name = str(item.get("name") or "").strip()
-            if not name.lower().endswith(".json"):
-                continue
-            download_url = str(item.get("download_url") or "").strip()
-            if not download_url:
-                continue
-            json_entries.append((name, download_url))
-
-        if not json_entries:
-            raise ValueError("No language JSON files found in remote folder.")
-
-        os.makedirs(self.user_language_dir, exist_ok=True)
-        installed = 0
-        for filename, download_url in json_entries:
-            pack_response = self._get_http_session().get(download_url, timeout=20)
-            pack_response.raise_for_status()
-            payload = pack_response.json()
-            if not isinstance(payload, dict):
-                continue
-
-            code = str(payload.get("code") or "").strip()
-            if not code:
-                code = os.path.splitext(filename)[0]
-            code = re.sub(r"[^A-Za-z0-9_\\-]", "", code) or "language"
-            output_name = f"{code}.json"
-            out_path = os.path.join(self.user_language_dir, output_name)
-            with open(out_path, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, ensure_ascii=False)
-            installed += 1
-
-        self._load_language_packs()
-        self._set_language_from_settings(persist=False)
-        return installed
 
     def _load_discord_button_image(self, size=32):
         """Load Discord logo PNG for the settings header button (cached under AccountManagerData/cache)."""
@@ -4135,7 +3673,6 @@ class AccountManagerUI:
             return
         try:
             menu.delete(0, "end")
-            setattr(menu, "_i18n_base_labels", {})
             current_mode = self._normalize_place_target_mode(self.place_join_target_mode)
             mode_labels = {
                 "private_server": "Private Server ID",
@@ -4145,10 +3682,9 @@ class AccountManagerUI:
             for mode_key in ("private_server", "job_id", "subplaces"):
                 prefix = "✓ " if mode_key == current_mode else ""
                 menu.add_command(
-                    label=f"{prefix}{self._translate_text(mode_labels.get(mode_key, mode_key))}",
+                    label=f"{prefix}{mode_labels.get(mode_key, mode_key)}",
                     command=lambda m=mode_key: self._set_place_target_mode_from_menu(m),
                 )
-            self._apply_language_to_menu(menu)
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             try:
@@ -4194,15 +3730,13 @@ class AccountManagerUI:
             return
         try:
             menu.delete(0, "end")
-            setattr(menu, "_i18n_base_labels", {})
             current_mode = self._normalize_launch_input_mode(self.launch_input_mode)
             target_mode = "join_user" if current_mode == "place_id" else "place_id"
             target_label = "Join User" if target_mode == "join_user" else "Place ID"
             menu.add_command(
-                label=f"{self._translate_text('Switch to')} {self._translate_text(target_label)}",
+                label=f"Switch to {target_label}",
                 command=self.toggle_launch_input_mode,
             )
-            self._apply_language_to_menu(menu)
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             try:
@@ -4698,7 +4232,6 @@ class AccountManagerUI:
             return "break"
 
         try:
-            self._apply_language_to_menu(menu)
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
@@ -7402,81 +6935,6 @@ class AccountManagerUI:
             command=auto_save_setting("disable_success_popups", disable_success_var)
         ).pack(anchor="w", pady=2)
 
-        self._load_language_packs()
-        language_card = create_settings_card(general_tab, "Language", "Select a language file pack")
-        language_options = self.get_language_options()
-        language_label_to_code = {}
-        language_labels = []
-        for item in language_options:
-            code = str(item.get("code") or "").strip()
-            name = str(item.get("name") or code).strip()
-            label = f"{name} ({code})"
-            language_label_to_code[label] = code
-            language_labels.append(label)
-        current_lang_code = str(self.active_language_code or self.settings.get("language_code", "en_US")).strip()
-        current_lang_label = next(
-            (label for label, code in language_label_to_code.items() if code == current_lang_code),
-            language_labels[0] if language_labels else "",
-        )
-        language_var = tk.StringVar(value=current_lang_label)
-
-        language_combo = ttk.Combobox(
-            language_card,
-            values=language_labels,
-            textvariable=language_var,
-            state="readonly",
-            style="Dark.TCombobox",
-        )
-        language_combo.pack(fill="x", pady=(0, 4))
-
-        def apply_selected_language():
-            self._load_language_packs()
-            selected_label = str(language_var.get() or "").strip()
-            selected_code = language_label_to_code.get(selected_label)
-            if not selected_code:
-                return
-            self.set_language(selected_code, persist=True)
-            self._apply_language_to_widget_tree(settings_window)
-            self._apply_language_to_all_menus()
-
-        language_combo.bind("<<ComboboxSelected>>", lambda _evt: apply_selected_language())
-
-        def install_remote_languages():
-            try:
-                installed = self.install_languages_from_remote(LANGUAGE_ASSETS_API_URL)
-                self._load_language_packs()
-                refreshed_options = self.get_language_options()
-                language_label_to_code.clear()
-                refreshed_labels = []
-                for item in refreshed_options:
-                    code = str(item.get("code") or "").strip()
-                    name = str(item.get("name") or code).strip()
-                    label = f"{name} ({code})"
-                    language_label_to_code[label] = code
-                    refreshed_labels.append(label)
-                language_combo.configure(values=refreshed_labels)
-                current_code = str(self.active_language_code or "en_US").strip()
-                current_label = next(
-                    (label for label, code in language_label_to_code.items() if code == current_code),
-                    refreshed_labels[0] if refreshed_labels else "",
-                )
-                language_var.set(current_label)
-                self._apply_language_to_widget_tree(settings_window)
-                self._apply_language_to_all_menus()
-                messagebox.showinfo("Languages", f"Installed/updated {installed} language file(s).")
-            except Exception as exc:
-                messagebox.showerror(
-                    "Languages",
-                    f"Failed to install remote languages.\n\nFolder: {LANGUAGE_ASSETS_TREE_URL}\n\nError: {exc}",
-                )
-
-        ttk.Button(
-            language_card,
-            text="Install/Update Languages",
-            style="Dark.TButton",
-            command=install_remote_languages,
-        ).pack(fill="x", pady=(0, 0))
-
         installer_versions_frame = create_settings_card(general_tab, "Installer", "Version list and update visibility")
 
         installer_versions_row = ttk.Frame(installer_versions_frame, style="Dark.TFrame")
@@ -8156,8 +7614,6 @@ class AccountManagerUI:
 
         self.register_theme_refresh(settings_window, _refresh_settings_theme)
         set_active_tab("general")
-        self._apply_language_to_widget_tree(settings_window)
-        self._apply_language_to_all_menus()
         padding_w = 40
         padding_h = 40
         min_w = 760
