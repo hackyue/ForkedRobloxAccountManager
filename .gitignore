@@ -46,3 +46,6 @@ tmp/
 htmlcov/
 debug/
 test.py
+
+# Lanquage-specific files
+languages/
