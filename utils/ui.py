@@ -6966,13 +6966,13 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         def open_global_settings_and_close_settings():
-            """Open Global Settings editor and close settings window"""
+            """Open Roblox Settings and close settings window"""
             settings_window.destroy()
             self.open_global_settings_editor()
 
         ttk.Button(
             roblox_client_card,
-            text="Open Client Global Settings",
+            text="Open Roblox Settings",
             style="Dark.TButton",
             command=open_global_settings_and_close_settings
         ).pack(fill="x", pady=(8, 0))
@@ -8659,8 +8659,8 @@ class AccountManagerUI:
         if self.console_window:
             self.console_window.show()
 
-    def open_global_settings_editor(self):
-        """Open the Global Settings editor window."""
+    def _open_global_settings_editor_legacy(self):
+        """Legacy Global Settings editor window (kept for reference)."""
         # Check if window already exists and focus it
         if self.global_settings_window and self.global_settings_window.winfo_exists():
             self.global_settings_window.deiconify()
@@ -9034,7 +9034,7 @@ class AccountManagerUI:
             row=0, column=1, sticky="ew", padx=(4, 0)
         )
 
-        # Save the settings
+
         def save_global_settings():
             try:
                 apply_current_edit()
@@ -9042,7 +9042,7 @@ class AccountManagerUI:
                 import xml.etree.ElementTree as ET
                 from xml.dom import minidom
 
-                # Load existing XML file if it exists, otherwise create new structure
+
                 if os.path.exists(global_settings_path):
                     try:
                         xml_tree_local = ET.parse(global_settings_path)
@@ -9080,29 +9080,29 @@ class AccountManagerUI:
                     if existing_setting is not None:
                         existing_setting.set("value", value_str)
                 
-                # Create directory if it doesn't exist
+
                 os.makedirs(os.path.dirname(global_settings_path), exist_ok=True)
                 
-                # Create backup
+
                 if os.path.exists(global_settings_path):
                     backup_path = global_settings_path + ".backup"
                     try:
                         import shutil
                         shutil.copy2(global_settings_path, backup_path)
                     except Exception:
-                        pass  # Ignore backup errors
+                        pass  
                 
-                # Pretty print XML
+
                 xml_str = ET.tostring(root, encoding='unicode')
                 dom = minidom.parseString(xml_str)
-                pretty_xml = dom.toprettyxml(indent="\t")[23:]  # Remove XML declaration line
+                pretty_xml = dom.toprettyxml(indent="\t")[23:]  
                 
-                # Save the file
+
                 with open(global_settings_path, 'w', encoding='utf-8') as f:
                     f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
                     f.write(pretty_xml)
                 
-                # Set file as read-only after saving
+
                 try:
                     import stat
                     os.chmod(global_settings_path, stat.S_IREAD)
@@ -9117,7 +9117,7 @@ class AccountManagerUI:
             except Exception as e:
                 messagebox.showerror("Error Saving Settings", f"Failed to save global settings: {str(e)}")
 
-        # Reset to defaults
+
         def reset_to_defaults():
             if messagebox.askyesno("Confirm Reset", "Set all loaded values to defaults?\n\nClick Save to write changes."):
                 for item in settings_def:
@@ -9138,7 +9138,7 @@ class AccountManagerUI:
                 refresh_tree_values()
                 messagebox.showinfo("Reset Complete", "Values reset to defaults. Click Save to apply.")
 
-        # Button frame
+
         button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         button_frame.pack(fill="x")
 
@@ -9170,11 +9170,322 @@ class AccountManagerUI:
             command=self.global_settings_window.destroy
         ).pack(side="left", fill="x", expand=True, padx=(5, 0))
 
-        # Load initial settings
+
         load_global_settings()
         self.global_settings_window.bind("<Control-f>", lambda _evt: (search_entry.focus_set(), "break")[1])
         self.global_settings_window.bind("<Control-s>", lambda _evt: (save_global_settings(), "break")[1])
         self.global_settings_window.bind("<Escape>", lambda _evt: (search_var.set(""), "break")[1])
+
+    def open_global_settings_editor(self):
+        """Open the Roblox Settings window."""
+        if self.global_settings_window and self.global_settings_window.winfo_exists():
+            self.global_settings_window.deiconify()
+            self.global_settings_window.lift()
+            self.global_settings_window.focus_force()
+            return
+
+        self.global_settings_window = tk.Toplevel(self.root)
+        self.global_settings_window.title("Roblox Settings")
+        self.global_settings_window.geometry("980x700")
+        self.global_settings_window.minsize(860, 560)
+        self.global_settings_window.configure(bg=self.BG_DARK)
+        self.global_settings_window.resizable(True, True)
+        self.global_settings_window.transient(self.root)
+        self.global_settings_window.grab_set()
+        self.register_toplevel(self.global_settings_window)
+        if self.settings.get("enable_topmost", False):
+            self.global_settings_window.attributes("-topmost", True)
+
+        main = ttk.Frame(self.global_settings_window, style="Dark.TFrame")
+        main.pack(fill="both", expand=True, padx=20, pady=15)
+        ttk.Label(main, text="Roblox Settings", style="Dark.TLabel", font=("Segoe UI", 14, "bold")).pack(anchor="w", pady=(0, 8))
+        settings_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\GlobalBasicSettings_13.xml")
+        ttk.Label(
+            main,
+            text=f"Editing: {settings_path}",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+        ).pack(anchor="w", pady=(0, 8))
+
+        spec = {
+            "Graphics Settings": [
+                ("Framerate Limit", "int", ["frameratelimit", "frameratecap", "fpscap"], ["frame", "rate"]),
+                ("Start Quality", "int", ["startquality", "startqualitylevel", "savedqualitylevel"], ["start", "quality"]),
+                ("Max Quality", "int", ["maxquality", "maxqualitylevel"], ["max", "quality"]),
+                ("Vignette", "bool", ["vignetteenabled", "vignette"], ["vignette"]),
+            ],
+            "Audio Settings": [
+                ("Master Volume", "float", ["mastervolume"], ["master", "volume"]),
+                ("Studio Master Volume", "float", ["studiomastervolume"], ["studio", "master", "volume"]),
+                ("Party Voice Volume", "float", ["partyvoicevolume"], ["party", "voice", "volume"]),
+            ],
+            "Input Settings": [
+                ("Camera Sensitivity", "float", ["camerasensitivity"], ["camera", "sensitivity"]),
+                ("First Person Mouse Sensitivity", "float", ["firstpersonmousesensitivity"], ["first", "person", "mouse", "sensitivity"]),
+                ("Third Person Mouse Sensitivity", "float", ["thirdpersonmousesensitivity"], ["third", "person", "mouse", "sensitivity"]),
+                ("Invert Camera Y", "bool", ["invertcameray", "camerayinverted"], ["invert", "camera", "y"]),
+                ("Haptic Strength", "float", ["hapticstrength"], ["haptic", "strength"]),
+            ],
+            "Accessibility": [
+                ("UI Transparency", "float", ["uitransparency"], ["ui", "transparency"]),
+                ("Reduced Motion", "bool", ["reducedmotion"], ["reduced", "motion"]),
+                ("Preferred Text Size", "int", ["preferredtextsize"], ["text", "size"]),
+            ],
+            "Misc": [
+                ("Show Performance Stats", "bool", ["showperformancestats"], ["performance", "stats"]),
+                ("Chat Translation", "bool", ["chattranslation"], ["chat", "translation"]),
+                ("Chat Translation FTUX Shown", "bool", ["chattranslationftuxshown"], ["chat", "translation", "ftux"]),
+                ("VR Enabled", "bool", ["vrenabled"], ["vr", "enabled"]),
+            ],
+        }
+
+        top = ttk.Frame(main, style="Dark.TFrame")
+        top.pack(fill="x", pady=(0, 8))
+        readonly_var = tk.BooleanVar(value=False)
+        status_var = tk.StringVar(value="Ready.")
+        ttk.Checkbutton(
+            top,
+            text="Set file as Read Only (prevent Roblox from changing settings)",
+            variable=readonly_var,
+            style="Dark.TCheckbutton",
+        ).pack(anchor="w")
+        ttk.Label(top, textvariable=status_var, style="Dark.TLabel").pack(anchor="w", pady=(6, 0))
+
+        notebook = ttk.Notebook(main)
+        notebook.pack(fill="both", expand=True, pady=(0, 10))
+
+        bindings = {}
+        for section_name, rows in spec.items():
+            tab = ttk.Frame(notebook, style="Dark.TFrame")
+            notebook.add(tab, text=section_name)
+            tab.columnconfigure(1, weight=1)
+            r = 0
+            for label_text, typ, aliases, tokens in rows:
+                ttk.Label(tab, text=label_text, style="Dark.TLabel", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", padx=(10, 10), pady=(10, 4))
+                if typ == "bool":
+                    var = tk.BooleanVar(value=False)
+                    widget = ttk.Checkbutton(tab, text="Enabled", variable=var, style="Dark.TCheckbutton")
+                    widget.grid(row=r, column=1, sticky="w", padx=(0, 10), pady=(10, 4))
+                else:
+                    var = tk.StringVar(value="")
+                    widget = ttk.Entry(tab, textvariable=var, style="Dark.TEntry")
+                    widget.grid(row=r, column=1, sticky="ew", padx=(0, 10), pady=(10, 4))
+                hint = ttk.Label(tab, text="", style="Dark.TLabel", font=("Segoe UI", 8), foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888")
+                hint.grid(row=r + 1, column=0, columnspan=2, sticky="w", padx=(10, 10), pady=(0, 4))
+                bindings[label_text] = {"type": typ, "aliases": aliases, "tokens": tokens, "var": var, "widget": widget, "hint": hint, "source": None}
+                r += 2
+
+        xml_root = None
+
+        def nkey(text):
+            return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
+        def set_ro(path, enabled):
+            import stat
+            if os.path.exists(path):
+                os.chmod(path, stat.S_IREAD if enabled else (stat.S_IWRITE | stat.S_IREAD))
+
+        def is_ro(path):
+            return os.path.exists(path) and (not os.access(path, os.W_OK))
+
+        def parse_sources(root):
+            out = {}
+            if root is None:
+                return out
+            allowed = {"bool", "int", "int64", "float", "token", "string"}
+            props = root.find(".//Properties")
+            if props is not None:
+                for child in list(props):
+                    name = str(child.get("name") or "").strip()
+                    if not name or child.tag not in allowed or list(child):
+                        continue
+                    out[nkey(name)] = {"name": name, "kind": "property", "type": child.tag, "element": child}
+            for node in root.findall(".//Setting[@name]"):
+                name = str(node.get("name") or "").strip()
+                if not name:
+                    continue
+                nk = nkey(name)
+                if nk in out:
+                    continue
+                out[nk] = {"name": name, "kind": "setting", "type": "string", "element": node}
+            return out
+
+        def resolve(entry, sources):
+            for alias in entry["aliases"]:
+                found = sources.get(nkey(alias))
+                if found is not None:
+                    return found
+            compatible = []
+            fallback = []
+            for cand in sources.values():
+                low = str(cand["name"]).lower()
+                if all(token in low for token in entry["tokens"]):
+                    if str(cand.get("type") or "").lower() == str(entry.get("type") or "").lower():
+                        compatible.append(cand)
+                    else:
+                        fallback.append(cand)
+            if compatible:
+                return compatible[0]
+            if fallback:
+                return fallback[0]
+            return None
+
+        def read_val(src, typ):
+            if src is None:
+                return False if typ == "bool" else ""
+            raw = str(src["element"].text or "").strip() if src["kind"] == "property" else str(src["element"].get("value") or "").strip()
+            if typ == "bool":
+                return raw.lower() in {"1", "true", "yes", "on"}
+            return raw
+
+        def write_norm(typ, value):
+            if typ == "bool":
+                return "true" if bool(value if isinstance(value, bool) else str(value).lower() in {"1", "true", "yes", "on"}) else "false"
+            text = str(value or "").strip()
+            if typ in {"int", "int64", "token"}:
+                if text == "":
+                    text = "0"
+                int(text)
+                return text
+            if typ == "float":
+                if text == "":
+                    text = "0"
+                float(text)
+                return text
+            return text
+
+        def load():
+            nonlocal xml_root
+            try:
+                import xml.etree.ElementTree as ET
+                if os.path.exists(settings_path):
+                    xml_root = ET.parse(settings_path).getroot()
+                else:
+                    xml_root = ET.Element("Settings")
+                readonly_var.set(is_ro(settings_path))
+                sources = parse_sources(xml_root)
+                mapped = 0
+                for binding in bindings.values():
+                    src = resolve(binding, sources)
+                    binding["source"] = src
+                    if src is None:
+                        binding["hint"].configure(text="Unavailable in this file.")
+                        binding["widget"].configure(state="disabled")
+                        if binding["type"] == "bool":
+                            binding["var"].set(False)
+                        else:
+                            binding["var"].set("")
+                    else:
+                        source_type = str(src.get("type") or "").lower()
+                        ui_type = str(binding.get("type") or "").lower()
+                        numeric_types = {"int", "int64", "token", "float"}
+                        compatible_type = (
+                            source_type == ui_type
+                            or (source_type in numeric_types and ui_type in numeric_types)
+                        )
+                        mapped += 1
+                        if compatible_type:
+                            binding["hint"].configure(text=f"Mapped to: {src['name']} ({source_type})")
+                            binding["widget"].configure(state="normal")
+                            binding["var"].set(read_val(src, binding["type"]))
+                        else:
+                            binding["hint"].configure(
+                                text=f"Mapped type mismatch: {src['name']} is '{source_type}', expected '{ui_type}'."
+                            )
+                            binding["widget"].configure(state="disabled")
+                            if binding["type"] == "bool":
+                                binding["var"].set(False)
+                            else:
+                                binding["var"].set("")
+                status_var.set(f"Loaded. Mapped {mapped}/{len(bindings)} fields.")
+            except Exception as exc:
+                messagebox.showerror("Roblox Settings", f"Failed to load settings: {exc}")
+
+        def reset_loaded():
+            if not messagebox.askyesno("Reset", "Reset loaded fields to defaults in editor?"):
+                return
+            for binding in bindings.values():
+                if binding["source"] is None:
+                    continue
+                if binding["type"] == "bool":
+                    binding["var"].set(False)
+                elif binding["type"] in {"int", "int64", "token", "float"}:
+                    binding["var"].set("0")
+                else:
+                    binding["var"].set("")
+            status_var.set("Editor reset complete. Click Save to write file.")
+
+        def save():
+            nonlocal xml_root
+            try:
+                import stat
+                import xml.etree.ElementTree as ET
+                from xml.dom import minidom
+                if os.path.exists(settings_path):
+                    try:
+                        os.chmod(settings_path, stat.S_IWRITE | stat.S_IREAD)
+                    except Exception:
+                        pass
+                    try:
+                        xml_root = ET.parse(settings_path).getroot()
+                    except Exception:
+                        xml_root = ET.Element("Settings")
+                elif xml_root is None:
+                    xml_root = ET.Element("Settings")
+
+                sources = parse_sources(xml_root)
+                for binding in bindings.values():
+                    binding["source"] = resolve(binding, sources)
+
+                updated = 0
+                for label, binding in bindings.items():
+                    src = binding["source"]
+                    if src is None:
+                        continue
+                    source_type = str(src.get("type") or binding.get("type") or "string").lower()
+                    try:
+                        norm = write_norm(source_type, binding["var"].get())
+                    except ValueError:
+                        if source_type in {"int", "int64", "token"}:
+                            raise ValueError(f"'{label}' must be a whole number.")
+                        if source_type == "float":
+                            raise ValueError(f"'{label}' must be a number (example: 0.5).")
+                        raise ValueError(f"'{label}' has an invalid value.")
+                    if src["kind"] == "property":
+                        src["element"].text = norm
+                    else:
+                        src["element"].set("value", norm)
+                    updated += 1
+                os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+                if os.path.exists(settings_path):
+                    try:
+                        shutil.copy2(settings_path, settings_path + ".backup")
+                    except Exception:
+                        pass
+                xml_str = ET.tostring(xml_root, encoding="unicode")
+                pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="\t")[23:]
+                with open(settings_path, "w", encoding="utf-8") as handle:
+                    handle.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                    handle.write(pretty_xml)
+                set_ro(settings_path, bool(readonly_var.get()))
+                status_var.set(f"Saved {updated} fields.")
+                messagebox.showinfo("Roblox Settings", "Settings saved successfully.")
+                load()
+            except ValueError as exc:
+                messagebox.showerror("Invalid Value", str(exc))
+            except Exception as exc:
+                messagebox.showerror("Roblox Settings", f"Failed to save settings: {exc}")
+
+        buttons = ttk.Frame(main, style="Dark.TFrame")
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Reset Loaded Fields", style="Dark.TButton", command=reset_loaded).pack(side="left", fill="x", expand=True, padx=(0, 5))
+        ttk.Button(buttons, text="Save", style="Dark.TButton", command=save).pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Button(buttons, text="Reload", style="Dark.TButton", command=load).pack(side="left", fill="x", expand=True, padx=(5, 0))
+        ttk.Button(buttons, text="Close", style="Dark.TButton", command=self.global_settings_window.destroy).pack(side="left", fill="x", expand=True, padx=(5, 0))
+
+        load()
+        self.global_settings_window.bind("<Control-s>", lambda _evt: (save(), "break")[1])
 
     def open_fastflags_editor(self):
         """Open the FastFlags editor window."""
