@@ -920,6 +920,7 @@ class AccountManagerUI:
         self.private_server_entry.pack(fill="x")
         self.private_server_entry.insert(0, self.settings.get("last_private_server", ""))
         self.private_server_entry.bind("<KeyRelease>", self.on_private_server_change)
+        self.private_server_entry.bind("<Button-1>", self.on_place_target_field_click)
         self.private_server_label.bind("<Button-3>", self.show_place_target_context_menu)
         self.private_server_entry.bind("<Button-3>", self.show_place_target_context_menu)
 
@@ -3370,6 +3371,14 @@ class AccountManagerUI:
         """Called when private server ID changes"""
         private_server = self.private_server_entry.get().strip()
         self._schedule_setting_save("last_private_server", private_server, delay_ms=250)
+
+    def on_place_target_field_click(self, event=None):
+        if self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id")) != "place_id":
+            return None
+        if self._normalize_place_target_mode(getattr(self, "place_join_target_mode", "private_server")) != "subplaces":
+            return None
+        self.open_subplaces_selector()
+        return "break"
 
     def _normalize_launch_input_mode(self, mode):
         normalized = str(mode or "place_id").strip().lower()
