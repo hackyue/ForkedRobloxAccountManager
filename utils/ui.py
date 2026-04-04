@@ -49,10 +49,29 @@ ROBLOX_DEPLOY_HISTORY_URL = "https://setup.rbxcdn.com/DeployHistory.txt"
 WEAO_VERSIONS_CURRENT_PATH = "/api/versions/current"
 WEAO_API_HOSTS = ("weao.xyz", "whatexpsare.online", "weao.gg", "whatexploitsaretra.sh")
 WEAO_API_USER_AGENT = "WEAO-3PService"
+
+
 DISCORD_SERVER_URL = "https://discord.gg/SpMTxg8YjJ"
+
+
+"""Assets URLs (can be updated remotely for dynamic content without needing app updates)"""
 DISCORD_LOGO_URL = (
-    "https://raw.githubusercontent.com/hackyue/icons/refs/heads/main/discord-square-color-icon.png"
+    "https://raw.githubusercontent.com/hackyue/FRAMAssets/refs/heads/main/AppIcons/Discord.png"
 )
+ADDITIONAL_THEMES_URL = (
+    "https://raw.githubusercontent.com/hackyue/FRAMAssets/refs/heads/main/Themes/themes.json"
+)
+
+
+
+
+
+
+
+
+
+
+
 
 ROBLOX_DOWNLOAD_HEADERS = {
     "User-Agent": (
@@ -774,6 +793,9 @@ class AccountManagerUI:
             os.makedirs(self.data_folder)
         
         self.settings_file = os.path.join(self.data_folder, "ui_settings.json")
+        self.custom_themes_file = os.path.join(self.data_folder, "custom_themes.json")
+        self.custom_themes = {}
+        self._load_custom_themes_from_disk()
         self.load_settings()
         self.console_output.set_redaction_enabled_getter(
             lambda: bool(self.settings.get("hide_sensitive_info", False))
@@ -2705,6 +2727,117 @@ class AccountManagerUI:
                 json.dump(self.settings, f, indent=2)
         except Exception as e:
             print(f"Failed to save settings: {e}")
+
+    def _theme_required_keys(self):
+        return {
+            "root_bg",
+            "frame_bg",
+            "panel_bg",
+            "panel_alt",
+            "text",
+            "text_muted",
+            "accent",
+            "accent_alt",
+            "entry_bg",
+            "entry_fg",
+            "border",
+            "hover_bg",
+            "list_bg",
+            "list_select",
+            "font",
+            "font_size",
+        }
+
+    def _validate_theme_object(self, name, value):
+        if not isinstance(value, dict):
+            return False, f"Theme '{name}' must be an object."
+        missing = [key for key in self._theme_required_keys() if key not in value]
+        if missing:
+            return False, f"Theme '{name}' is missing required keys: {', '.join(sorted(missing))}"
+        return True, ""
+
+    def _merge_themes(self, themes_payload):
+        if not isinstance(themes_payload, dict):
+            raise ValueError("Theme payload must be a JSON object.")
+
+        merged_count = 0
+        for theme_name, theme_obj in themes_payload.items():
+            name = str(theme_name or "").strip()
+            if not name:
+                continue
+            is_valid, error_message = self._validate_theme_object(name, theme_obj)
+            if not is_valid:
+                raise ValueError(error_message)
+
+            normalized = {
+                "root_bg": str(theme_obj["root_bg"]),
+                "frame_bg": str(theme_obj["frame_bg"]),
+                "panel_bg": str(theme_obj["panel_bg"]),
+                "panel_alt": str(theme_obj["panel_alt"]),
+                "text": str(theme_obj["text"]),
+                "text_muted": str(theme_obj["text_muted"]),
+                "accent": str(theme_obj["accent"]),
+                "accent_alt": str(theme_obj["accent_alt"]),
+                "entry_bg": str(theme_obj["entry_bg"]),
+                "entry_fg": str(theme_obj["entry_fg"]),
+                "border": str(theme_obj["border"]),
+                "hover_bg": str(theme_obj["hover_bg"]),
+                "list_bg": str(theme_obj["list_bg"]),
+                "list_select": str(theme_obj["list_select"]),
+                "font": str(theme_obj["font"]),
+                "font_size": int(theme_obj["font_size"]),
+            }
+            THEMES[name] = normalized
+            self.custom_themes[name] = dict(normalized)
+            merged_count += 1
+
+        return merged_count
+
+    def _save_custom_themes_to_disk(self):
+        try:
+            os.makedirs(self.data_folder, exist_ok=True)
+            with open(self.custom_themes_file, "w", encoding="utf-8") as handle:
+                json.dump(self.custom_themes, handle, indent=2)
+            return True
+        except Exception as exc:
+            print(f"Failed to save custom themes: {exc}")
+            return False
+
+    def _load_custom_themes_from_disk(self):
+        try:
+            if not os.path.exists(self.custom_themes_file):
+                self.custom_themes = {}
+                return
+            with open(self.custom_themes_file, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict):
+                self.custom_themes = {}
+                return
+            self.custom_themes = {}
+            for theme_name, theme_obj in payload.items():
+                name = str(theme_name or "").strip()
+                if not name:
+                    continue
+                is_valid, _ = self._validate_theme_object(name, theme_obj)
+                if not is_valid:
+                    continue
+                THEMES[name] = dict(theme_obj)
+                self.custom_themes[name] = dict(theme_obj)
+        except Exception as exc:
+            print(f"Failed to load custom themes: {exc}")
+            self.custom_themes = {}
+
+    def install_additional_themes_from_url(self, url):
+        target_url = str(url or "").strip()
+        if not target_url:
+            raise ValueError("Theme URL is empty.")
+
+        response = self._get_http_session().get(target_url, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        merged = self._merge_themes(payload)
+        self._save_custom_themes_to_disk()
+        return merged
 
     def _load_discord_button_image(self, size=32):
         """Load Discord logo PNG for the settings header button (cached under AccountManagerData/cache)."""
@@ -6886,6 +7019,30 @@ class AccountManagerUI:
             self.apply_theme(selected_theme)
 
         theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
+
+        def install_additional_themes():
+            try:
+                imported = self.install_additional_themes_from_url(ADDITIONAL_THEMES_URL)
+                theme_names = list(THEMES.keys())
+                theme_combo.configure(values=theme_names)
+                current_theme = str(theme_var.get() or "").strip()
+                if current_theme and current_theme in theme_names:
+                    theme_combo.set(current_theme)
+                messagebox.showinfo("Themes", f"Installed {imported} theme(s).")
+                if install_themes_button is not None and install_themes_button.winfo_exists():
+                    install_themes_button.destroy()
+            except Exception as exc:
+                messagebox.showerror("Themes", f"Failed to install themes: {exc}")
+
+        install_themes_button = None
+        if not bool(self.custom_themes):
+            install_themes_button = ttk.Button(
+                theme_card,
+                text="Install Additional Themes",
+                style="Dark.TButton",
+                command=install_additional_themes,
+            )
+            install_themes_button.pack(fill="x", pady=(2, 0))
 
         browser_card = create_settings_card(general_tab, "Browser Automation")
         available_browsers = self._get_available_browsers()
