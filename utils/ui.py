@@ -703,7 +703,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.4.3"
+        self.APP_VERSION = "2.4.4"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -782,7 +782,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.4.3 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.4.4 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -905,6 +905,7 @@ class AccountManagerUI:
         self.account_context_menu.add_command(label="Validate Account", command=self.validate_account)
         self.account_context_menu.add_command(label="Edit Note", command=self.edit_account_note)
         self.account_context_menu.add_command(label="Set Group", command=self.edit_account_group)
+        self.account_context_menu.add_command(label="Set VIP Server", command=self.edit_account_vip_server)
 
         self.account_drop_indicator = tk.Frame(self.account_list, height=2, bg=self.FG_ACCENT)
 
@@ -1024,6 +1025,7 @@ class AccountManagerUI:
         action_frame.pack(fill="x", pady=(5, 0))
 
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
+        ttk.Button(action_frame, text="VIP Server Mapping", style="Dark.TButton", command=self.open_vip_server_manager).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
         self.trim_roblox_memory_btn = ttk.Button(
             action_frame,
@@ -1047,6 +1049,7 @@ class AccountManagerUI:
 
         self.add_account_menu = tk.Menu(self.root, tearoff=False)
         self.add_account_menu.add_command(label="Quick Sign-In", command=self.open_quick_sign_in_window)
+        self.add_account_menu.add_command(label="Import VIP CSV", command=self.import_vip_servers_csv)
 
         ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.delete_account).pack(
             side="left", fill="both", expand=True, padx=2
@@ -1885,6 +1888,17 @@ class AccountManagerUI:
         )
         cred_btn.pack(side="left", padx=(0, 8))
         self.menu_buttons.append(cred_btn)
+
+        vip_btn = tk.Button(
+            self.menu_bar_frame,
+            text="VIP Servers",
+            command=self.open_vip_server_manager,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0
+        )
+        vip_btn.pack(side="left", padx=(0, 8))
+        self.menu_buttons.append(vip_btn)
 
         force_btn = tk.Button(
             self.menu_bar_frame,
@@ -4042,11 +4056,14 @@ class AccountManagerUI:
                 continue
 
             note = (data.get('note') or '').strip()
+            vip_server = (data.get('vip_server') or '').strip()
             display_text = f"{username}"
             if self._account_validation_status.get(username) is False:
                 display_text = f"{INVALID_ACCOUNT_SYMBOL} {display_text}"
             if group:
                 display_text += f" | [{group}]"
+            if vip_server:
+                display_text += " | [VIP]"
             if note:
                 display_text += f" | {note}"
 
@@ -5799,6 +5816,292 @@ class AccountManagerUI:
         self.refresh_group_dropdown_values()
         self.refresh_accounts(selected_usernames=usernames)
 
+    def edit_account_vip_server(self):
+        if self.settings.get("enable_multi_select", False):
+            usernames = self.get_selected_usernames()
+            if not usernames:
+                return
+        else:
+            username = self.get_selected_username()
+            if not username:
+                return
+            usernames = [username]
+
+        initial_value = ""
+        if len(usernames) == 1:
+            initial_value = self.manager.get_account_vip_server(usernames[0])
+
+        vip_input = simpledialog.askstring(
+            "Set VIP Server",
+            "Enter private server link or VIP link code (blank to clear):",
+            initialvalue=initial_value
+        )
+        if vip_input is None:
+            return
+
+        mapping = {uname: vip_input for uname in usernames}
+        result = self.manager.bulk_set_account_vip_servers(mapping)
+        self.refresh_accounts(selected_usernames=usernames)
+
+        if result.get("changed", 0) > 0:
+            if len(usernames) == 1:
+                self.show_success_message(f"VIP server updated for '{usernames[0]}'.")
+            else:
+                self.show_success_message(f"VIP server updated for {result.get('changed', 0)} account(s).")
+
+    def _read_vip_server_csv_mapping(self, file_path):
+        mapping = {}
+        with open(file_path, "r", encoding="utf-8-sig", newline="") as csv_file:
+            rows = list(csv.reader(csv_file))
+
+        if not rows:
+            return mapping
+
+        header = [str(cell or "").strip().lower() for cell in rows[0]]
+        username_header_aliases = {"username", "user", "account", "name"}
+        vip_header_aliases = {
+            "private_server_link",
+            "private_server",
+            "vip_server",
+            "vip",
+            "vip_link",
+            "private_server_link_or_code",
+        }
+
+        has_header = (
+            any(cell in username_header_aliases for cell in header)
+            and any(cell in vip_header_aliases for cell in header)
+        )
+
+        if has_header:
+            with open(file_path, "r", encoding="utf-8-sig", newline="") as csv_file:
+                reader = csv.DictReader(csv_file)
+                field_lookup = {}
+                for raw_field in (reader.fieldnames or []):
+                    normalized_field = str(raw_field or "").strip().lower()
+                    if normalized_field:
+                        field_lookup[normalized_field] = raw_field
+                for row in reader:
+                    if not isinstance(row, dict):
+                        continue
+                    username = ""
+                    vip_value = ""
+                    for key in username_header_aliases:
+                        source_field = field_lookup.get(key)
+                        username = str(row.get(source_field, "") or "").strip() if source_field else ""
+                        if username:
+                            break
+                    for key in vip_header_aliases:
+                        source_field = field_lookup.get(key)
+                        vip_value = str(row.get(source_field, "") or "").strip() if source_field else ""
+                        if vip_value:
+                            break
+                    if username:
+                        mapping[username] = vip_value
+            return mapping
+
+        for row in rows:
+            if not row:
+                continue
+            username = str(row[0] if len(row) >= 1 else "").strip()
+            vip_value = str(row[1] if len(row) >= 2 else "").strip()
+            if username:
+                mapping[username] = vip_value
+
+        return mapping
+
+    def import_vip_servers_csv(self):
+        file_path = filedialog.askopenfilename(
+            title="Import VIP Server CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not file_path:
+            return
+
+        try:
+            mapping = self._read_vip_server_csv_mapping(file_path)
+        except Exception as exc:
+            messagebox.showerror("Import VIP CSV", f"Failed to read CSV: {exc}")
+            return
+
+        if not mapping:
+            messagebox.showwarning(
+                "Import VIP CSV",
+                "No rows found. Expected CSV columns like username,private_server_link."
+            )
+            return
+
+        result = self.manager.bulk_set_account_vip_servers(mapping)
+        self.refresh_accounts(selected_usernames=list(mapping.keys()))
+
+        missing = result.get("missing", [])
+        summary = [
+            f"Rows parsed: {len(mapping)}",
+            f"Matched accounts: {result.get('matched', 0)}",
+            f"Changed mappings: {result.get('changed', 0)}",
+            f"Missing accounts: {len(missing)}",
+        ]
+        if missing:
+            preview = ", ".join(missing[:8])
+            suffix = "..." if len(missing) > 8 else ""
+            summary.append("")
+            summary.append(f"Missing usernames: {preview}{suffix}")
+        self.show_success_message("\n".join(summary), title="Import VIP CSV")
+
+    def open_vip_server_manager(self):
+        window = tk.Toplevel(self.root)
+        window.title("VIP Server Mapping")
+        window.geometry("780x460")
+        window.minsize(680, 360)
+        window.configure(bg=self.BG_DARK)
+        window.transient(self.root)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+
+        main_frame = ttk.Frame(window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=12, pady=12)
+
+        ttk.Label(
+            main_frame,
+            text="Assign private server links/codes per account",
+            style="Dark.TLabel",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        list_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        list_frame.pack(fill="both", expand=True)
+
+        tree = ttk.Treeview(
+            list_frame,
+            columns=("username", "group", "vip_server"),
+            show="headings",
+            style="Dark.Treeview",
+            selectmode="extended",
+        )
+        tree.heading("username", text="Username")
+        tree.heading("group", text="Group")
+        tree.heading("vip_server", text="VIP Server")
+        tree.column("username", width=170, anchor="w")
+        tree.column("group", width=130, anchor="w")
+        tree.column("vip_server", width=420, anchor="w")
+        tree.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame, command=tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        selected_label_var = tk.StringVar(value="Selected: (none)")
+        selected_label = ttk.Label(main_frame, textvariable=selected_label_var, style="Dark.TLabel")
+        selected_label.pack(anchor="w", pady=(8, 4))
+
+        vip_entry = ttk.Entry(main_frame, style="Dark.TEntry")
+        vip_entry.pack(fill="x")
+
+        def refresh_tree():
+            selected_usernames = []
+            for item_id in tree.selection():
+                values = tree.item(item_id, "values") or []
+                if len(values) >= 1:
+                    selected_usernames.append(str(values[0]))
+
+            tree.delete(*tree.get_children())
+            for username, data in self.manager.accounts.items():
+                if not isinstance(data, dict):
+                    continue
+                group = str(data.get("group", "") or "").strip()
+                vip_server = str(data.get("vip_server", "") or "").strip()
+                tree.insert("", "end", values=(username, group, vip_server))
+
+            if selected_usernames:
+                wanted = set(selected_usernames)
+                for item_id in tree.get_children():
+                    values = tree.item(item_id, "values") or []
+                    if len(values) >= 1 and str(values[0]) in wanted:
+                        tree.selection_add(item_id)
+                on_tree_select()
+
+        def on_tree_select(_event=None):
+            selected_items = tree.selection()
+            if not selected_items:
+                selected_label_var.set("Selected: (none)")
+                vip_entry.delete(0, tk.END)
+                return
+
+            usernames = []
+            first_value = ""
+            for index, item_id in enumerate(selected_items):
+                values = tree.item(item_id, "values") or []
+                if len(values) < 1:
+                    continue
+                usernames.append(str(values[0]))
+                if index == 0 and len(values) >= 3:
+                    first_value = str(values[2] or "").strip()
+
+            if not usernames:
+                selected_label_var.set("Selected: (none)")
+                vip_entry.delete(0, tk.END)
+                return
+
+            if len(usernames) == 1:
+                selected_label_var.set(f"Selected: {usernames[0]}")
+            else:
+                selected_label_var.set(f"Selected: {len(usernames)} accounts")
+            vip_entry.delete(0, tk.END)
+            vip_entry.insert(0, first_value)
+
+        def apply_to_selection():
+            selected_items = tree.selection()
+            if not selected_items:
+                messagebox.showwarning("VIP Server Mapping", "Select at least one account first.")
+                return
+
+            vip_value = vip_entry.get().strip()
+            mapping = {}
+            for item_id in selected_items:
+                values = tree.item(item_id, "values") or []
+                if len(values) >= 1:
+                    mapping[str(values[0])] = vip_value
+
+            if not mapping:
+                return
+
+            result = self.manager.bulk_set_account_vip_servers(mapping)
+            refresh_tree()
+            self.refresh_accounts(selected_usernames=list(mapping.keys()))
+
+            changed = result.get("changed", 0)
+            if changed > 0:
+                self.show_success_message(f"Updated VIP mapping for {changed} account(s).")
+
+        def clear_selection():
+            vip_entry.delete(0, tk.END)
+            apply_to_selection()
+
+        def import_csv_and_refresh():
+            self.import_vip_servers_csv()
+            refresh_tree()
+
+        button_row = ttk.Frame(main_frame, style="Dark.TFrame")
+        button_row.pack(fill="x", pady=(8, 0))
+
+        ttk.Button(button_row, text="Apply to Selected", style="Dark.TButton", command=apply_to_selection).pack(
+            side="left", fill="x", expand=True, padx=(0, 5)
+        )
+        ttk.Button(button_row, text="Clear Selected", style="Dark.TButton", command=clear_selection).pack(
+            side="left", fill="x", expand=True, padx=(5, 5)
+        )
+        ttk.Button(button_row, text="Import CSV", style="Dark.TButton", command=import_csv_and_refresh).pack(
+            side="left", fill="x", expand=True, padx=(5, 5)
+        )
+        ttk.Button(button_row, text="Close", style="Dark.TButton", command=window.destroy).pack(
+            side="left", fill="x", expand=True, padx=(5, 0)
+        )
+
+        tree.bind("<<TreeviewSelect>>", on_tree_select)
+        window.bind("<Escape>", lambda _evt: window.destroy())
+        refresh_tree()
+
     def refresh_group_dropdown_values(self):
         groups = self.manager.get_groups()
         values = ["All"] + groups
@@ -6169,6 +6472,8 @@ class AccountManagerUI:
         game_id = target_value
         place_target_value = self.private_server_entry.get().strip() if launch_mode == "place_id" else ""
         private_server = place_target_value if (launch_mode == "place_id" and place_target_mode == "private_server") else ""
+        if private_server:
+            private_server = self.manager.normalize_private_server(private_server)
         manual_server_job_id = place_target_value if (launch_mode == "place_id" and place_target_mode == "job_id") else ""
         if launch_mode == "place_id" and place_target_mode == "subplaces" and place_target_value:
             if not str(place_target_value).isdigit():
@@ -6209,6 +6514,7 @@ class AccountManagerUI:
         def worker(selected_usernames, pid, psid, manual_job_id, ver, debug_flag, delay_seconds, randomize_jobs, prefer_small, active_launch_mode, join_input_text):
             success_count = 0
             recent_join_username = ""
+            last_effective_private_server = psid
             if active_launch_mode == "join_user":
                 entered = str(join_input_text or "").strip()
                 if entered and not entered.isdigit():
@@ -6220,10 +6526,6 @@ class AccountManagerUI:
                     print("[INFO] Private server ID is ignored in Join User mode.")
                 if randomize_jobs or prefer_small:
                     print("[INFO] Public server selection settings are ignored in Join User mode.")
-            if randomize_jobs and psid:
-                print("[INFO] Random Job ID setting ignored because a private server link code is set.")
-            if prefer_small and psid:
-                print("[INFO] Lowest-population server setting ignored because a private server link code is set.")
             if randomize_jobs and manual_job_id:
                 print("[INFO] Random Job ID setting ignored because a manual Job ID is set.")
             if prefer_small and manual_job_id:
@@ -6232,13 +6534,20 @@ class AccountManagerUI:
                 print("[INFO] Lowest-population server setting is enabled; random server selection will be ignored.")
             for idx, uname in enumerate(selected_usernames):
                 try:
+                    account_private_server = psid
+                    if active_launch_mode != "join_user" and not manual_job_id:
+                        mapped_vip_server = self.manager.get_account_vip_server(uname)
+                        if mapped_vip_server:
+                            account_private_server = mapped_vip_server
+                            print(f"[INFO] Using mapped VIP server for {uname}.")
+
                     server_job_id = ""
                     effective_server_job_id = ""
                     if active_launch_mode == "join_user":
                         server_job_id = ""
                     elif manual_job_id:
                         server_job_id = str(manual_job_id).strip()
-                    elif prefer_small and not psid:
+                    elif prefer_small and not account_private_server:
                         max_small_server_attempts = 3
                         for attempt in range(1, max_small_server_attempts + 1):
                             server_job_id = RobloxAPI.get_lowest_public_server_job_id(pid) or ""
@@ -6248,7 +6557,7 @@ class AccountManagerUI:
                                 time.sleep(0.6 * attempt)
                         if not server_job_id:
                             print("[INFO] Low-population public server unavailable; launching without job ID override.")
-                    elif randomize_jobs and not psid:
+                    elif randomize_jobs and not account_private_server:
                         max_random_job_attempts = 3
                         for attempt in range(1, max_random_job_attempts + 1):
                             server_job_id = RobloxAPI.get_random_public_server_job_id(pid) or ""
@@ -6258,30 +6567,37 @@ class AccountManagerUI:
                                 time.sleep(0.6 * attempt)
                         if not server_job_id:
                             print("[INFO] Random public server unavailable; launching without randomized job ID.")
+
+                    if randomize_jobs and account_private_server:
+                        print(f"[INFO] Random Job ID setting ignored for {uname} because a private server link code is set.")
+                    if prefer_small and account_private_server:
+                        print(f"[INFO] Lowest-population server setting ignored for {uname} because a private server link code is set.")
+
                     before_pids = self._get_running_tracked_roblox_pid_set()
                     launched = self.manager.launch_roblox(
                         uname,
                         pid,
-                        psid,
+                        account_private_server,
                         ver,
                         enable_debug=debug_flag,
                         server_job_id=server_job_id,
                         launch_mode=active_launch_mode,
                     )
+                    last_effective_private_server = account_private_server
                     effective_server_job_id = server_job_id
                     if (
                         active_launch_mode != "join_user"
                         and (not launched)
                         and server_job_id
                         and (randomize_jobs or prefer_small)
-                        and not psid
+                        and not account_private_server
                         and not manual_job_id
                     ):
                         print("[INFO] Server job ID launch failed; retrying with default launch.")
                         launched = self.manager.launch_roblox(
                             uname,
                             pid,
-                            psid,
+                            account_private_server,
                             ver,
                             enable_debug=debug_flag,
                             server_job_id="",
@@ -6303,7 +6619,7 @@ class AccountManagerUI:
                         launch_context={
                             "mode": "join_user" if active_launch_mode == "join_user" else "game",
                             "game_id": pid,
-                            "private_server_id": psid,
+                            "private_server_id": account_private_server,
                             "server_job_id": effective_server_job_id,
                             "version_path": ver,
                         },
@@ -6316,11 +6632,12 @@ class AccountManagerUI:
             def on_done():
                 if success_count > 0:
                     if active_launch_mode != "join_user":
+                        recent_private_server = last_effective_private_server if len(selected_usernames) == 1 else psid
                         gname = RobloxAPI.get_game_name(pid)
                         if gname:
-                            self.add_game_to_list(pid, gname, psid)
+                            self.add_game_to_list(pid, gname, recent_private_server)
                         else:
-                            self.add_game_to_list(pid, f"Place {pid}", psid)
+                            self.add_game_to_list(pid, f"Place {pid}", recent_private_server)
                     else:
                         self.add_recent_user_to_list(pid, recent_join_username)
                     if len(selected_usernames) == 1:

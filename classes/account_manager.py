@@ -11,6 +11,8 @@ import tempfile
 import hashlib
 import shutil
 import subprocess
+import re
+from urllib.parse import urlparse, parse_qs
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -102,6 +104,41 @@ class RobloxAccountManager:
                     account_data['group'] = ''
                 if 'password' not in account_data:
                     account_data['password'] = ''
+                if 'vip_server' not in account_data:
+                    account_data['vip_server'] = ''
+
+    def normalize_private_server(self, value):
+        """Normalize private server input to a Roblox link code when possible."""
+        text = str(value or "").strip()
+        if not text:
+            return ""
+
+        parsed_code = ""
+        lowered = text.lower()
+        if "://" in text or "roblox.com" in lowered:
+            try:
+                parsed = urlparse(text if "://" in text else f"https://{text}")
+                query_values = parse_qs(parsed.query or "")
+                for key in ("privateServerLinkCode", "linkCode", "privateServerId", "vipServerId", "code"):
+                    values = query_values.get(key) or []
+                    if values:
+                        parsed_code = str(values[0] or "").strip()
+                        if parsed_code:
+                            break
+            except Exception:
+                parsed_code = ""
+
+        if not parsed_code:
+            match = re.search(
+                r"(?i)(?:privateServerLinkCode|linkCode|privateServerId|vipServerId|code)\s*=\s*([A-Za-z0-9_-]+)",
+                text,
+            )
+            if match:
+                parsed_code = str(match.group(1) or "").strip()
+
+        if parsed_code:
+            return parsed_code
+        return text
     
     def save_accounts(self):
         """Save accounts to JSON file"""
@@ -815,6 +852,7 @@ class RobloxAccountManager:
                             "added_date": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "note": "",
                             "group": "",
+                            "vip_server": "",
                         }
                         self.save_accounts()
                         return {
@@ -928,7 +966,8 @@ class RobloxAccountManager:
                                 'password': captured_password,
                                 'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                                 'note': '',
-                                'group': ''
+                                'group': '',
+                                'vip_server': '',
                             }
                             self.save_accounts()
                             
@@ -1067,7 +1106,8 @@ class RobloxAccountManager:
                     'password': str(input_password),
                     'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                     'note': '',
-                    'group': ''
+                    'group': '',
+                    'vip_server': '',
                 }
                 self.save_accounts()
                 success_count += 1
@@ -1112,7 +1152,8 @@ class RobloxAccountManager:
                 'password': '',
                 'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                 'note': '',
-                'group': ''
+                'group': '',
+                'vip_server': '',
             }
             self.save_accounts()
             
@@ -1289,3 +1330,49 @@ class RobloxAccountManager:
             if (account_data.get('group') or '').strip() == group:
                 usernames.append(username)
         return usernames
+
+    def set_account_vip_server(self, username, vip_server):
+        if username not in self.accounts:
+            print(f"[ERROR] Account '{username}' not found")
+            return False
+
+        normalized = self.normalize_private_server(vip_server)
+        self.accounts[username]['vip_server'] = normalized
+        self.save_accounts()
+        return True
+
+    def get_account_vip_server(self, username):
+        if username in self.accounts and isinstance(self.accounts[username], dict):
+            stored = self.accounts[username].get('vip_server', '')
+            return self.normalize_private_server(stored)
+        return ''
+
+    def bulk_set_account_vip_servers(self, username_to_vip_server):
+        if not isinstance(username_to_vip_server, dict):
+            return {"matched": 0, "changed": 0, "missing": []}
+
+        matched = 0
+        changed = 0
+        missing = []
+
+        for raw_username, raw_value in username_to_vip_server.items():
+            username = str(raw_username or "").strip()
+            if not username:
+                continue
+
+            account_data = self.accounts.get(username)
+            if not isinstance(account_data, dict):
+                missing.append(username)
+                continue
+
+            matched += 1
+            normalized_value = self.normalize_private_server(raw_value)
+            current_value = str(account_data.get('vip_server', '') or '').strip()
+            if current_value != normalized_value:
+                account_data['vip_server'] = normalized_value
+                changed += 1
+
+        if changed > 0:
+            self.save_accounts()
+
+        return {"matched": matched, "changed": changed, "missing": missing}
