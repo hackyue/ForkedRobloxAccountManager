@@ -782,7 +782,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.4.4 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.4.4pr - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -1049,7 +1049,6 @@ class AccountManagerUI:
 
         self.add_account_menu = tk.Menu(self.root, tearoff=False)
         self.add_account_menu.add_command(label="Quick Sign-In", command=self.open_quick_sign_in_window)
-        self.add_account_menu.add_command(label="Import VIP CSV", command=self.import_vip_servers_csv)
 
         ttk.Button(bottom_frame, text="Remove", style="Dark.TButton", command=self.delete_account).pack(
             side="left", fill="both", expand=True, padx=2
@@ -6078,9 +6077,22 @@ class AccountManagerUI:
             vip_entry.delete(0, tk.END)
             apply_to_selection()
 
-        def import_csv_and_refresh():
-            self.import_vip_servers_csv()
-            refresh_tree()
+        def launch_selection():
+            selected_items = tree.selection()
+            if not selected_items:
+                messagebox.showwarning("Launch", "Select at least one account first.")
+                return
+
+            usernames = []
+            for item_id in selected_items:
+                values = tree.item(item_id, "values") or []
+                if len(values) >= 1:
+                    usernames.append(str(values[0]))
+            if not usernames:
+                messagebox.showwarning("Launch", "Select at least one account first.")
+                return
+
+            self._launch_game_for_usernames(usernames)
 
         button_row = ttk.Frame(main_frame, style="Dark.TFrame")
         button_row.pack(fill="x", pady=(8, 0))
@@ -6091,7 +6103,7 @@ class AccountManagerUI:
         ttk.Button(button_row, text="Clear Selected", style="Dark.TButton", command=clear_selection).pack(
             side="left", fill="x", expand=True, padx=(5, 5)
         )
-        ttk.Button(button_row, text="Import CSV", style="Dark.TButton", command=import_csv_and_refresh).pack(
+        ttk.Button(button_row, text="Launch", style="Dark.TButton", command=launch_selection).pack(
             side="left", fill="x", expand=True, padx=(5, 5)
         )
         ttk.Button(button_row, text="Close", style="Dark.TButton", command=window.destroy).pack(
