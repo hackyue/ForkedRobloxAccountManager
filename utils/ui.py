@@ -16,6 +16,7 @@ import requests
 import json
 import math
 import csv
+import base64
 import atexit
 import platform
 import time
@@ -6349,6 +6350,162 @@ class AccountManagerUI:
 
         return pid_to_image
 
+    def _query_roblox_process_command_lines(self, executables):
+        """Return pid->commandline for tracked Roblox executables via CIM."""
+        pid_to_commandline = {}
+        target_exes = {str(item).strip().lower() for item in (executables or set()) if item}
+        if not target_exes:
+            return pid_to_commandline
+
+        process_names = sorted({name[:-4] if name.endswith(".exe") else name for name in target_exes})
+        if not process_names:
+            return pid_to_commandline
+
+        escaped_names = ", ".join([f"'{name}'" for name in process_names])
+        ps_script = (
+            f"$names=@({escaped_names}); "
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $names -contains (($_.Name -replace '\\.exe$','').ToLower()) } | "
+            "Select-Object ProcessId,Name,CommandLine | "
+            "ConvertTo-Json -Compress"
+        )
+
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                **subprocess_no_window_kwargs(),
+            )
+        except Exception:
+            return pid_to_commandline
+
+        stdout = str(result.stdout or "").strip()
+        if not stdout:
+            return pid_to_commandline
+
+        try:
+            payload = json.loads(stdout)
+        except Exception:
+            return pid_to_commandline
+
+        rows = payload if isinstance(payload, list) else [payload]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                pid_value = int(row.get("ProcessId", 0) or 0)
+            except Exception:
+                pid_value = 0
+            if pid_value <= 0:
+                continue
+            command_line = str(row.get("CommandLine", "") or "").strip()
+            pid_to_commandline[pid_value] = command_line
+
+        return pid_to_commandline
+
+    def _extract_place_id_from_command_line(self, command_line):
+        text = str(command_line or "").strip()
+        if not text:
+            return ""
+
+        patterns = [
+            r"(?i)[?&]placeId=(\d+)",
+            r"(?i)placeid%3d(\d+)",
+            r"(?i)placeid[:=](\d+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                place_id = str(match.group(1) or "").strip()
+                if place_id.isdigit():
+                    return place_id
+        return ""
+
+    def _read_recent_place_ids_from_logs(self, max_files=12):
+        place_ids = []
+        logs_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Roblox", "logs")
+        if not os.path.isdir(logs_dir):
+            return place_ids
+
+        try:
+            entries = [
+                os.path.join(logs_dir, name)
+                for name in os.listdir(logs_dir)
+                if name.lower().endswith(".log")
+            ]
+            entries.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+        except Exception:
+            return place_ids
+
+        patterns = [
+            re.compile(r"(?i)[?&]placeId=(\d+)"),
+            re.compile(r"(?i)\bplaceid\b[^0-9]{0,8}(\d+)"),
+        ]
+
+        for log_path in entries[:max_files]:
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="ignore") as log_file:
+                    content = log_file.read()
+            except Exception:
+                continue
+
+            for pattern in patterns:
+                for match in pattern.findall(content):
+                    place_id = str(match or "").strip()
+                    if place_id.isdigit():
+                        place_ids.append(place_id)
+
+        if not place_ids:
+            return []
+
+        unique = []
+        seen = set()
+        for place_id in reversed(place_ids):
+            if place_id in seen:
+                continue
+            seen.add(place_id)
+            unique.append(place_id)
+        unique.reverse()
+        return unique
+
+    def _query_pid_place_id_map(self, executables):
+        pid_to_place_id = {}
+        pid_to_commandline = self._query_roblox_process_command_lines(executables)
+
+        for pid_value, command_line in pid_to_commandline.items():
+            place_id = self._extract_place_id_from_command_line(command_line)
+            if place_id:
+                pid_to_place_id[int(pid_value)] = place_id
+
+        try:
+            with self._pid_account_lock:
+                launch_context_map = dict(self._pid_launch_context_map)
+        except Exception:
+            launch_context_map = {}
+
+        for pid_value, context in launch_context_map.items():
+            if int(pid_value) in pid_to_place_id:
+                continue
+            normalized = self._normalize_launch_context(context)
+            if normalized.get("mode") == "game":
+                game_id = str(normalized.get("game_id", "") or "").strip()
+                if game_id.isdigit():
+                    pid_to_place_id[int(pid_value)] = game_id
+
+        if not pid_to_place_id:
+            recent_place_ids = self._read_recent_place_ids_from_logs(max_files=8)
+            if recent_place_ids:
+                fallback_place_id = str(recent_place_ids[0] or "").strip()
+                if fallback_place_id.isdigit():
+                    for pid_value in pid_to_commandline.keys():
+                        pid_to_place_id[int(pid_value)] = fallback_place_id
+
+        return pid_to_place_id
+
     def _normalize_launch_context(self, launch_context):
         context = {
             "mode": "home",
@@ -7984,6 +8141,8 @@ class AccountManagerUI:
             self.instance_manager_window.focus_force()
             return
 
+        return self._open_instance_manager_v3()
+
         window = tk.Toplevel(self.root)
         self.instance_manager_window = window
         window.withdraw()
@@ -9147,6 +9306,843 @@ class AccountManagerUI:
         self._center_window(window, final_w, final_h)
         window.deiconify()
         refresh_instances()
+        schedule_auto_refresh()
+
+    def _open_instance_manager_v2(self):
+        window = tk.Toplevel(self.root)
+        self.instance_manager_window = window
+        window.withdraw()
+        window.title("Instance Manager")
+        window.configure(bg="#060a14")
+        window.resizable(True, True)
+        window.minsize(960, 560)
+        self.register_toplevel(window)
+
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+
+        main_frame = tk.Frame(window, bg="#060a14")
+        main_frame.pack(fill="both", expand=True, padx=16, pady=14)
+
+        header = tk.Frame(main_frame, bg="#060a14")
+        header.pack(fill="x", pady=(0, 8))
+        tk.Label(header, text="Real-Time Instance Manager", bg="#060a14", fg="#f3f7ff", font=("Segoe UI Semibold", 19)).pack(anchor="w")
+        tk.Label(
+            header,
+            text="Live Roblox sessions with avatar, username, place ID, and PID",
+            bg="#060a14",
+            fg="#8ea2c8",
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(2, 0))
+
+        controls = tk.Frame(main_frame, bg="#060a14")
+        controls.pack(fill="x", pady=(0, 10))
+        controls.grid_columnconfigure(1, weight=1)
+        tk.Label(controls, text="Filter", bg="#060a14", fg="#8ea2c8", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(controls, textvariable=filter_var, style="Dark.TEntry")
+        filter_entry.grid(row=0, column=1, sticky="ew")
+        tk.Label(controls, text="Status", bg="#060a14", fg="#8ea2c8", font=("Segoe UI", 9)).grid(row=0, column=2, sticky="w", padx=(10, 4))
+        status_filter_var = tk.StringVar(value="All")
+        status_combo = ttk.Combobox(
+            controls,
+            textvariable=status_filter_var,
+            values=("All", "Running", "Not Responding"),
+            state="readonly",
+            style="Dark.TCombobox",
+            width=16,
+        )
+        status_combo.grid(row=0, column=3, sticky="w")
+        auto_refresh_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(controls, text="Auto Refresh", variable=auto_refresh_var, style="Dark.TCheckbutton").grid(
+            row=0, column=4, sticky="w", padx=(10, 0)
+        )
+        tk.Label(controls, text="Every (s)", bg="#060a14", fg="#8ea2c8", font=("Segoe UI", 9)).grid(
+            row=0, column=5, sticky="w", padx=(8, 4)
+        )
+        refresh_interval_var = tk.IntVar(value=2)
+        ttk.Spinbox(
+            controls,
+            from_=1,
+            to=30,
+            increment=1,
+            textvariable=refresh_interval_var,
+            width=4,
+            style="Dark.TSpinbox",
+            justify="center",
+        ).grid(row=0, column=6, sticky="w")
+
+        self.style.configure(
+            "Instance.Treeview",
+            background="#0a1020",
+            fieldbackground="#0a1020",
+            foreground="#e7efff",
+            borderwidth=0,
+            rowheight=52,
+            font=("Segoe UI", 10),
+        )
+        self.style.map("Instance.Treeview", background=[("selected", "#18213d")], foreground=[("selected", "#f8fbff")])
+        self.style.configure(
+            "Instance.Treeview.Heading",
+            background="#121a2d",
+            foreground="#8ea2c8",
+            borderwidth=0,
+            relief="flat",
+            font=("Segoe UI Semibold", 9),
+        )
+
+        list_frame = tk.Frame(main_frame, bg="#0a1020", highlightthickness=1, highlightbackground="#1a2642", bd=0)
+        list_frame.pack(fill="both", expand=True)
+        tree = ttk.Treeview(
+            list_frame,
+            columns=("username", "place_id", "pid", "status", "action"),
+            show=("tree", "headings"),
+            style="Instance.Treeview",
+            selectmode="extended",
+        )
+        tree.heading("#0", text="Avatar", anchor="center")
+        tree.heading("username", text="Username", anchor="w")
+        tree.heading("place_id", text="Place ID", anchor="w")
+        tree.heading("pid", text="PID", anchor="w")
+        tree.heading("status", text="Status", anchor="w")
+        tree.heading("action", text="Action", anchor="center")
+        tree.column("#0", width=70, minwidth=60, anchor="center", stretch=False)
+        tree.column("username", width=250, anchor="w")
+        tree.column("place_id", width=170, anchor="w")
+        tree.column("pid", width=120, anchor="w")
+        tree.column("status", width=190, anchor="w")
+        tree.column("action", width=120, anchor="center", stretch=False)
+        tree.pack(side="left", fill="both", expand=True)
+        tree.tag_configure("state_running", foreground="#3ee8ab")
+        tree.tag_configure("state_not_responding", foreground="#ffc34d")
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        list_scroll.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=list_scroll.set)
+
+        bottom = ttk.Frame(main_frame, style="Dark.TFrame")
+        bottom.pack(fill="x", pady=(10, 0))
+        loaded_var = tk.StringVar(value="0 running instances")
+        ttk.Button(bottom, text="Refresh", style="InstanceAction.TButton", command=lambda: refresh_instances(False)).pack(side="left", padx=(0, 6))
+        ttk.Button(bottom, text="Focus Selected", style="InstanceAction.TButton", command=lambda: focus_selected()).pack(side="left", padx=(0, 6))
+        ttk.Button(bottom, text="Kill Selected", style="InstanceDanger.TButton", command=lambda: kill_selected()).pack(side="left", padx=(0, 6))
+        tk.Label(bottom, textvariable=loaded_var, bg="#060a14", fg="#8ea2c8", font=("Consolas", 10)).pack(side="right")
+
+        state = {
+            "rows": [],
+            "pid_to_hwnd": {},
+            "pid_to_running": {},
+            "avatar_photo_by_user_id": {},
+            "avatar_pending_user_id": set(),
+            "user_id_by_username": {},
+            "user_id_pending_username": set(),
+            "auto_refresh_after_id": None,
+            "refresh_in_progress": False,
+            "refresh_pending": False,
+            "closing": False,
+        }
+        default_avatar = tk.PhotoImage(width=48, height=48)
+        try:
+            default_avatar.put("#1d2b45", to=(0, 0, 47, 47))
+        except Exception:
+            pass
+
+        target_exes = set(getattr(self, "_tracked_roblox_exes", set()) or {
+            "robloxplayerbeta.exe",
+            "robloxstudiobeta.exe",
+            "robloxplayerlauncher.exe",
+            "robloxstudiolauncherbeta.exe",
+        })
+
+        def extract_account_from_title(title_text):
+            text = str(title_text or "").strip()
+            if not text:
+                return ""
+            for match in re.finditer(r"@([A-Za-z0-9_]{3,})", text):
+                return match.group(1)
+            for match in re.finditer(r"([A-Za-z0-9_]{3,})@", text):
+                return match.group(1)
+            return ""
+
+        def get_selected_pids():
+            pids = []
+            for item in tree.selection():
+                try:
+                    pids.append(int(item))
+                except Exception:
+                    continue
+            return pids
+
+        def fetch_avatar_async(user_id):
+            if not user_id or user_id in state["avatar_photo_by_user_id"] or user_id in state["avatar_pending_user_id"]:
+                return
+            state["avatar_pending_user_id"].add(user_id)
+
+            def worker():
+                photo = None
+                try:
+                    api_url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=48x48&format=Png"
+                    resp = RobloxAPI._get_http_session().get(api_url, timeout=8)
+                    payload = resp.json() if resp.content else {}
+                    data = payload.get("data") or []
+                    image_url = str((data[0] or {}).get("imageUrl") or "").strip() if data else ""
+                    if image_url:
+                        img_resp = RobloxAPI._get_http_session().get(image_url, timeout=8)
+                        if img_resp.content:
+                            photo = tk.PhotoImage(data=base64.b64encode(img_resp.content).decode("ascii"))
+                except Exception:
+                    photo = None
+
+                def apply():
+                    state["avatar_pending_user_id"].discard(user_id)
+                    if photo is not None:
+                        state["avatar_photo_by_user_id"][user_id] = photo
+                    apply_rows_to_tree()
+
+                self.root.after(0, apply)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def ensure_avatar(username):
+            uname = str(username or "").strip()
+            if not uname:
+                return default_avatar
+            user_id = str(state["user_id_by_username"].get(uname, "") or "").strip()
+            if user_id:
+                return state["avatar_photo_by_user_id"].get(user_id, default_avatar)
+            if uname not in state["user_id_pending_username"]:
+                state["user_id_pending_username"].add(uname)
+
+                def worker():
+                    resolved = ""
+                    try:
+                        resolved = str(RobloxAPI.get_user_id_from_username(uname) or "").strip()
+                    except Exception:
+                        resolved = ""
+
+                    def apply():
+                        state["user_id_pending_username"].discard(uname)
+                        state["user_id_by_username"][uname] = resolved
+                        if resolved:
+                            fetch_avatar_async(resolved)
+                        apply_rows_to_tree()
+
+                    self.root.after(0, apply)
+
+                threading.Thread(target=worker, daemon=True).start()
+            return default_avatar
+
+        def build_snapshot():
+            pid_to_image = self._query_tasklist_pid_map(target_exes)
+            pid_to_hwnd = {}
+            pid_to_title = {}
+            pid_to_hung = {}
+            pid_to_place = self._query_pid_place_id_map(target_exes)
+
+            def enum_handler(hwnd, _):
+                if not win32gui.IsWindowVisible(hwnd) or win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                    return True
+                try:
+                    _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
+                except Exception:
+                    return True
+                if int(pid_value) not in pid_to_image:
+                    return True
+                pid_to_hwnd[int(pid_value)] = hwnd
+                try:
+                    pid_to_title[int(pid_value)] = str(win32gui.GetWindowText(hwnd) or "").strip()
+                except Exception:
+                    pid_to_title[int(pid_value)] = ""
+                try:
+                    if bool(ctypes.windll.user32.IsHungAppWindow(int(hwnd))):
+                        pid_to_hung[int(pid_value)] = True
+                except Exception:
+                    pass
+                return True
+
+            try:
+                win32gui.EnumWindows(enum_handler, None)
+            except Exception:
+                pass
+
+            rows = []
+            for pid_value in sorted(pid_to_image.keys()):
+                mapped_account = ""
+                try:
+                    with self._pid_account_lock:
+                        mapped_account = str(self._pid_account_map.get(int(pid_value), "") or "").strip()
+                except Exception:
+                    mapped_account = ""
+                username = mapped_account or extract_account_from_title(pid_to_title.get(int(pid_value), "")) or "Unknown"
+                place_id = str(pid_to_place.get(int(pid_value), "") or "").strip() or "Unknown"
+                rows.append({
+                    "pid": int(pid_value),
+                    "username": username,
+                    "place_id": place_id,
+                    "status": "Not Responding" if pid_to_hung.get(int(pid_value)) else "Running",
+                    "hwnd": pid_to_hwnd.get(int(pid_value)),
+                    "running": True,
+                })
+            return rows
+
+        def apply_rows_to_tree():
+            rows = list(state["rows"])
+            f = str(filter_var.get() or "").strip().lower()
+            s = str(status_filter_var.get() or "All").strip().lower()
+            if s != "all":
+                rows = [r for r in rows if str(r.get("status", "")).strip().lower() == s]
+            if f:
+                rows = [r for r in rows if f in f"{r.get('username','')} {r.get('place_id','')} {r.get('pid','')} {r.get('status','')}".lower()]
+
+            selected = set(get_selected_pids())
+            desired_ids = []
+            for row in rows:
+                pid_value = int(row["pid"])
+                iid = str(pid_value)
+                desired_ids.append(iid)
+                vals = (str(row["username"]), str(row["place_id"]), str(pid_value), str(row["status"]), "Kill")
+                tag = "state_not_responding" if str(row["status"]).lower() == "not responding" else "state_running"
+                avatar = ensure_avatar(row["username"])
+                if tree.exists(iid):
+                    tree.item(iid, values=vals, tags=(tag,), image=avatar)
+                else:
+                    tree.insert("", "end", iid=iid, text="", values=vals, tags=(tag,), image=avatar)
+
+            for iid in list(tree.get_children()):
+                if iid not in desired_ids:
+                    tree.delete(iid)
+            for idx, iid in enumerate(desired_ids):
+                tree.move(iid, "", idx)
+
+            state["pid_to_hwnd"] = {int(r["pid"]): r.get("hwnd") for r in rows}
+            state["pid_to_running"] = {int(r["pid"]): bool(r.get("running", False)) for r in rows}
+            for pid in selected:
+                iid = str(pid)
+                if tree.exists(iid):
+                    tree.selection_add(iid)
+            loaded_var.set(f"{len(state['rows'])} running instance(s)")
+
+        def refresh_instances(from_auto=False):
+            if state["closing"]:
+                return
+            if state["refresh_in_progress"]:
+                if not from_auto:
+                    state["refresh_pending"] = True
+                return
+            state["refresh_in_progress"] = True
+
+            def worker():
+                try:
+                    rows = build_snapshot()
+                except Exception:
+                    rows = []
+
+                def apply():
+                    state["refresh_in_progress"] = False
+                    if state["closing"]:
+                        return
+                    state["rows"] = rows
+                    apply_rows_to_tree()
+                    if state["refresh_pending"]:
+                        state["refresh_pending"] = False
+                        refresh_instances(False)
+                    elif from_auto:
+                        schedule_auto_refresh()
+
+                self.root.after(0, apply)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def schedule_auto_refresh():
+            after_id = state.get("auto_refresh_after_id")
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except Exception:
+                    pass
+                state["auto_refresh_after_id"] = None
+            if state["closing"] or not auto_refresh_var.get():
+                return
+            try:
+                interval = int(refresh_interval_var.get())
+            except Exception:
+                interval = 2
+            interval = max(1, min(30, interval))
+            state["auto_refresh_after_id"] = window.after(interval * 1000, lambda: refresh_instances(True))
+
+        def focus_selected():
+            selected = get_selected_pids()
+            if not selected:
+                return
+            hwnd = state["pid_to_hwnd"].get(selected[0])
+            if not hwnd:
+                return
+            try:
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.BringWindowToTop(hwnd)
+            except Exception:
+                pass
+
+        def kill_pids(pid_values):
+            pids = [int(pid) for pid in pid_values if str(pid).isdigit() and int(pid) > 0]
+            if not pids:
+                return
+
+            def worker():
+                for pid in pids:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/T", "/F"],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=10,
+                            **subprocess_no_window_kwargs(),
+                        )
+                    except Exception:
+                        pass
+                self.root.after(0, lambda: refresh_instances(False))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def kill_selected():
+            pids = get_selected_pids()
+            if not pids:
+                messagebox.showwarning("Kill Selected", "Select at least one instance first.")
+                return
+            if messagebox.askyesno("Kill Selected", f"Kill {len(pids)} selected instance(s)?"):
+                kill_pids(pids)
+
+        def on_tree_click(event):
+            row = tree.identify_row(event.y)
+            col = tree.identify_column(event.x)
+            if not row or col != "#6":
+                return
+            try:
+                pid = int(row)
+            except Exception:
+                return
+            if messagebox.askyesno("Kill Instance", f"Kill Roblox PID {pid}?"):
+                kill_pids([pid])
+
+        filter_var.trace_add("write", lambda *_: apply_rows_to_tree())
+        status_filter_var.trace_add("write", lambda *_: apply_rows_to_tree())
+        auto_refresh_var.trace_add("write", lambda *_: schedule_auto_refresh())
+        refresh_interval_var.trace_add("write", lambda *_: schedule_auto_refresh())
+        status_combo.bind("<<ComboboxSelected>>", lambda _evt: apply_rows_to_tree())
+        tree.bind("<Double-1>", lambda _evt: focus_selected())
+        tree.bind("<Button-1>", on_tree_click, add="+")
+        filter_entry.bind("<Escape>", lambda _evt: (filter_var.set(""), "break")[1])
+
+        def on_close():
+            state["closing"] = True
+            after_id = state.get("auto_refresh_after_id")
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except Exception:
+                    pass
+                state["auto_refresh_after_id"] = None
+            try:
+                window.destroy()
+            finally:
+                self.instance_manager_window = None
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
+        window.update_idletasks()
+        self._center_window(window, max(960, window.winfo_reqwidth() + 60), max(560, window.winfo_reqheight() + 60))
+        window.deiconify()
+        refresh_instances(False)
+        schedule_auto_refresh()
+
+    def _open_instance_manager_v3(self):
+        window = tk.Toplevel(self.root)
+        self.instance_manager_window = window
+        window.withdraw()
+        window.title("Instance Manager")
+        window.configure(bg="#070d18")
+        window.resizable(True, True)
+        window.minsize(980, 620)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+
+        state = {
+            "rows": [],
+            "selected": set(),
+            "pid_to_hwnd": {},
+            "avatar_photo_by_user_id": {},
+            "avatar_pending_user_id": set(),
+            "user_id_by_username": {},
+            "user_id_pending_username": set(),
+            "auto_refresh_after_id": None,
+            "refresh_in_progress": False,
+            "refresh_pending": False,
+            "closing": False,
+        }
+
+        target_exes = set(getattr(self, "_tracked_roblox_exes", set()) or {
+            "robloxplayerbeta.exe",
+            "robloxstudiobeta.exe",
+            "robloxplayerlauncher.exe",
+            "robloxstudiolauncherbeta.exe",
+        })
+
+        default_avatar = tk.PhotoImage(width=48, height=48)
+        try:
+            default_avatar.put("#22324f", to=(0, 0, 47, 47))
+        except Exception:
+            pass
+
+        root = tk.Frame(window, bg="#070d18")
+        root.pack(fill="both", expand=True, padx=16, pady=14)
+
+        tk.Label(root, text="Live Instances", bg="#070d18", fg="#f7fbff", font=("Segoe UI Semibold", 20)).pack(anchor="w")
+        tk.Label(root, text="Modern card dashboard for running Roblox clients", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 10))
+
+        controls = tk.Frame(root, bg="#070d18")
+        controls.pack(fill="x", pady=(0, 8))
+        controls.grid_columnconfigure(1, weight=1)
+        filter_var = tk.StringVar()
+        status_var = tk.StringVar(value="All")
+        auto_refresh_var = tk.BooleanVar(value=True)
+        interval_var = tk.IntVar(value=2)
+        tk.Label(controls, text="Search", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        search_entry = ttk.Entry(controls, textvariable=filter_var, style="Dark.TEntry")
+        search_entry.grid(row=0, column=1, sticky="ew")
+        tk.Label(controls, text="Status", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 9)).grid(row=0, column=2, sticky="w", padx=(10, 4))
+        status_combo = ttk.Combobox(controls, textvariable=status_var, values=("All", "Running", "Not Responding"), state="readonly", style="Dark.TCombobox", width=16)
+        status_combo.grid(row=0, column=3, sticky="w")
+        ttk.Checkbutton(controls, text="Auto Refresh", variable=auto_refresh_var, style="Dark.TCheckbutton").grid(row=0, column=4, sticky="w", padx=(10, 0))
+        tk.Label(controls, text="Every (s)", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 9)).grid(row=0, column=5, sticky="w", padx=(8, 4))
+        ttk.Spinbox(controls, from_=1, to=30, increment=1, textvariable=interval_var, width=4, style="Dark.TSpinbox", justify="center").grid(row=0, column=6, sticky="w")
+
+        action_bar = tk.Frame(root, bg="#070d18")
+        action_bar.pack(fill="x", pady=(0, 8))
+        loaded_var = tk.StringVar(value="0 running instance(s)")
+
+        def mbtn(parent, text, cmd, danger=False):
+            bg = "#2f3f62" if not danger else "#5b2a38"
+            active = "#3a4f7a" if not danger else "#6c3244"
+            fg = "#eff6ff" if not danger else "#ffd8df"
+            return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, activebackground=active, activeforeground=fg, relief="flat", bd=0, padx=10, pady=6, font=("Segoe UI Semibold", 9), cursor="hand2")
+
+        mbtn(action_bar, "Refresh", lambda: refresh(False)).pack(side="left", padx=(0, 6))
+        mbtn(action_bar, "Focus Selected", lambda: focus_selected()).pack(side="left", padx=(0, 6))
+        mbtn(action_bar, "Kill Selected", lambda: kill_selected(), danger=True).pack(side="left", padx=(0, 6))
+        tk.Label(action_bar, textvariable=loaded_var, bg="#070d18", fg="#9bb0cf", font=("Consolas", 10)).pack(side="right")
+
+        shell = tk.Frame(root, bg="#0b1528", highlightthickness=1, highlightbackground="#1a2a48", bd=0)
+        shell.pack(fill="both", expand=True)
+        canvas = tk.Canvas(shell, bg="#0b1528", highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        host = tk.Frame(canvas, bg="#0b1528")
+        host_id = canvas.create_window((0, 0), window=host, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        host.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda _e: canvas.itemconfigure(host_id, width=canvas.winfo_width()))
+
+        def extract_account_from_title(title_text):
+            text = str(title_text or "").strip()
+            if not text:
+                return ""
+            for match in re.finditer(r"@([A-Za-z0-9_]{3,})", text):
+                return match.group(1)
+            for match in re.finditer(r"([A-Za-z0-9_]{3,})@", text):
+                return match.group(1)
+            return ""
+
+        def fetch_avatar_async(user_id):
+            if (not user_id) or user_id in state["avatar_photo_by_user_id"] or user_id in state["avatar_pending_user_id"]:
+                return
+            state["avatar_pending_user_id"].add(user_id)
+
+            def worker():
+                photo = None
+                try:
+                    meta = RobloxAPI._get_http_session().get(
+                        f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=48x48&format=Png",
+                        timeout=8,
+                    )
+                    payload = meta.json() if meta.content else {}
+                    data = payload.get("data") or []
+                    image_url = str((data[0] or {}).get("imageUrl") or "").strip() if data else ""
+                    if image_url:
+                        img = RobloxAPI._get_http_session().get(image_url, timeout=8)
+                        if img.content:
+                            photo = tk.PhotoImage(data=base64.b64encode(img.content).decode("ascii"))
+                except Exception:
+                    photo = None
+
+                def done():
+                    state["avatar_pending_user_id"].discard(user_id)
+                    if photo is not None:
+                        state["avatar_photo_by_user_id"][user_id] = photo
+                    render()
+
+                self.root.after(0, done)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def avatar_for(username):
+            uname = str(username or "").strip()
+            if not uname:
+                return default_avatar
+            user_id = str(state["user_id_by_username"].get(uname, "") or "").strip()
+            if user_id:
+                return state["avatar_photo_by_user_id"].get(user_id, default_avatar)
+            if uname not in state["user_id_pending_username"]:
+                state["user_id_pending_username"].add(uname)
+
+                def worker():
+                    resolved = ""
+                    try:
+                        resolved = str(RobloxAPI.get_user_id_from_username(uname) or "").strip()
+                    except Exception:
+                        resolved = ""
+
+                    def done():
+                        state["user_id_pending_username"].discard(uname)
+                        state["user_id_by_username"][uname] = resolved
+                        if resolved:
+                            fetch_avatar_async(resolved)
+                        render()
+
+                    self.root.after(0, done)
+
+                threading.Thread(target=worker, daemon=True).start()
+            return default_avatar
+
+        def focus_pid(pid):
+            hwnd = state["pid_to_hwnd"].get(int(pid))
+            if not hwnd:
+                return
+            try:
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.BringWindowToTop(hwnd)
+            except Exception:
+                pass
+
+        def kill_pids(pid_values):
+            pids = [int(pid) for pid in pid_values if str(pid).isdigit() and int(pid) > 0]
+            if not pids:
+                return
+
+            def worker():
+                for pid in pids:
+                    try:
+                        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, **subprocess_no_window_kwargs())
+                    except Exception:
+                        pass
+                self.root.after(0, lambda: refresh(False))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def toggle_selected(pid, additive=False):
+            pid = int(pid)
+            if additive:
+                if pid in state["selected"]:
+                    state["selected"].remove(pid)
+                else:
+                    state["selected"].add(pid)
+            else:
+                if state["selected"] == {pid}:
+                    state["selected"].clear()
+                else:
+                    state["selected"] = {pid}
+            render()
+
+        def render():
+            rows = list(state["rows"])
+            q = str(filter_var.get() or "").strip().lower()
+            sv = str(status_var.get() or "All").strip().lower()
+            if sv != "all":
+                rows = [r for r in rows if str(r.get("status", "")).strip().lower() == sv]
+            if q:
+                rows = [r for r in rows if q in f"{r.get('username','')} {r.get('place_id','')} {r.get('pid','')} {r.get('status','')}".lower()]
+
+            visible = {int(r["pid"]) for r in rows}
+            state["selected"] = {pid for pid in state["selected"] if pid in visible}
+            for child in list(host.winfo_children()):
+                child.destroy()
+
+            cols = 2 if int(canvas.winfo_width() or 1) >= 1120 else 1
+            for c in range(cols):
+                host.grid_columnconfigure(c, weight=1, uniform="cards")
+
+            for i, row in enumerate(rows):
+                pid = int(row["pid"])
+                bg = "#13223a" if pid in state["selected"] else "#0f192d"
+                card = tk.Frame(host, bg=bg, highlightthickness=1, highlightbackground="#203255", bd=0, padx=10, pady=10)
+                card.grid(row=i // cols, column=i % cols, sticky="ew", padx=8, pady=8)
+                card.grid_columnconfigure(1, weight=1)
+                avatar = avatar_for(row.get("username"))
+                avatar_label = tk.Label(card, image=avatar, bg=bg, bd=0)
+                avatar_label.image = avatar
+                avatar_label.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 10))
+
+                status_text = str(row.get("status", "Running"))
+                status_color = "#38d39f" if status_text.lower() == "running" else "#ffc34d"
+                tk.Label(card, text=str(row.get("username", "Unknown")), bg=bg, fg="#eef5ff", font=("Segoe UI Semibold", 12)).grid(row=0, column=1, sticky="w")
+                tk.Label(card, text=f"Place ID: {row.get('place_id', 'Unknown')}", bg=bg, fg="#9db2d0", font=("Consolas", 10)).grid(row=1, column=1, sticky="w", pady=(2, 0))
+                tk.Label(card, text=f"PID: {pid}", bg=bg, fg="#9db2d0", font=("Consolas", 10)).grid(row=2, column=1, sticky="w", pady=(2, 0))
+                tk.Label(card, text=status_text, bg="#1b2944", fg=status_color, font=("Segoe UI Semibold", 9), padx=8, pady=2).grid(row=0, column=2, sticky="e")
+                row_actions = tk.Frame(card, bg=bg)
+                row_actions.grid(row=2, column=2, sticky="e")
+                mbtn(row_actions, "Focus", lambda p=pid: focus_pid(p)).pack(side="left", padx=(0, 6))
+                mbtn(row_actions, "Kill", lambda p=pid: kill_pids([p]), danger=True).pack(side="left")
+
+                for widget in (card, avatar_label):
+                    widget.bind("<Button-1>", lambda evt, p=pid: toggle_selected(p, additive=bool(evt.state & 0x0004)))
+                    widget.bind("<Double-Button-1>", lambda _evt, p=pid: focus_pid(p))
+
+            running_count = len(state["rows"])
+            loaded_var.set(f"{running_count} running instance(s)")
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def snapshot():
+            pid_to_image = self._query_tasklist_pid_map(target_exes)
+            pid_to_hwnd = {}
+            pid_to_title = {}
+            pid_to_hung = {}
+            pid_to_place = self._query_pid_place_id_map(target_exes)
+
+            def enum_handler(hwnd, _):
+                if not win32gui.IsWindowVisible(hwnd) or win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                    return True
+                try:
+                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                except Exception:
+                    return True
+                if int(pid) not in pid_to_image:
+                    return True
+                pid_to_hwnd[int(pid)] = hwnd
+                try:
+                    pid_to_title[int(pid)] = str(win32gui.GetWindowText(hwnd) or "").strip()
+                except Exception:
+                    pid_to_title[int(pid)] = ""
+                try:
+                    if bool(ctypes.windll.user32.IsHungAppWindow(int(hwnd))):
+                        pid_to_hung[int(pid)] = True
+                except Exception:
+                    pass
+                return True
+
+            try:
+                win32gui.EnumWindows(enum_handler, None)
+            except Exception:
+                pass
+
+            rows = []
+            for pid in sorted(pid_to_image.keys()):
+                mapped = ""
+                try:
+                    with self._pid_account_lock:
+                        mapped = str(self._pid_account_map.get(int(pid), "") or "").strip()
+                except Exception:
+                    mapped = ""
+                username = mapped or extract_account_from_title(pid_to_title.get(int(pid), "")) or "Unknown"
+                rows.append({
+                    "pid": int(pid),
+                    "username": username,
+                    "place_id": str(pid_to_place.get(int(pid), "") or "").strip() or "Unknown",
+                    "status": "Not Responding" if pid_to_hung.get(int(pid)) else "Running",
+                    "hwnd": pid_to_hwnd.get(int(pid)),
+                })
+            return rows
+
+        def refresh(from_auto=False):
+            if state["closing"]:
+                return
+            if state["refresh_in_progress"]:
+                if not from_auto:
+                    state["refresh_pending"] = True
+                return
+            state["refresh_in_progress"] = True
+
+            def worker():
+                try:
+                    rows = snapshot()
+                except Exception:
+                    rows = []
+
+                def done():
+                    state["refresh_in_progress"] = False
+                    if state["closing"]:
+                        return
+                    state["rows"] = rows
+                    state["pid_to_hwnd"] = {int(r["pid"]): r.get("hwnd") for r in rows}
+                    render()
+                    if state["refresh_pending"]:
+                        state["refresh_pending"] = False
+                        refresh(False)
+                    elif from_auto:
+                        schedule_auto_refresh()
+
+                self.root.after(0, done)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def schedule_auto_refresh():
+            after_id = state.get("auto_refresh_after_id")
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except Exception:
+                    pass
+                state["auto_refresh_after_id"] = None
+            if state["closing"] or not auto_refresh_var.get():
+                return
+            try:
+                interval = int(interval_var.get())
+            except Exception:
+                interval = 2
+            interval = max(1, min(30, interval))
+            state["auto_refresh_after_id"] = window.after(interval * 1000, lambda: refresh(True))
+
+        def focus_selected():
+            selected = sorted(int(pid) for pid in state["selected"] if int(pid) > 0)
+            if selected:
+                focus_pid(selected[0])
+
+        def kill_selected():
+            selected = sorted(int(pid) for pid in state["selected"] if int(pid) > 0)
+            if not selected:
+                messagebox.showwarning("Kill Selected", "Select at least one instance first.")
+                return
+            if messagebox.askyesno("Kill Selected", f"Kill {len(selected)} selected instance(s)?"):
+                kill_pids(selected)
+
+        filter_var.trace_add("write", lambda *_: render())
+        status_var.trace_add("write", lambda *_: render())
+        auto_refresh_var.trace_add("write", lambda *_: schedule_auto_refresh())
+        interval_var.trace_add("write", lambda *_: schedule_auto_refresh())
+        status_combo.bind("<<ComboboxSelected>>", lambda _evt: render())
+        search_entry.bind("<Escape>", lambda _evt: (filter_var.set(""), "break")[1])
+
+        def on_close():
+            state["closing"] = True
+            after_id = state.get("auto_refresh_after_id")
+            if after_id is not None:
+                try:
+                    window.after_cancel(after_id)
+                except Exception:
+                    pass
+                state["auto_refresh_after_id"] = None
+            try:
+                window.destroy()
+            finally:
+                self.instance_manager_window = None
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
+        window.update_idletasks()
+        self._center_window(window, max(980, window.winfo_reqwidth() + 70), max(620, window.winfo_reqheight() + 70))
+        window.deiconify()
+        refresh(False)
         schedule_auto_refresh()
 
     def open_console_output(self):
