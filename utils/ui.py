@@ -528,6 +528,10 @@ class ConsoleOutputBuffer:
             start = min(max(index, 0), total)
             return self.entries[start:], total
 
+    def get_all_entries(self):
+        with self.lock:
+            return list(self.entries)
+
     def clear(self):
         with self.lock:
             self.entries.clear()
@@ -593,6 +597,7 @@ class ConsoleOutputWindow:
 
         ttk.Button(button_frame, text="Clear", style="Dark.TButton", command=self.clear).pack(side="left", padx=(0, 5))
         ttk.Button(button_frame, text="Copy All", style="Dark.TButton", command=self.copy_all).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Export Logs", style="Dark.TButton", command=self.export_logs).pack(side="left", padx=5)
 
         self.last_index = 0
         entries, self.last_index = self.capture.get_entries_since(0)
@@ -653,6 +658,95 @@ class ConsoleOutputWindow:
             self.window.clipboard_append(text)
         except Exception:
             pass
+
+    def export_logs(self):
+        entries = self.capture.get_all_entries()
+        redacted_entries = [self._redact_private_server_ids(line) for line in entries]
+        debug_entries = [
+            line for line in redacted_entries
+            if "[DEBUG]" in line or "[IM]" in line
+        ]
+        settings_snapshot = dict(getattr(self.ui, "settings", {}) or {})
+        exported_at = datetime.now()
+        default_name = f"fram_logs_{exported_at.strftime('%Y%m%d_%H%M%S')}.txt"
+
+        file_path = filedialog.asksaveasfilename(
+            title="Export Console Logs",
+            defaultextension=".txt",
+            initialfile=default_name,
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+        )
+        if not file_path:
+            return
+
+        sections = [
+            "ForkedRobloxAccountManager Log Export",
+            f"Exported At: {exported_at.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Total Log Lines: {len(redacted_entries)}",
+            f"Debug Log Lines: {len(debug_entries)}",
+            "",
+            "=== USER SETTINGS SNAPSHOT ===",
+            self._format_settings_snapshot(settings_snapshot),
+            "",
+            "=== ALL LOGS (includes debug logs) ===",
+        ]
+        if redacted_entries:
+            sections.extend(redacted_entries)
+        else:
+            sections.append("(No logs captured)")
+
+        sections.extend([
+            "",
+            "=== DEBUG LOGS ONLY ===",
+        ])
+        if debug_entries:
+            sections.extend(debug_entries)
+        else:
+            sections.append("(No debug logs captured)")
+
+        try:
+            with open(file_path, "w", encoding="utf-8", newline="\n") as export_file:
+                export_file.write("\n".join(sections))
+            print(f"[INFO] Exported console logs to {file_path}")
+            messagebox.showinfo("Export Complete", f"Logs exported to:\n{file_path}")
+        except Exception as exc:
+            messagebox.showerror("Export Failed", f"Could not export logs:\n{exc}")
+
+    def _format_settings_snapshot(self, settings_snapshot):
+        if not settings_snapshot:
+            return "(No settings found)"
+
+        keys = [str(key) for key in settings_snapshot.keys()]
+        max_key_len = max(len(key) for key in keys) if keys else 0
+        lines = []
+        for key in sorted(keys, key=lambda x: x.lower()):
+            value = settings_snapshot.get(key)
+            lower_key = str(key).lower()
+            if any(marker in lower_key for marker in ("private_server", "vip_server", "linkcode", "link_code")):
+                value_text = "[REDACTED]"
+            elif isinstance(value, (dict, list, tuple)):
+                value_text = json.dumps(value, ensure_ascii=False, default=str)
+            else:
+                value_text = str(value)
+            value_text = self._redact_private_server_ids(value_text)
+            lines.append(f"{key.ljust(max_key_len)} : {value_text}")
+        return "\n".join(lines)
+
+    def _redact_private_server_ids(self, text):
+        if not text:
+            return text
+        redacted = str(text)
+        redacted = re.sub(
+            r"(?i)([?&](?:linkCode|privateServerLinkCode)=)([^&\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(\b(?:private[_\s-]*server(?:[_\s-]*id)?|link[_\s-]*code)\b\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        return redacted
 
     def _stop_poll(self):
         if self.window and self.after_id:
