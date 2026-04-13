@@ -71,6 +71,11 @@ class RobloxAPI:
         return RobloxAPI._http_session
 
     @staticmethod
+    def _log_debug(enabled, message):
+        if enabled:
+            print(f"[DEBUG] {message}")
+
+    @staticmethod
     def _format_token_preview(cookie):
         if not cookie:
             return "(No token found)"
@@ -422,12 +427,14 @@ class RobloxAPI:
             return result
 
     @staticmethod
-    def get_random_public_server_job_id(place_id, max_pages=3):
+    def get_random_public_server_job_id(place_id, max_pages=1, enable_debug=False):
         if not place_id:
+            RobloxAPI._log_debug(enable_debug, "Random public server lookup skipped: missing place ID.")
             return None
 
         place_id_str = str(place_id).strip()
         if not place_id_str.isdigit():
+            RobloxAPI._log_debug(enable_debug, f"Random public server lookup skipped: non-numeric place ID '{place_id_str}'.")
             return None
 
         collected_servers = []
@@ -444,20 +451,43 @@ class RobloxAPI:
                 }
                 if cursor:
                     params["cursor"] = cursor
+                RobloxAPI._log_debug(
+                    enable_debug,
+                    f"Fetching random public servers for place {place_id_str} "
+                    f"(page {pages_fetched + 1}/{max_pages}, cursor={'set' if cursor else 'none'})."
+                )
 
                 response = None
                 page_ok = False
                 max_attempts = 4
                 for attempt in range(1, max_attempts + 1):
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Public servers request attempt {attempt}/{max_attempts} for place {place_id_str}."
+                    )
                     try:
                         response = session.get(url, params=params, timeout=8)
                     except requests.exceptions.RequestException as exc:
+                        RobloxAPI._log_debug(
+                            enable_debug,
+                            f"Request exception on attempt {attempt}/{max_attempts} for place {place_id_str}: {exc}"
+                        )
                         if attempt == max_attempts:
                             print(f"[WARNING] Failed to fetch public servers for place {place_id_str}: {exc}")
                             return None
-                        time.sleep(min(2.0 * attempt, 6.0))
+                        backoff_seconds = min(2.0 * attempt, 6.0)
+                        RobloxAPI._log_debug(
+                            enable_debug,
+                            f"Retrying after request exception in {backoff_seconds:.1f}s for place {place_id_str}."
+                        )
+                        time.sleep(backoff_seconds)
                         continue
 
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Public servers response status for place {place_id_str}: {response.status_code} "
+                        f"(attempt {attempt}/{max_attempts})."
+                    )
                     if response.status_code != 429:
                         page_ok = True
                         break
@@ -468,16 +498,30 @@ class RobloxAPI:
                         delay_seconds = int(retry_after)
                     if delay_seconds <= 0:
                         delay_seconds = min(2 * attempt, 8)
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Rate limited (429) fetching public servers for place {place_id_str}; "
+                        f"Retry-After='{retry_after or 'n/a'}', waiting {delay_seconds}s "
+                        f"(attempt {attempt}/{max_attempts})."
+                    )
                     if attempt < max_attempts:
                         time.sleep(delay_seconds)
 
                 if not page_ok or response is None:
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Exhausted retries while fetching random public servers for place {place_id_str}."
+                    )
                     
                     return None
 
                 response.raise_for_status()
                 payload = response.json() if response.content else {}
                 servers = payload.get("data") or []
+                RobloxAPI._log_debug(
+                    enable_debug,
+                    f"Fetched {len(servers)} public servers for place {place_id_str} on page {pages_fetched + 1}."
+                )
 
                 for server in servers:
                     job_id = str(server.get("id") or "").strip()
@@ -497,10 +541,16 @@ class RobloxAPI:
 
                 pages_fetched += 1
                 cursor = str(payload.get("nextPageCursor") or "").strip()
+                RobloxAPI._log_debug(
+                    enable_debug,
+                    f"After page {pages_fetched} for place {place_id_str}, collected "
+                    f"{len(collected_servers)} joinable servers; next cursor={'set' if cursor else 'none'}."
+                )
                 if not cursor:
                     break
 
             if not collected_servers:
+                RobloxAPI._log_debug(enable_debug, f"No joinable public servers found for place {place_id_str}.")
                 return None
             return random.choice(collected_servers)
         except Exception as exc:
@@ -508,12 +558,14 @@ class RobloxAPI:
             return None
 
     @staticmethod
-    def get_lowest_public_server_job_id(place_id, max_pages=3):
+    def get_lowest_public_server_job_id(place_id, max_pages=1, enable_debug=False):
         if not place_id:
+            RobloxAPI._log_debug(enable_debug, "Lowest-population public server lookup skipped: missing place ID.")
             return None
 
         place_id_str = str(place_id).strip()
         if not place_id_str.isdigit():
+            RobloxAPI._log_debug(enable_debug, f"Lowest-population lookup skipped: non-numeric place ID '{place_id_str}'.")
             return None
 
         best_choice = None
@@ -530,20 +582,43 @@ class RobloxAPI:
                 }
                 if cursor:
                     params["cursor"] = cursor
+                RobloxAPI._log_debug(
+                    enable_debug,
+                    f"Fetching lowest-population public servers for place {place_id_str} "
+                    f"(page {pages_fetched + 1}/{max_pages}, cursor={'set' if cursor else 'none'})."
+                )
 
                 response = None
                 page_ok = False
                 max_attempts = 4
                 for attempt in range(1, max_attempts + 1):
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Lowest-population request attempt {attempt}/{max_attempts} for place {place_id_str}."
+                    )
                     try:
                         response = session.get(url, params=params, timeout=8)
                     except requests.exceptions.RequestException as exc:
+                        RobloxAPI._log_debug(
+                            enable_debug,
+                            f"Request exception on attempt {attempt}/{max_attempts} for place {place_id_str}: {exc}"
+                        )
                         if attempt == max_attempts:
                             print(f"[WARNING] Failed to fetch public servers for place {place_id_str}: {exc}")
                             return None
-                        time.sleep(min(2.0 * attempt, 6.0))
+                        backoff_seconds = min(2.0 * attempt, 6.0)
+                        RobloxAPI._log_debug(
+                            enable_debug,
+                            f"Retrying after request exception in {backoff_seconds:.1f}s for place {place_id_str}."
+                        )
+                        time.sleep(backoff_seconds)
                         continue
 
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Public servers response status for place {place_id_str}: {response.status_code} "
+                        f"(attempt {attempt}/{max_attempts})."
+                    )
                     if response.status_code != 429:
                         page_ok = True
                         break
@@ -554,15 +629,29 @@ class RobloxAPI:
                         delay_seconds = int(retry_after)
                     if delay_seconds <= 0:
                         delay_seconds = min(2 * attempt, 8)
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Rate limited (429) fetching public servers for place {place_id_str}; "
+                        f"Retry-After='{retry_after or 'n/a'}', waiting {delay_seconds}s "
+                        f"(attempt {attempt}/{max_attempts})."
+                    )
                     if attempt < max_attempts:
                         time.sleep(delay_seconds)
 
                 if not page_ok or response is None:
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Exhausted retries while fetching lowest-population public servers for place {place_id_str}."
+                    )
                     return None
 
                 response.raise_for_status()
                 payload = response.json() if response.content else {}
                 servers = payload.get("data") or []
+                RobloxAPI._log_debug(
+                    enable_debug,
+                    f"Fetched {len(servers)} public servers for place {place_id_str} on page {pages_fetched + 1}."
+                )
 
                 for server in servers:
                     job_id = str(server.get("id") or "").strip()
@@ -585,15 +674,133 @@ class RobloxAPI:
 
                 pages_fetched += 1
                 cursor = str(payload.get("nextPageCursor") or "").strip()
+                RobloxAPI._log_debug(
+                    enable_debug,
+                    f"After page {pages_fetched} for place {place_id_str}, current best server "
+                    f"{'is set' if best_choice else 'is none'}; next cursor={'set' if cursor else 'none'}."
+                )
                 if not cursor:
                     break
 
             if best_choice is None:
+                RobloxAPI._log_debug(enable_debug, f"No eligible lowest-population public server found for place {place_id_str}.")
                 return None
             return best_choice[1]
         except Exception as exc:
             print(f"[WARNING] Failed to fetch low-population public server for place {place_id_str}: {exc}")
             return None
+
+    @staticmethod
+    def get_public_server_job_candidates(place_id, max_pages=1, prefer_small=False, enable_debug=False):
+        """Fetch joinable public server job IDs for a place, optionally ranked for low population."""
+        if not place_id:
+            RobloxAPI._log_debug(enable_debug, "Public server candidate lookup skipped: missing place ID.")
+            return []
+
+        place_id_str = str(place_id).strip()
+        if not place_id_str.isdigit():
+            RobloxAPI._log_debug(enable_debug, f"Public server candidate lookup skipped: non-numeric place ID '{place_id_str}'.")
+            return []
+
+        server_rows = []
+        cursor = ""
+        pages_fetched = 0
+
+        try:
+            session = RobloxAPI._get_http_session()
+            while pages_fetched < max_pages:
+                url = f"https://games.roblox.com/v1/games/{place_id_str}/servers/Public"
+                params = {
+                    "sortOrder": "Asc",
+                    "limit": 100,
+                }
+                if cursor:
+                    params["cursor"] = cursor
+                RobloxAPI._log_debug(
+                    enable_debug,
+                    f"Fetching public server candidates for place {place_id_str} "
+                    f"(page {pages_fetched + 1}/{max_pages}, cursor={'set' if cursor else 'none'})."
+                )
+
+                response = None
+                page_ok = False
+                max_attempts = 4
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        response = session.get(url, params=params, timeout=8)
+                    except requests.exceptions.RequestException as exc:
+                        RobloxAPI._log_debug(
+                            enable_debug,
+                            f"Candidate lookup request exception on attempt {attempt}/{max_attempts} for place {place_id_str}: {exc}"
+                        )
+                        if attempt == max_attempts:
+                            print(f"[WARNING] Failed to fetch public servers for place {place_id_str}: {exc}")
+                            return []
+                        backoff_seconds = min(2.0 * attempt, 6.0)
+                        time.sleep(backoff_seconds)
+                        continue
+
+                    if response.status_code != 429:
+                        page_ok = True
+                        break
+
+                    retry_after = str(response.headers.get("Retry-After") or "").strip()
+                    delay_seconds = int(retry_after) if retry_after.isdigit() else min(2 * attempt, 8)
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Candidate lookup rate limited (429) for place {place_id_str}; "
+                        f"Retry-After='{retry_after or 'n/a'}', waiting {delay_seconds}s "
+                        f"(attempt {attempt}/{max_attempts})."
+                    )
+                    if attempt < max_attempts:
+                        time.sleep(delay_seconds)
+
+                if not page_ok or response is None:
+                    RobloxAPI._log_debug(
+                        enable_debug,
+                        f"Exhausted retries while fetching public server candidates for place {place_id_str}."
+                    )
+                    return []
+
+                response.raise_for_status()
+                payload = response.json() if response.content else {}
+                servers = payload.get("data") or []
+
+                for server in servers:
+                    job_id = str(server.get("id") or "").strip()
+                    if not job_id:
+                        continue
+                    try:
+                        max_players = int(server.get("maxPlayers", 0) or 0)
+                    except Exception:
+                        max_players = 0
+                    try:
+                        playing = int(server.get("playing", 0) or 0)
+                    except Exception:
+                        playing = 0
+                    if max_players > 0 and playing >= max_players:
+                        continue
+                    fill_ratio = (playing / max_players) if max_players > 0 else 1.0
+                    server_rows.append((job_id, playing, fill_ratio))
+
+                pages_fetched += 1
+                cursor = str(payload.get("nextPageCursor") or "").strip()
+                if not cursor:
+                    break
+
+            if not server_rows:
+                return []
+
+            if prefer_small:
+                # Keep low-pop servers at the front while preserving random tie-breaks.
+                server_rows.sort(key=lambda row: (row[1], row[2], random.random()))
+            else:
+                random.shuffle(server_rows)
+
+            return [row[0] for row in server_rows]
+        except Exception as exc:
+            print(f"[WARNING] Failed to fetch public server candidates for place {place_id_str}: {exc}")
+            return []
     
     @staticmethod
     def get_auth_ticket(roblosecurity_cookie):

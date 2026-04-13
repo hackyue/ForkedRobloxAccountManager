@@ -6684,6 +6684,8 @@ class AccountManagerUI:
             success_count = 0
             recent_join_username = ""
             last_effective_private_server = psid
+            public_server_job_pool = []
+            public_server_pool_loaded = False
             if active_launch_mode == "join_user":
                 entered = str(join_input_text or "").strip()
                 if entered and not entered.isdigit():
@@ -6701,6 +6703,32 @@ class AccountManagerUI:
                 print("[INFO] Lowest-population server setting ignored because a manual Job ID is set.")
             if prefer_small and randomize_jobs and not psid and not manual_job_id and active_launch_mode != "join_user":
                 print("[INFO] Lowest-population server setting is enabled; random server selection will be ignored.")
+
+            def take_public_server_job_id():
+                nonlocal public_server_job_pool, public_server_pool_loaded
+                if public_server_job_pool:
+                    return public_server_job_pool.pop(0)
+
+                if public_server_pool_loaded:
+                    return ""
+
+                public_server_job_pool = RobloxAPI.get_public_server_job_candidates(
+                    pid,
+                    max_pages=1,
+                    prefer_small=bool(prefer_small),
+                    enable_debug=debug_flag,
+                ) or []
+                public_server_pool_loaded = True
+                if public_server_job_pool:
+                    mode_label = "low-population" if prefer_small else "randomized"
+                    print(f"[INFO] Loaded {len(public_server_job_pool)} {mode_label} public server candidates for this launch batch.")
+                    return public_server_job_pool.pop(0)
+                if prefer_small:
+                    print("[INFO] Low-population public server unavailable; launching without job ID override.")
+                else:
+                    print("[INFO] Random public server unavailable; launching without randomized job ID.")
+                return ""
+
             for idx, uname in enumerate(selected_usernames):
                 try:
                     account_private_server = psid
@@ -6717,25 +6745,9 @@ class AccountManagerUI:
                     elif manual_job_id:
                         server_job_id = str(manual_job_id).strip()
                     elif prefer_small and not account_private_server:
-                        max_small_server_attempts = 3
-                        for attempt in range(1, max_small_server_attempts + 1):
-                            server_job_id = RobloxAPI.get_lowest_public_server_job_id(pid) or ""
-                            if server_job_id:
-                                break
-                            if attempt < max_small_server_attempts:
-                                time.sleep(0.6 * attempt)
-                        if not server_job_id:
-                            print("[INFO] Low-population public server unavailable; launching without job ID override.")
+                        server_job_id = take_public_server_job_id()
                     elif randomize_jobs and not account_private_server:
-                        max_random_job_attempts = 3
-                        for attempt in range(1, max_random_job_attempts + 1):
-                            server_job_id = RobloxAPI.get_random_public_server_job_id(pid) or ""
-                            if server_job_id:
-                                break
-                            if attempt < max_random_job_attempts:
-                                time.sleep(0.6 * attempt)
-                        if not server_job_id:
-                            print("[INFO] Random public server unavailable; launching without randomized job ID.")
+                        server_job_id = take_public_server_job_id()
 
                     if randomize_jobs and account_private_server:
                         print(f"[INFO] Random Job ID setting ignored for {uname} because a private server link code is set.")
