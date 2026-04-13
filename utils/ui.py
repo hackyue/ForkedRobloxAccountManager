@@ -1120,7 +1120,6 @@ class AccountManagerUI:
         action_frame.pack(fill="x", pady=(5, 0))
 
         ttk.Button(action_frame, text="Refresh List", style="Dark.TButton", command=self.refresh_accounts).pack(fill="x", pady=2)
-        ttk.Button(action_frame, text="VIP Server Mapping", style="Dark.TButton", command=self.open_vip_server_manager).pack(fill="x", pady=2)
         ttk.Button(action_frame, text="Arrange Clients", style="Dark.TButton", command=self.auto_arrange_clients).pack(fill="x", pady=2)
         self.trim_roblox_memory_btn = ttk.Button(
             action_frame,
