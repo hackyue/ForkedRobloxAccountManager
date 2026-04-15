@@ -22,10 +22,10 @@ from functools import lru_cache
 
 warnings.filterwarnings("ignore")
 
-from classes import RobloxAccountManager
+from classes import AutoRejoinMonitor, RobloxAccountManager
 from classes.encryption import EncryptionConfig
 from utils.encryption_setup import setup_encryption
-from utils.ui import AccountManagerUI
+from utils.ui import AccountManagerUI, get_user_presence
 
 
 def subprocess_no_window_kwargs():
@@ -257,11 +257,23 @@ def main():
     app = AccountManagerUI(root, manager, icon_path=icon_path)
     install_bug_issue_hooks(root, app)
 
+    auto_rejoin_monitor = AutoRejoinMonitor(
+        launch_callback=app.launch_auto_rejoin_session,
+        presence_lookup=get_user_presence,
+        log_callback=app.log_auto_rejoin_event,
+        status_callback=app.set_account_rejoin_status,
+        validate_account_callback=lambda username: manager.validate_account(username, verbose=False),
+    )
+    manager.set_auto_rejoin_monitor(auto_rejoin_monitor)
+    app.set_auto_rejoin_monitor(auto_rejoin_monitor)
+    auto_rejoin_monitor.start()
+    root.protocol("WM_DELETE_WINDOW", app.handle_app_close)
+
     try:
         root.mainloop()
     except KeyboardInterrupt:
         try:
-            root.destroy()
+            app.handle_app_close()
         except Exception:
             pass
 

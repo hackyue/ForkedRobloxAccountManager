@@ -66,6 +66,7 @@ class RobloxAccountManager:
         
         self.accounts = self.load_accounts()
         self.temp_profile_dir = None
+        self.auto_rejoin_monitor = None
         
     def load_accounts(self):
         """Load saved accounts from JSON file"""
@@ -106,6 +107,10 @@ class RobloxAccountManager:
                     account_data['password'] = ''
                 if 'vip_server' not in account_data:
                     account_data['vip_server'] = ''
+                if 'auto_rejoin_enabled' not in account_data:
+                    account_data['auto_rejoin_enabled'] = False
+                if 'user_id' not in account_data:
+                    account_data['user_id'] = ''
 
     def normalize_private_server(self, value):
         """Normalize private server input to a Roblox link code when possible."""
@@ -853,6 +858,8 @@ class RobloxAccountManager:
                             "note": "",
                             "group": "",
                             "vip_server": "",
+                            "auto_rejoin_enabled": False,
+                            "user_id": "",
                         }
                         self.save_accounts()
                         return {
@@ -968,6 +975,8 @@ class RobloxAccountManager:
                                 'note': '',
                                 'group': '',
                                 'vip_server': '',
+                                'auto_rejoin_enabled': False,
+                                'user_id': '',
                             }
                             self.save_accounts()
                             
@@ -1108,6 +1117,8 @@ class RobloxAccountManager:
                     'note': '',
                     'group': '',
                     'vip_server': '',
+                    'auto_rejoin_enabled': False,
+                    'user_id': '',
                 }
                 self.save_accounts()
                 success_count += 1
@@ -1154,6 +1165,8 @@ class RobloxAccountManager:
                 'note': '',
                 'group': '',
                 'vip_server': '',
+                'auto_rejoin_enabled': False,
+                'user_id': '',
             }
             self.save_accounts()
             
@@ -1167,6 +1180,7 @@ class RobloxAccountManager:
     def delete_account(self, username):
         """Delete a saved account"""
         if username in self.accounts:
+            self.mark_session_intentionally_closed(username=username)
             del self.accounts[username]
             self.save_accounts()
             print(f"[SUCCESS] Deleted account: {username}")
@@ -1190,7 +1204,95 @@ class RobloxAccountManager:
             return False
         
         return RobloxAPI.validate_account(username, cookie, verbose=verbose)
-    
+
+    def set_auto_rejoin_monitor(self, monitor):
+        self.auto_rejoin_monitor = monitor
+
+    def _get_or_resolve_account_user_id(self, username):
+        account_data = self.accounts.get(username)
+        if not isinstance(account_data, dict):
+            return ""
+
+        cached_user_id = str(account_data.get("user_id", "") or "").strip()
+        if cached_user_id.isdigit():
+            return cached_user_id
+
+        resolved_user_id = str(RobloxAPI.get_user_id_from_username(username) or "").strip()
+        if resolved_user_id.isdigit():
+            account_data["user_id"] = resolved_user_id
+            self.save_accounts()
+            return resolved_user_id
+        return ""
+
+    def get_account_auto_rejoin_enabled(self, username):
+        account_data = self.accounts.get(username)
+        if not isinstance(account_data, dict):
+            return False
+        return bool(account_data.get("auto_rejoin_enabled", False))
+
+    def set_account_auto_rejoin_enabled(self, username, enabled):
+        if username not in self.accounts:
+            print(f"[ERROR] Account '{username}' not found")
+            return False
+
+        self.accounts[username]["auto_rejoin_enabled"] = bool(enabled)
+        self.save_accounts()
+        return True
+
+    def register_active_session(
+        self,
+        username,
+        place_id="",
+        private_server_link="",
+        pid=0,
+        auto_rejoin=None,
+        rejoin_delay=5,
+        max_rejoin_attempts=0,
+        server_job_id="",
+        launch_mode="game",
+        version_path=None,
+        preserve_rejoin_attempts=False,
+    ):
+        monitor = getattr(self, "auto_rejoin_monitor", None)
+        if monitor is None or username not in self.accounts:
+            return None
+
+        cookie = self.get_account_cookie(username)
+        if not cookie:
+            return None
+
+        if auto_rejoin is None:
+            auto_rejoin = self.get_account_auto_rejoin_enabled(username)
+
+        user_id = self._get_or_resolve_account_user_id(username)
+        return monitor.register_session(
+            username=username,
+            cookie=cookie,
+            place_id=place_id,
+            private_server_link=private_server_link,
+            pid=pid,
+            auto_rejoin=bool(auto_rejoin),
+            rejoin_delay=rejoin_delay,
+            max_rejoin_attempts=max_rejoin_attempts,
+            user_id=user_id,
+            server_job_id=server_job_id,
+            launch_mode=launch_mode,
+            version_path=version_path,
+            preserve_rejoin_attempts=preserve_rejoin_attempts,
+        )
+
+    def update_active_session_pid(self, username, pid):
+        monitor = getattr(self, "auto_rejoin_monitor", None)
+        if monitor is None:
+            return False
+        return bool(monitor.update_session_pid(username, pid))
+
+    def mark_session_intentionally_closed(self, username=None, pid=None):
+        monitor = getattr(self, "auto_rejoin_monitor", None)
+        if monitor is None:
+            return False
+        return bool(monitor.mark_intentionally_stopped(username=username, pid=pid))
+
     def launch_home(self, username, preferred_browser="auto"):
         """Launch browser to Roblox home with account logged in (Chrome/Firefox)."""
         if username not in self.accounts:
@@ -1232,6 +1334,7 @@ class RobloxAccountManager:
             print(f"[ERROR] Account '{username}' not found")
             return False
 
+        self.mark_session_intentionally_closed(username=username)
         return self.launch_roblox(username, "", "", version=version, enable_debug=enable_debug)
 
     def launch_roblox(
@@ -1243,6 +1346,10 @@ class RobloxAccountManager:
         enable_debug=False,
         server_job_id="",
         launch_mode="game",
+        auto_rejoin=None,
+        rejoin_delay=5,
+        max_rejoin_attempts=0,
+        preserve_rejoin_attempts=False,
     ):
         """
         Launch Roblox game with specified account and version
@@ -1260,8 +1367,11 @@ class RobloxAccountManager:
             return False
             
         cookie = self.accounts[username]['cookie']
-        
-        return RobloxAPI.launch_roblox(
+        normalized_launch_mode = str(launch_mode or "game").strip().lower()
+        if normalized_launch_mode != "join_user":
+            normalized_launch_mode = "game"
+
+        launched = RobloxAPI.launch_roblox(
             username,
             cookie,
             game_id,
@@ -1269,8 +1379,32 @@ class RobloxAccountManager:
             version,
             enable_debug=enable_debug,
             server_job_id=server_job_id,
-            launch_mode=launch_mode,
+            launch_mode=normalized_launch_mode,
         )
+        should_track_session = (
+            launched and (
+                normalized_launch_mode == "join_user"
+                or (
+                    normalized_launch_mode == "game"
+                    and str(game_id or "").strip() != ""
+                )
+            )
+        )
+        if should_track_session:
+            self.register_active_session(
+                username=username,
+                place_id=str(game_id or "").strip() if normalized_launch_mode == "game" else "",
+                private_server_link=private_server_id,
+                pid=0,
+                auto_rejoin=auto_rejoin,
+                rejoin_delay=rejoin_delay,
+                max_rejoin_attempts=max_rejoin_attempts,
+                server_job_id=server_job_id,
+                launch_mode=normalized_launch_mode,
+                version_path=version,
+                preserve_rejoin_attempts=preserve_rejoin_attempts,
+            )
+        return launched
     
     def set_account_note(self, username, note):
         """Set or update note for an account"""

@@ -184,6 +184,7 @@ WS_THICKFRAME = 0x00040000
 WS_MAXIMIZEBOX = 0x00010000
 WS_MINIMIZEBOX = 0x00020000
 INVALID_ACCOUNT_SYMBOL = "\u26A0"
+AUTO_REJOIN_SYMBOL = "\u21BB"
 
 
 def clamp_multi_launch_delay(value):
@@ -221,6 +222,76 @@ def subprocess_no_window_kwargs():
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
+
+def get_user_presence(roblosecurity_cookie, user_ids, session=None, timeout=10):
+    """
+    Best-effort Presence API lookup for one or more Roblox user IDs.
+
+    Returns:
+        {
+            "ok": bool,
+            "status_code": int,
+            "auth_error": bool,
+            "error": str,
+            "user_presences": list,
+        }
+    """
+    result = {
+        "ok": False,
+        "status_code": 0,
+        "auth_error": False,
+        "error": "",
+        "user_presences": [],
+    }
+
+    normalized_cookie = RobloxAPI._normalize_roblosecurity_cookie(roblosecurity_cookie)
+    if not normalized_cookie:
+        result["auth_error"] = True
+        result["error"] = "Missing .ROBLOSECURITY cookie."
+        return result
+
+    normalized_user_ids = []
+    for raw_user_id in list(user_ids or []):
+        try:
+            normalized_user_ids.append(int(raw_user_id))
+        except Exception:
+            continue
+
+    if not normalized_user_ids:
+        result["error"] = "No valid user IDs were provided."
+        return result
+
+    client = session or requests.Session()
+    headers = {
+        "Cookie": f".ROBLOSECURITY={normalized_cookie}",
+        "Referer": "https://www.roblox.com/",
+        "User-Agent": "Roblox/WinInet",
+    }
+
+    try:
+        response = client.post(
+            "https://presence.roblox.com/v1/presence/users",
+            json={"userIds": normalized_user_ids},
+            headers=headers,
+            timeout=timeout,
+        )
+        result["status_code"] = int(getattr(response, "status_code", 0) or 0)
+        if response.status_code in (401, 403):
+            result["auth_error"] = True
+            result["error"] = f"Presence request returned status {response.status_code}."
+            return result
+        response.raise_for_status()
+        payload = response.json() if response.content else {}
+        result["ok"] = True
+        result["user_presences"] = payload.get("userPresences") or []
+        return result
+    except requests.exceptions.RequestException as exc:
+        result["error"] = str(exc)
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
 
 
 THEMES = {
@@ -825,6 +896,9 @@ class AccountManagerUI:
         self.console_output = get_console_output_buffer()
         self.console_window = ConsoleOutputWindow(self, self.console_output)
         self._account_validation_status = {}
+        self._account_rejoin_status = {}
+        self._account_rejoin_status_after_ids = {}
+        self._auto_rejoin_monitor = None
         self._startup_validation_started = False
         self._startup_validation_in_progress = False
 
@@ -846,6 +920,7 @@ class AccountManagerUI:
         self.installer_menu = None
         self.add_account_menu = None
         self.account_context_menu = None
+        self._account_context_auto_rejoin_index = None
         self.launch_input_context_menu = None
         self.place_target_context_menu = None
         self.menu_bar_frame = None
@@ -1001,6 +1076,12 @@ class AccountManagerUI:
         self.account_context_menu.add_command(label="Edit Note", command=self.edit_account_note)
         self.account_context_menu.add_command(label="Set Group", command=self.edit_account_group)
         self.account_context_menu.add_command(label="Set VIP Server", command=self.edit_account_vip_server)
+        self.account_context_menu.add_separator()
+        self.account_context_menu.add_command(
+            label="Enable Auto-Rejoin",
+            command=self.toggle_selected_account_auto_rejoin,
+        )
+        self._account_context_auto_rejoin_index = self.account_context_menu.index("end")
 
         self.account_drop_indicator = tk.Frame(self.account_list, height=2, bg=self.FG_ACCENT)
 
@@ -1194,6 +1275,9 @@ class AccountManagerUI:
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_roblox_player_path": "",
             "selected_group": "All",
+            "auto_rejoin_enable_all_accounts": False,
+            "auto_rejoin_delay_seconds": 5,
+            "auto_rejoin_max_attempts": 0,
             "auto_relaunch_enabled": False,
             "auto_relaunch_interval_minutes": 60,
             "auto_relaunch_group": "",
@@ -1253,6 +1337,18 @@ class AccountManagerUI:
             mm = 5
         self.settings["auto_memory_trim_interval_minutes"] = max(1, min(120, mm))
 
+        try:
+            auto_rejoin_delay = int(self.settings.get("auto_rejoin_delay_seconds", 5) or 5)
+        except (TypeError, ValueError):
+            auto_rejoin_delay = 5
+        self.settings["auto_rejoin_delay_seconds"] = max(0, auto_rejoin_delay)
+
+        try:
+            auto_rejoin_max_attempts = int(self.settings.get("auto_rejoin_max_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            auto_rejoin_max_attempts = 0
+        self.settings["auto_rejoin_max_attempts"] = max(0, auto_rejoin_max_attempts)
+
     def _ensure_auto_arrange_scope_valid(self):
         """Keep auto-arrange scope sane, especially when only one monitor is available."""
         allowed_scopes = {"primary", "secondary", "both"}
@@ -1295,6 +1391,120 @@ class AccountManagerUI:
             return len(monitors) > 1
         except Exception:
             return False
+
+    def set_auto_rejoin_monitor(self, monitor):
+        self._auto_rejoin_monitor = monitor
+        try:
+            self.manager.set_auto_rejoin_monitor(monitor)
+        except Exception:
+            pass
+        self._apply_auto_rejoin_preferences_to_active_sessions()
+        self.refresh_accounts()
+
+    def _get_auto_rejoin_delay_seconds(self):
+        try:
+            value = int(self.settings.get("auto_rejoin_delay_seconds", 5) or 5)
+        except (TypeError, ValueError):
+            value = 5
+        return max(0, value)
+
+    def _get_auto_rejoin_max_attempts(self):
+        try:
+            value = int(self.settings.get("auto_rejoin_max_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        return max(0, value)
+
+    def _is_auto_rejoin_force_enabled(self):
+        return bool(self.settings.get("auto_rejoin_enable_all_accounts", False))
+
+    def _is_account_auto_rejoin_enabled(self, username):
+        try:
+            return bool(self.manager.get_account_auto_rejoin_enabled(username))
+        except Exception:
+            return False
+
+    def _get_effective_auto_rejoin_enabled(self, username):
+        return self._is_auto_rejoin_force_enabled() or self._is_account_auto_rejoin_enabled(username)
+
+    def _apply_auto_rejoin_preferences_to_active_sessions(self, usernames=None):
+        monitor = getattr(self, "_auto_rejoin_monitor", None)
+        if monitor is None:
+            return
+
+        if usernames is None:
+            usernames = list(getattr(self.manager, "accounts", {}).keys())
+
+        delay_seconds = self._get_auto_rejoin_delay_seconds()
+        max_attempts = self._get_auto_rejoin_max_attempts()
+
+        for username in list(usernames or []):
+            try:
+                monitor.update_session_preferences(
+                    username,
+                    auto_rejoin=self._get_effective_auto_rejoin_enabled(username),
+                    rejoin_delay=delay_seconds,
+                    max_rejoin_attempts=max_attempts,
+                )
+            except Exception:
+                continue
+
+    def _get_auto_rejoin_session_snapshot(self, username):
+        monitor = getattr(self, "_auto_rejoin_monitor", None)
+        if monitor is None:
+            return None
+        try:
+            return monitor.get_session_snapshot(username)
+        except Exception:
+            return None
+
+    def _is_account_auto_rejoin_monitored(self, username):
+        session = self._get_auto_rejoin_session_snapshot(username)
+        if not isinstance(session, dict):
+            return False
+        return bool(session.get("auto_rejoin", False))
+
+    def log_auto_rejoin_event(self, message):
+        print(str(message or "").strip())
+
+    def set_account_rejoin_status(self, username, status_text, ttl_seconds=0):
+        username = str(username or "").strip()
+        text = str(status_text or "").strip()
+        ttl_ms = max(0, int(ttl_seconds or 0)) * 1000
+        if not username:
+            return
+
+        def apply():
+            pending_id = self._account_rejoin_status_after_ids.pop(username, None)
+            if pending_id is not None:
+                try:
+                    self.root.after_cancel(pending_id)
+                except Exception:
+                    pass
+
+            if text:
+                self._account_rejoin_status[username] = text
+            else:
+                self._account_rejoin_status.pop(username, None)
+
+            if text and ttl_ms > 0:
+                def clear_status(target_username=username):
+                    self.set_account_rejoin_status(target_username, "", 0)
+
+                try:
+                    self._account_rejoin_status_after_ids[username] = self.root.after(ttl_ms, clear_status)
+                except Exception:
+                    pass
+
+            self.refresh_accounts(selected_usernames=self._get_selected_usernames_silent())
+
+        try:
+            if threading.current_thread() is threading.main_thread():
+                apply()
+            else:
+                self.root.after(0, apply)
+        except Exception:
+            pass
 
     def _format_delay_value(self, value):
         """Return a user-friendly string for the launch delay value."""
@@ -1600,6 +1810,48 @@ class AccountManagerUI:
                 )
             except Exception:
                 pass
+
+    def _mark_active_sessions_manually_stopped(self, usernames=None, pids=None):
+        cleared_usernames = set()
+
+        for username in list(usernames or []):
+            normalized_username = str(username or "").strip()
+            if not normalized_username:
+                continue
+            try:
+                if self.manager.mark_session_intentionally_closed(username=normalized_username):
+                    cleared_usernames.add(normalized_username)
+            except Exception:
+                continue
+
+        for raw_pid in list(pids or []):
+            try:
+                pid_value = int(raw_pid)
+            except Exception:
+                continue
+            if pid_value <= 0:
+                continue
+
+            mapped_username = ""
+            try:
+                with self._pid_account_lock:
+                    mapped_username = str(self._pid_account_map.get(pid_value, "") or "").strip()
+            except Exception:
+                mapped_username = ""
+
+            try:
+                if self.manager.mark_session_intentionally_closed(
+                    username=mapped_username or None,
+                    pid=pid_value,
+                ):
+                    if mapped_username:
+                        cleared_usernames.add(mapped_username)
+            except Exception:
+                continue
+
+        for username in cleared_usernames:
+            self.set_account_rejoin_status(username, "", 0)
+        return cleared_usernames
 
     def show_success_message(self, message, title="Success"):
         """Show a success message if popups are enabled."""
@@ -4112,8 +4364,17 @@ class AccountManagerUI:
             self.show_success_message("Game removed from list!")
 
     def _extract_username(self, display_text):
-        if display_text.startswith(f"{INVALID_ACCOUNT_SYMBOL} "):
-            display_text = display_text[2:]
+        prefixes = [
+            f"{INVALID_ACCOUNT_SYMBOL} ",
+            f"{AUTO_REJOIN_SYMBOL} ",
+        ]
+        trimmed = True
+        while trimmed:
+            trimmed = False
+            for prefix in prefixes:
+                if display_text.startswith(prefix):
+                    display_text = display_text[len(prefix):]
+                    trimmed = True
         if display_text.startswith("[!] "):
             display_text = display_text[4:]
         if " | " in display_text:
@@ -4138,6 +4399,10 @@ class AccountManagerUI:
             if username not in self.manager.accounts:
                 self._account_validation_status.pop(username, None)
 
+        for username in list(self._account_rejoin_status.keys()):
+            if username not in self.manager.accounts:
+                self._account_rejoin_status.pop(username, None)
+
         for username, data in self.manager.accounts.items():
             if not isinstance(data, dict):
                 continue
@@ -4150,7 +4415,11 @@ class AccountManagerUI:
 
             note = (data.get('note') or '').strip()
             vip_server = (data.get('vip_server') or '').strip()
+            rejoin_status = str(self._account_rejoin_status.get(username, "") or "").strip()
+            is_monitored = self._is_account_auto_rejoin_monitored(username)
             display_text = f"{username}"
+            if is_monitored:
+                display_text = f"{AUTO_REJOIN_SYMBOL} {display_text}"
             if self._account_validation_status.get(username) is False:
                 display_text = f"{INVALID_ACCOUNT_SYMBOL} {display_text}"
             if group:
@@ -4159,6 +4428,8 @@ class AccountManagerUI:
                 display_text += " | [VIP]"
             if note:
                 display_text += f" | {note}"
+            if rejoin_status:
+                display_text += f" | {rejoin_status}"
 
             idx = len(display_items)
             display_items.append(display_text)
@@ -4341,6 +4612,7 @@ class AccountManagerUI:
         if menu is None:
             return "break"
 
+        self._update_account_context_menu_state()
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -5144,6 +5416,13 @@ class AccountManagerUI:
         if not confirm:
             return
 
+        active_usernames = [
+            username
+            for username in getattr(self.manager, "accounts", {}).keys()
+            if self._get_auto_rejoin_session_snapshot(username)
+        ]
+        self._mark_active_sessions_manually_stopped(usernames=active_usernames)
+
         try:
             result = subprocess.run(
                 ['taskkill', '/F', '/IM', 'RobloxPlayerBeta.exe'],
@@ -5909,6 +6188,49 @@ class AccountManagerUI:
         self.refresh_group_dropdown_values()
         self.refresh_accounts(selected_usernames=usernames)
 
+    def toggle_selected_account_auto_rejoin(self):
+        usernames = self._get_selected_usernames_silent()
+        if not usernames:
+            messagebox.showwarning("Auto-Rejoin", "Please select at least one account first.")
+            return
+
+        all_enabled = all(self._is_account_auto_rejoin_enabled(username) for username in usernames)
+        target_enabled = not all_enabled
+
+        changed = 0
+        for username in usernames:
+            if self.manager.set_account_auto_rejoin_enabled(username, target_enabled):
+                changed += 1
+
+        self._apply_auto_rejoin_preferences_to_active_sessions(usernames)
+        self.refresh_accounts(selected_usernames=usernames)
+
+        if changed <= 0:
+            return
+
+        if len(usernames) == 1:
+            state_text = "enabled" if target_enabled else "disabled"
+            self.show_success_message(f"Auto-Rejoin {state_text} for '{usernames[0]}'.")
+        else:
+            state_text = "enabled" if target_enabled else "disabled"
+            self.show_success_message(f"Auto-Rejoin {state_text} for {changed} account(s).")
+
+    def _update_account_context_menu_state(self):
+        menu = getattr(self, "account_context_menu", None)
+        menu_index = getattr(self, "_account_context_auto_rejoin_index", None)
+        if menu is None or menu_index is None:
+            return
+
+        usernames = self._get_selected_usernames_silent()
+        all_enabled = bool(usernames) and all(
+            self._is_account_auto_rejoin_enabled(username) for username in usernames
+        )
+        label = "Disable Auto-Rejoin" if all_enabled else "Enable Auto-Rejoin"
+        try:
+            menu.entryconfigure(menu_index, label=label)
+        except Exception:
+            pass
+
     def edit_account_vip_server(self):
         if self.settings.get("enable_multi_select", False):
             usernames = self.get_selected_usernames()
@@ -6624,6 +6946,33 @@ class AccountManagerUI:
         context["version_path"] = str(version_path).strip() if version_path else None
         return context
 
+    def _select_primary_session_pid(self, pid_values):
+        normalized_pids = []
+        for raw_pid in list(pid_values or []):
+            try:
+                pid_value = int(raw_pid)
+            except Exception:
+                continue
+            if pid_value > 0:
+                normalized_pids.append(pid_value)
+
+        if not normalized_pids:
+            return 0
+
+        pid_to_image = self._query_tasklist_pid_map(getattr(self, "_tracked_roblox_exes", set()))
+        ranked = []
+        for pid_value in sorted(set(normalized_pids)):
+            image_name = str(pid_to_image.get(pid_value, "") or "").strip().lower()
+            has_window = bool(self._find_main_window_for_pid(pid_value))
+            ranked.append((
+                0 if image_name == "robloxplayerbeta.exe" else 1,
+                0 if has_window else 1,
+                pid_value,
+            ))
+
+        ranked.sort()
+        return int(ranked[0][2]) if ranked else 0
+
     def _assign_new_pids_to_account(self, username, before_pids, after_pids, launch_context=None):
         if not username:
             return
@@ -6644,6 +6993,14 @@ class AccountManagerUI:
 
         for pid_value in new_pids:
             self._rename_roblox_client_window_title(int(pid_value), str(username))
+
+        session_pid = self._select_primary_session_pid(new_pids)
+        if session_pid > 0:
+            try:
+                self.manager.update_active_session_pid(username, session_pid)
+            except Exception:
+                pass
+            self.set_account_rejoin_status(username, "", 0)
 
     def _rename_roblox_client_window_title(self, pid_value, username):
         if platform.system() != "Windows":
@@ -6694,19 +7051,51 @@ class AccountManagerUI:
             return None
         return found_hwnd["value"]
 
-    def launch_game(self):
-        """Launch Roblox game with the selected account(s)"""
-        if self.settings.get("enable_multi_select", False):
-            usernames = self.get_selected_usernames()
-            if not usernames:
-                return
-        else:
-            username = self.get_selected_username()
-            if not username:
-                return
-            usernames = [username]
+    def launch_game(
+        self,
+        usernames=None,
+        place_id_override=None,
+        private_server_override=None,
+        manual_server_job_id_override=None,
+        version_path_override=None,
+        launch_mode_override=None,
+        join_input_override=None,
+        skip_confirm=False,
+        on_done_callback=None,
+        trigger_auto_arrange=False,
+        run_async=True,
+        show_feedback=True,
+        update_recent_history=True,
+        preserve_rejoin_attempts=False,
+    ):
+        """Launch Roblox for the selected account(s) or explicit usernames."""
+        if usernames is None:
+            if self.settings.get("enable_multi_select", False):
+                usernames = self.get_selected_usernames()
+                if not usernames:
+                    return False
+            else:
+                username = self.get_selected_username()
+                if not username:
+                    return False
+                usernames = [username]
 
-        self._launch_game_for_usernames(usernames)
+        return self._launch_game_for_usernames(
+            usernames,
+            skip_confirm=skip_confirm,
+            on_done_callback=on_done_callback,
+            trigger_auto_arrange=trigger_auto_arrange,
+            place_id_override=place_id_override,
+            private_server_override=private_server_override,
+            manual_server_job_id_override=manual_server_job_id_override,
+            version_path_override=version_path_override,
+            launch_mode_override=launch_mode_override,
+            join_input_override=join_input_override,
+            run_async=run_async,
+            show_feedback=show_feedback,
+            update_recent_history=update_recent_history,
+            preserve_rejoin_attempts=preserve_rejoin_attempts,
+        )
 
     def launch_group_game(self):
         group = self._get_active_group()
@@ -6720,6 +7109,33 @@ class AccountManagerUI:
 
         self._launch_game_for_usernames(usernames, confirm_group=group)
 
+    def launch_auto_rejoin_session(self, session, attempt_number=0):
+        place_id = str(getattr(session, "place_id", "") or "").strip()
+        if not place_id:
+            return False
+
+        private_server = str(getattr(session, "private_server_link", "") or "").strip()
+        server_job_id = ""
+        if not private_server:
+            server_job_id = str(getattr(session, "server_job_id", "") or "").strip()
+
+        return bool(
+            self.launch_game(
+                usernames=[str(getattr(session, "username", "") or "").strip()],
+                place_id_override=place_id,
+                private_server_override=private_server,
+                manual_server_job_id_override=server_job_id or None,
+                version_path_override=getattr(session, "version_path", None),
+                launch_mode_override="place_id",
+                join_input_override=place_id,
+                skip_confirm=True,
+                run_async=False,
+                show_feedback=False,
+                update_recent_history=False,
+                preserve_rejoin_attempts=True,
+            )
+        )
+
     def _launch_game_for_usernames(
         self,
         usernames,
@@ -6727,35 +7143,67 @@ class AccountManagerUI:
         skip_confirm=False,
         on_done_callback=None,
         trigger_auto_arrange=False,
+        place_id_override=None,
+        private_server_override=None,
+        manual_server_job_id_override=None,
+        version_path_override=None,
+        launch_mode_override=None,
+        join_input_override=None,
+        run_async=True,
+        show_feedback=True,
+        update_recent_history=True,
+        preserve_rejoin_attempts=False,
     ):
-        target_value = self.place_entry.get().strip()
-        launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+        target_value = (
+            str(place_id_override).strip()
+            if place_id_override is not None
+            else self.place_entry.get().strip()
+        )
+        launch_mode = self._normalize_launch_input_mode(
+            launch_mode_override
+            if launch_mode_override is not None
+            else getattr(self, "launch_input_mode", "place_id")
+        )
         place_target_mode = self._normalize_place_target_mode(getattr(self, "place_join_target_mode", "private_server"))
         game_id = target_value
-        place_target_value = self.private_server_entry.get().strip() if launch_mode == "place_id" else ""
-        private_server = place_target_value if (launch_mode == "place_id" and place_target_mode == "private_server") else ""
+        place_target_value = (
+            str(private_server_override).strip()
+            if private_server_override is not None
+            else (self.private_server_entry.get().strip() if launch_mode == "place_id" else "")
+        )
+        if private_server_override is not None:
+            private_server = str(private_server_override).strip()
+        else:
+            private_server = place_target_value if (launch_mode == "place_id" and place_target_mode == "private_server") else ""
         if private_server:
             private_server = self.manager.normalize_private_server(private_server)
-        manual_server_job_id = place_target_value if (launch_mode == "place_id" and place_target_mode == "job_id") else ""
+        manual_server_job_id = (
+            str(manual_server_job_id_override).strip()
+            if manual_server_job_id_override is not None
+            else (place_target_value if (launch_mode == "place_id" and place_target_mode == "job_id") else "")
+        )
         if launch_mode == "place_id" and place_target_mode == "subplaces" and place_target_value:
             if not str(place_target_value).isdigit():
                 messagebox.showwarning("Invalid SubPlace ID", "SubPlace ID must be numeric.")
                 return
             game_id = place_target_value
 
-        selected_version_label = self.version_var.get()
-        version_path = self.version_options.get(selected_version_label)
+        if version_path_override is not None:
+            version_path = version_path_override or None
+        else:
+            selected_version_label = self.version_var.get()
+            version_path = self.version_options.get(selected_version_label)
 
         if not target_value:
             required_label = "Join User" if launch_mode == "join_user" else "Place ID"
             messagebox.showwarning("Missing Information", f"Please enter a {required_label}.")
-            return
+            return False
 
         if launch_mode == "join_user" and not str(game_id).isdigit():
             resolved_user_id = RobloxAPI.get_user_id_from_username(game_id)
             if not resolved_user_id:
                 messagebox.showwarning("User Not Found", f"Could not find Roblox user '{game_id}'.")
-                return
+                return False
             game_id = resolved_user_id
 
         if (not skip_confirm) and self.settings.get("confirm_before_launch", True) and len(usernames) > 1:
@@ -6766,14 +7214,26 @@ class AccountManagerUI:
             )
             confirm = messagebox.askyesno("Confirm Launch", prompt)
             if not confirm:
-                return
+                return False
 
         debug_enabled = self.settings.get("enable_debug_logging", False)
         launch_delay = self._get_multi_launch_delay()
         randomize_server_jobs = self.settings.get("randomize_server_job_ids", False)
         prefer_small_servers = self.settings.get("prefer_small_public_servers", False)
 
-        def worker(selected_usernames, pid, psid, manual_job_id, ver, debug_flag, delay_seconds, randomize_jobs, prefer_small, active_launch_mode, join_input_text):
+        def run_launch_batch(
+            selected_usernames,
+            pid,
+            psid,
+            manual_job_id,
+            ver,
+            debug_flag,
+            delay_seconds,
+            randomize_jobs,
+            prefer_small,
+            active_launch_mode,
+            join_input_text,
+        ):
             success_count = 0
             recent_join_username = ""
             last_effective_private_server = psid
@@ -6848,6 +7308,7 @@ class AccountManagerUI:
                         print(f"[INFO] Lowest-population server setting ignored for {uname} because a private server link code is set.")
 
                     before_pids = self._get_running_tracked_roblox_pid_set()
+                    effective_auto_rejoin = self._get_effective_auto_rejoin_enabled(uname)
                     launched = self.manager.launch_roblox(
                         uname,
                         pid,
@@ -6856,6 +7317,10 @@ class AccountManagerUI:
                         enable_debug=debug_flag,
                         server_job_id=server_job_id,
                         launch_mode=active_launch_mode,
+                        auto_rejoin=effective_auto_rejoin,
+                        rejoin_delay=self._get_auto_rejoin_delay_seconds(),
+                        max_rejoin_attempts=self._get_auto_rejoin_max_attempts(),
+                        preserve_rejoin_attempts=preserve_rejoin_attempts,
                     )
                     last_effective_private_server = account_private_server
                     effective_server_job_id = server_job_id
@@ -6876,6 +7341,10 @@ class AccountManagerUI:
                             enable_debug=debug_flag,
                             server_job_id="",
                             launch_mode=active_launch_mode,
+                            auto_rejoin=effective_auto_rejoin,
+                            rejoin_delay=self._get_auto_rejoin_delay_seconds(),
+                            max_rejoin_attempts=self._get_auto_rejoin_max_attempts(),
+                            preserve_rejoin_attempts=preserve_rejoin_attempts,
                         )
                         if launched:
                             effective_server_job_id = ""
@@ -6903,52 +7372,97 @@ class AccountManagerUI:
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
                     time.sleep(delay_seconds)
 
-            def on_done():
-                if success_count > 0:
+            return {
+                "success_count": success_count,
+                "selected_usernames": list(selected_usernames),
+                "active_launch_mode": active_launch_mode,
+                "recent_private_server": last_effective_private_server if len(selected_usernames) == 1 else psid,
+                "recent_join_username": recent_join_username,
+                "pid": pid,
+            }
+
+        def handle_launch_result(result):
+            success_count = int(result.get("success_count", 0) or 0)
+            selected_usernames = list(result.get("selected_usernames") or [])
+            active_launch_mode = str(result.get("active_launch_mode") or launch_mode).strip()
+            if success_count > 0:
+                if update_recent_history:
                     if active_launch_mode != "join_user":
-                        recent_private_server = last_effective_private_server if len(selected_usernames) == 1 else psid
-                        gname = RobloxAPI.get_game_name(pid)
+                        recent_private_server = str(result.get("recent_private_server") or "").strip()
+                        gname = RobloxAPI.get_game_name(game_id)
                         if gname:
-                            self.add_game_to_list(pid, gname, recent_private_server)
+                            self.add_game_to_list(game_id, gname, recent_private_server)
                         else:
-                            self.add_game_to_list(pid, f"Place {pid}", recent_private_server)
+                            self.add_game_to_list(game_id, f"Place {game_id}", recent_private_server)
                     else:
-                        self.add_recent_user_to_list(pid, recent_join_username)
+                        self.add_recent_user_to_list(game_id, str(result.get("recent_join_username") or "").strip())
+
+                if show_feedback:
                     if len(selected_usernames) == 1:
                         self.show_success_message("Roblox is launching! Check your desktop.")
                     else:
-                        self.show_success_message(f"Roblox is launching for {success_count} account(s)! Check your desktop.")
+                        self.show_success_message(
+                            f"Roblox is launching for {success_count} account(s)! Check your desktop."
+                        )
 
-                    if trigger_auto_arrange and self.settings.get("auto_arrange_after_group_launch", False):
-                        self._schedule_auto_arrange_clients_silent()
+                if trigger_auto_arrange and self.settings.get("auto_arrange_after_group_launch", False):
+                    self._schedule_auto_arrange_clients_silent()
 
-                    if on_done_callback is not None:
-                        try:
-                            on_done_callback(success_count)
-                        except Exception:
-                            pass
-                else:
+                if on_done_callback is not None:
+                    try:
+                        on_done_callback(success_count)
+                    except Exception:
+                        pass
+            else:
+                if show_feedback:
                     messagebox.showerror("Error", "Failed to launch Roblox.")
+                elif on_done_callback is not None:
+                    try:
+                        on_done_callback(0)
+                    except Exception:
+                        pass
 
-            self.root.after(0, on_done)
+            return success_count > 0
 
-        threading.Thread(
-            target=worker,
-            args=(
-                list(usernames),
-                game_id,
-                private_server,
-                manual_server_job_id,
-                version_path,
-                debug_enabled,
-                launch_delay,
-                randomize_server_jobs,
-                prefer_small_servers,
-                launch_mode,
-                target_value,
-            ),
-            daemon=True
-        ).start()
+        worker_args = (
+            list(usernames),
+            game_id,
+            private_server,
+            manual_server_job_id,
+            version_path,
+            debug_enabled,
+            launch_delay,
+            randomize_server_jobs,
+            prefer_small_servers,
+            launch_mode,
+            join_input_override if join_input_override is not None else target_value,
+        )
+
+        if run_async:
+            def threaded_worker():
+                result = run_launch_batch(*worker_args)
+                self.root.after(0, lambda: handle_launch_result(result))
+
+            threading.Thread(target=threaded_worker, daemon=True).start()
+            return True
+
+        result = run_launch_batch(*worker_args)
+        if show_feedback or update_recent_history or trigger_auto_arrange or on_done_callback is not None:
+            if threading.current_thread() is threading.main_thread():
+                return handle_launch_result(result)
+            success_holder = {"ok": bool(result.get("success_count", 0))}
+            done_event = threading.Event()
+
+            def apply_result():
+                try:
+                    success_holder["ok"] = handle_launch_result(result)
+                finally:
+                    done_event.set()
+
+            self.root.after(0, apply_result)
+            done_event.wait(timeout=10)
+            return bool(success_holder["ok"])
+        return bool(result.get("success_count", 0))
 
     def _schedule_auto_arrange_clients_silent(self, attempts_remaining=8, delay_ms=800):
         """Arrange Roblox windows after launches settle, without showing popups."""
@@ -7984,6 +8498,88 @@ class AccountManagerUI:
 
         custom_player_entry.bind("<FocusOut>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
         custom_player_entry.bind("<Return>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
+
+        auto_rejoin_enable_all_var = tk.BooleanVar(
+            value=bool(self.settings.get("auto_rejoin_enable_all_accounts", False))
+        )
+        auto_rejoin_delay_var = tk.IntVar(value=self._get_auto_rejoin_delay_seconds())
+        auto_rejoin_max_attempts_var = tk.IntVar(value=self._get_auto_rejoin_max_attempts())
+
+        def on_auto_rejoin_settings_update(*_):
+            try:
+                delay_seconds = int(auto_rejoin_delay_var.get())
+            except (tk.TclError, ValueError):
+                delay_seconds = 5
+            delay_seconds = max(0, delay_seconds)
+            if auto_rejoin_delay_var.get() != delay_seconds:
+                auto_rejoin_delay_var.set(delay_seconds)
+
+            try:
+                max_attempts = int(auto_rejoin_max_attempts_var.get())
+            except (tk.TclError, ValueError):
+                max_attempts = 0
+            max_attempts = max(0, max_attempts)
+            if auto_rejoin_max_attempts_var.get() != max_attempts:
+                auto_rejoin_max_attempts_var.set(max_attempts)
+
+            self.settings["auto_rejoin_enable_all_accounts"] = bool(auto_rejoin_enable_all_var.get())
+            self.settings["auto_rejoin_delay_seconds"] = int(delay_seconds)
+            self.settings["auto_rejoin_max_attempts"] = int(max_attempts)
+            self.save_settings()
+            self._apply_auto_rejoin_preferences_to_active_sessions()
+            self.refresh_accounts(selected_usernames=self._get_selected_usernames_silent())
+
+        auto_rejoin_card = create_settings_card(
+            automation_tab,
+            "Auto Rejoin On Kick",
+            "Automatically rejoins the account into the same game if it gets kicked/crashes",
+        )
+
+        ttk.Checkbutton(
+            auto_rejoin_card,
+            text="Enable Auto-Rejoin For All Accounts",
+            variable=auto_rejoin_enable_all_var,
+            style="Dark.TCheckbutton",
+            command=on_auto_rejoin_settings_update,
+        ).pack(anchor="w", pady=2)
+
+        auto_rejoin_delay_frame = ttk.Frame(auto_rejoin_card, style="Dark.TFrame")
+        auto_rejoin_delay_frame.pack(fill="x", pady=(6, 0))
+        ttk.Label(auto_rejoin_delay_frame, text="Delay (seconds)", style="Dark.TLabel").pack(side="left")
+        auto_rejoin_delay_spin = ttk.Spinbox(
+            auto_rejoin_delay_frame,
+            from_=0,
+            to=600,
+            increment=1,
+            textvariable=auto_rejoin_delay_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_auto_rejoin_settings_update,
+        )
+        auto_rejoin_delay_spin.pack(side="right")
+        auto_rejoin_delay_spin.bind("<FocusOut>", lambda _evt: on_auto_rejoin_settings_update())
+        auto_rejoin_delay_spin.bind("<Return>", lambda _evt: on_auto_rejoin_settings_update())
+
+        auto_rejoin_attempts_frame = ttk.Frame(auto_rejoin_card, style="Dark.TFrame")
+        auto_rejoin_attempts_frame.pack(fill="x", pady=(6, 0))
+        ttk.Label(auto_rejoin_attempts_frame, text="Max Attempts (0=unlimited)", style="Dark.TLabel").pack(side="left")
+        auto_rejoin_attempts_spin = ttk.Spinbox(
+            auto_rejoin_attempts_frame,
+            from_=0,
+            to=999,
+            increment=1,
+            textvariable=auto_rejoin_max_attempts_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_auto_rejoin_settings_update,
+        )
+        auto_rejoin_attempts_spin.pack(side="right")
+        auto_rejoin_attempts_spin.bind("<FocusOut>", lambda _evt: on_auto_rejoin_settings_update())
+        auto_rejoin_attempts_spin.bind("<Return>", lambda _evt: on_auto_rejoin_settings_update())
+
+
 
         auto_relaunch_enabled_var = tk.BooleanVar(value=self.settings.get("auto_relaunch_enabled", False))
         auto_relaunch_interval_var = tk.IntVar(value=self.settings.get("auto_relaunch_interval_minutes", 60))
@@ -9151,6 +9747,7 @@ class AccountManagerUI:
             if not confirm:
                 return
 
+            self._mark_active_sessions_manually_stopped(pids=running_selected)
             remove_rows_for_pids(running_selected, reason="close")
 
             def worker(pid_values):
@@ -9213,6 +9810,10 @@ class AccountManagerUI:
                     target_version = context.get("version_path") or version_path or None
 
                     if was_running:
+                        self._mark_active_sessions_manually_stopped(
+                            usernames=[account] if account else None,
+                            pids=[pid_value],
+                        )
                         try:
                             subprocess.run(
                                 ["taskkill", "/PID", str(pid_value), "/T", "/F"],
@@ -9793,6 +10394,8 @@ class AccountManagerUI:
             if not pids:
                 return
 
+            self._mark_active_sessions_manually_stopped(pids=pids)
+
             def worker():
                 for pid in pids:
                     try:
@@ -10254,6 +10857,19 @@ class AccountManagerUI:
         """Open or focus the console output window."""
         if self.console_window:
             self.console_window.show()
+
+    def handle_app_close(self):
+        monitor = getattr(self, "_auto_rejoin_monitor", None)
+        if monitor is not None:
+            try:
+                monitor.stop()
+            except Exception:
+                pass
+
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     def _open_global_settings_editor_legacy(self):
         """Legacy Global Settings editor window (kept for reference)."""
