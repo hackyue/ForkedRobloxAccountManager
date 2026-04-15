@@ -20,6 +20,8 @@ except Exception:
 
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_TERMINATE = 0x0001
+SYNCHRONIZE = 0x00100000
 STILL_ACTIVE = 259
 
 
@@ -536,6 +538,18 @@ class AutoRejoinMonitor:
             )
             return
 
+        previous_pid = 0
+        with self._lock:
+            session = self.active_sessions.get(username)
+            if session is None:
+                return
+            previous_pid = self._normalize_int(session.pid, default=0, minimum=0)
+            if previous_pid > 0:
+                session.pid = 0
+
+        if previous_pid > 0:
+            self._close_tracked_process(previous_pid, username)
+
         with self._lock:
             session = self.active_sessions.get(username)
             if session is None:
@@ -628,6 +642,49 @@ class AutoRejoinMonitor:
             self.status_callback(str(username or "").strip(), str(text or ""), int(ttl_seconds or 0))
         except Exception:
             pass
+
+    def _close_tracked_process(self, pid, username=""):
+        pid_value = self._normalize_int(pid, default=0, minimum=0)
+        if pid_value <= 0 or platform.system() != "Windows":
+            return False
+        if not self._is_process_running(pid_value):
+            return False
+
+        handle = None
+        try:
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                False,
+                pid_value,
+            )
+            if not handle:
+                self._log(
+                    f"[AUTO REJOIN] {username}: failed to open previous Roblox process {pid_value} for termination."
+                )
+                return False
+
+            if ctypes.windll.kernel32.TerminateProcess(handle, 1) == 0:
+                self._log(
+                    f"[AUTO REJOIN] {username}: failed to terminate previous Roblox process {pid_value}."
+                )
+                return False
+
+            ctypes.windll.kernel32.WaitForSingleObject(handle, 5000)
+            self._log(
+                f"[AUTO REJOIN] {username}: closed previous Roblox process {pid_value} before rejoining."
+            )
+            return True
+        except Exception as exc:
+            self._log(
+                f"[AUTO REJOIN] {username}: error while closing previous Roblox process {pid_value}: {exc}"
+            )
+            return False
+        finally:
+            if handle:
+                try:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
 
     @staticmethod
     def _normalize_int(value, default=0, minimum=0):
