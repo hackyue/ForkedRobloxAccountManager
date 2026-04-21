@@ -12780,6 +12780,53 @@ class AccountManagerUI:
             for fields in field_specs_by_tab.values()
             for field_spec in fields
         }
+        preset_values = {
+            field_key: field_spec.get("default")
+            for field_key, field_spec in field_specs_by_key.items()
+        }
+        low_preset_values = dict(preset_values)
+        low_preset_values.update(
+            {
+                "GraphicsQualityLevel": 1,
+                "GraphicsOptimizationMode": 1,
+                "MaxQualityEnabled": False,
+                "VignetteEnabled": False,
+                "FramerateCap": 30,
+                "Fullscreen": False,
+                "StartMaximized": False,
+                "ReducedMotion": True,
+                "ChatVisible": False,
+                "ChatTranslationEnabled": False,
+                "ChatTranslationToggleEnabled": False,
+                "PlayerNamesEnabled": False,
+                "PerformanceStatsVisible": False,
+                "PlayerListVisible": False,
+                "BadgeVisible": False,
+            }
+        )
+        high_preset_values = dict(preset_values)
+        high_preset_values.update(
+            {
+                "GraphicsQualityLevel": 21,
+                "GraphicsOptimizationMode": 2,
+                "MaxQualityEnabled": True,
+                "VignetteEnabled": True,
+                "FramerateCap": 240,
+                "Fullscreen": True,
+                "StartMaximized": True,
+                "ReducedMotion": False,
+                "ChatVisible": True,
+                "ChatTranslationEnabled": True,
+                "PlayerNamesEnabled": True,
+                "PlayerListVisible": True,
+                "BadgeVisible": True,
+            }
+        )
+        roblox_setting_presets = {
+            "Low": low_preset_values,
+            "Default": preset_values,
+            "High": high_preset_values,
+        }
         field_bindings: dict[str, dict[str, object]] = {}
         int_validator = (self.root.register(lambda proposed: proposed == "" or proposed.isdigit()), "%P")
 
@@ -12853,6 +12900,42 @@ class AccountManagerUI:
         def apply_defaults() -> None:
             for field_key, field_spec in field_specs_by_key.items():
                 set_field_value(field_key, field_spec.get("default"))
+
+        def apply_preset(preset_name: str) -> None:
+            values = roblox_setting_presets.get(preset_name)
+            if not values:
+                return
+            for field_key, field_value in values.items():
+                if field_key in field_bindings:
+                    set_field_value(field_key, field_value)
+            status_var.set(f"Applied {preset_name} preset. Click Save to write the changes.")
+
+        presets_frame = ttk.Frame(main, style="Dark.TFrame")
+        presets_frame.pack(fill="x", pady=(0, 10), before=notebook)
+        presets_frame.columnconfigure(0, weight=1)
+        presets_frame.columnconfigure(1, weight=1)
+        presets_frame.columnconfigure(2, weight=1)
+
+        ttk.Button(
+            presets_frame,
+            text="Low",
+            style="Dark.TButton",
+            command=lambda: apply_preset("Low"),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+
+        ttk.Button(
+            presets_frame,
+            text="Default",
+            style="Dark.TButton",
+            command=lambda: apply_preset("Default"),
+        ).grid(row=0, column=1, sticky="ew", padx=5)
+
+        ttk.Button(
+            presets_frame,
+            text="High",
+            style="Dark.TButton",
+            command=lambda: apply_preset("High"),
+        ).grid(row=0, column=2, sticky="ew", padx=(5, 0))
 
         for tab_name, field_specs in field_specs_by_tab.items():
             tab = ttk.Frame(notebook, style="Dark.TFrame")
