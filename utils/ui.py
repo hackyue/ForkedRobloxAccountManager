@@ -869,7 +869,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.4.4"
+        self.APP_VERSION = "2.5.0"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -879,6 +879,7 @@ class AccountManagerUI:
         self._auto_relaunch_in_progress = False
         self._auto_memory_trim_after_id = None
         self._auto_memory_trim_in_progress = False
+        self._auto_arrange_after_launch_after_id = None
         self._auto_update_check_started = False
         self._auto_update_prompt_shown = False
 
@@ -952,7 +953,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.4.4pr - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.5.0 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -1273,6 +1274,7 @@ class AccountManagerUI:
             "auto_arrange_dimension_mode": "auto",
             "auto_arrange_target_width": 800,
             "auto_arrange_target_height": 600,
+            "auto_arrange_after_launch": False,
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_roblox_player_path": "",
             "selected_group": "All",
@@ -1284,7 +1286,6 @@ class AccountManagerUI:
             "auto_relaunch_group": "",
             "auto_memory_trim_enabled": False,
             "auto_memory_trim_interval_minutes": 5,
-            "auto_arrange_after_group_launch": False,
             "auto_update_enabled": True,
             "installer_previous_versions": MIN_INSTALLER_PREVIOUS_VERSIONS,
             "browser_preference": "auto",
@@ -1295,6 +1296,9 @@ class AccountManagerUI:
                 self.settings = json.load(settings_fp)
         except Exception:
             self.settings = defaults.copy()
+
+        legacy_auto_arrange_after_group_launch = self.settings.pop("auto_arrange_after_group_launch", False)
+        self.settings.setdefault("auto_arrange_after_launch", bool(legacy_auto_arrange_after_group_launch))
 
         for key, value in defaults.items():
             self.settings.setdefault(key, value)
@@ -1709,7 +1713,6 @@ class AccountManagerUI:
                         selected_usernames,
                         confirm_group=selected_group,
                         skip_confirm=True,
-                        trigger_auto_arrange=True,
                         on_done_callback=(
                             lambda success_count: self.root.after(focus_delay_ms, self._focus_main_window)
                             if success_count > 0 else None
@@ -5678,31 +5681,54 @@ class AccountManagerUI:
 
         threading.Thread(target=worker, daemon=True, name="roblox-memory-trim").start()
 
-    def auto_arrange_clients(self):
+    def auto_arrange_clients(self, show_feedback=True):
         """Automatically tile active Roblox client windows on the primary monitor."""
         if platform.system() != "Windows" or not win32gui:
-            messagebox.showerror("Auto-Arrange Clients", "This feature is only available on Windows.") # it only supports windows :sob:
-            return
+            if show_feedback:
+                messagebox.showerror("Auto-Arrange Clients", "This feature is only available on Windows.") # it only supports windows :sob:
+            return False
 
         try:
             roblox_windows = self._get_roblox_client_windows()
         except Exception as exc:
-            messagebox.showerror("Auto-Arrange Clients", f"Failed to detect Roblox clients:\n{exc}")
-            return
+            if show_feedback:
+                messagebox.showerror("Auto-Arrange Clients", f"Failed to detect Roblox clients:\n{exc}")
+            return False
 
         if not roblox_windows:
-            messagebox.showinfo("Auto-Arrange Clients", "No active Roblox client windows were detected.")
-            return
+            if show_feedback:
+                messagebox.showinfo("Auto-Arrange Clients", "No active Roblox client windows were detected.")
+            return False
 
         try:
             self._arrange_windows_on_primary_monitor(roblox_windows)
         except Exception as exc:
-            messagebox.showerror("Auto-Arrange Clients", f"Failed to arrange Roblox clients:\n{exc}")
-            return
+            if show_feedback:
+                messagebox.showerror("Auto-Arrange Clients", f"Failed to arrange Roblox clients:\n{exc}")
+            return False
 
-        self.show_success_message(
-            f"Auto-arranged {len(roblox_windows)} Roblox client(s)!",
-            title="Auto-Arrange Clients"
+        if show_feedback:
+            self.show_success_message(
+                f"Auto-arranged {len(roblox_windows)} Roblox client(s)!",
+                title="Auto-Arrange Clients"
+            )
+        return True
+
+    def _maybe_auto_arrange_after_launch(self, success_count):
+        if int(success_count or 0) <= 0:
+            return
+        if not self.settings.get("auto_arrange_after_launch", False):
+            return
+        pending_after_id = getattr(self, "_auto_arrange_after_launch_after_id", None)
+        if pending_after_id is not None:
+            try:
+                self.root.after_cancel(pending_after_id)
+            except Exception:
+                pass
+            self._auto_arrange_after_launch_after_id = None
+        self._auto_arrange_after_launch_after_id = self.root.after(
+            2500,
+            lambda: self._schedule_auto_arrange_after_launch(attempts_remaining=20, delay_ms=1500),
         )
 
     def _get_roblox_client_windows(self):
@@ -6729,6 +6755,8 @@ class AccountManagerUI:
                     else:
                         self.show_success_message(f"Roblox is launching to home for {success_count} account(s)! Check your desktop.")
 
+                    self._maybe_auto_arrange_after_launch(success_count)
+
                     if on_done_callback is not None:
                         try:
                             on_done_callback(success_count)
@@ -7089,7 +7117,6 @@ class AccountManagerUI:
         join_input_override=None,
         skip_confirm=False,
         on_done_callback=None,
-        trigger_auto_arrange=False,
         run_async=True,
         show_feedback=True,
         update_recent_history=True,
@@ -7111,7 +7138,6 @@ class AccountManagerUI:
             usernames,
             skip_confirm=skip_confirm,
             on_done_callback=on_done_callback,
-            trigger_auto_arrange=trigger_auto_arrange,
             place_id_override=place_id_override,
             private_server_override=private_server_override,
             manual_server_job_id_override=manual_server_job_id_override,
@@ -7169,7 +7195,6 @@ class AccountManagerUI:
         confirm_group=None,
         skip_confirm=False,
         on_done_callback=None,
-        trigger_auto_arrange=False,
         place_id_override=None,
         private_server_override=None,
         manual_server_job_id_override=None,
@@ -7432,8 +7457,7 @@ class AccountManagerUI:
                             f"Roblox is launching for {success_count} account(s)! Check your desktop."
                         )
 
-                if trigger_auto_arrange and self.settings.get("auto_arrange_after_group_launch", False):
-                    self._schedule_auto_arrange_clients_silent()
+                self._maybe_auto_arrange_after_launch(success_count)
 
                 if on_done_callback is not None:
                     try:
@@ -7474,7 +7498,12 @@ class AccountManagerUI:
             return True
 
         result = run_launch_batch(*worker_args)
-        if show_feedback or update_recent_history or trigger_auto_arrange or on_done_callback is not None:
+        if (
+            show_feedback
+            or update_recent_history
+            or on_done_callback is not None
+            or self.settings.get("auto_arrange_after_launch", False)
+        ):
             if threading.current_thread() is threading.main_thread():
                 return handle_launch_result(result)
             success_holder = {"ok": bool(result.get("success_count", 0))}
@@ -7491,29 +7520,25 @@ class AccountManagerUI:
             return bool(success_holder["ok"])
         return bool(result.get("success_count", 0))
 
-    def _schedule_auto_arrange_clients_silent(self, attempts_remaining=8, delay_ms=800):
-        """Arrange Roblox windows after launches settle, without showing popups."""
+    def _schedule_auto_arrange_after_launch(self, attempts_remaining=20, delay_ms=1500):
+        """Run Arrange Clients after launches settle, without showing popups."""
+        self._auto_arrange_after_launch_after_id = None
+
         if attempts_remaining <= 0:
+            return
+
+        if not self.settings.get("auto_arrange_after_launch", False):
             return
 
         if platform.system() != "Windows" or not win32gui:
             return
 
-        try:
-            roblox_windows = self._get_roblox_client_windows()
-        except Exception:
-            roblox_windows = []
+        if self.auto_arrange_clients(show_feedback=False):
+            return
 
-        if roblox_windows:
-            try:
-                self._arrange_windows_on_primary_monitor(roblox_windows)
-                return
-            except Exception:
-                pass
-
-        self.root.after(
+        self._auto_arrange_after_launch_after_id = self.root.after(
             max(100, int(delay_ms)),
-            lambda: self._schedule_auto_arrange_clients_silent(
+            lambda: self._schedule_auto_arrange_after_launch(
                 attempts_remaining=attempts_remaining - 1,
                 delay_ms=delay_ms,
             ),
@@ -7712,6 +7737,9 @@ class AccountManagerUI:
         auto_arrange_scope_var = tk.StringVar(value=self.settings.get("auto_arrange_scope", "both"))
         auto_arrange_dimension_mode_var = tk.StringVar(
             value=self.settings.get("auto_arrange_dimension_mode", "auto")
+        )
+        auto_arrange_after_launch_var = tk.BooleanVar(
+            value=self.settings.get("auto_arrange_after_launch", False)
         )
         auto_arrange_target_width_var = tk.IntVar(
             value=int(self.settings.get("auto_arrange_target_width", 800) or 800)
@@ -8415,6 +8443,14 @@ class AccountManagerUI:
         target_height_spin.bind("<Return>", lambda _evt: _save_auto_arrange_dimensions())
         _update_target_size_state()
 
+        ttk.Checkbutton(
+            roblox_auto_arrange_card,
+            text="Auto Arrange Clients After Launch",
+            variable=auto_arrange_after_launch_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("auto_arrange_after_launch", auto_arrange_after_launch_var)
+        ).pack(anchor="w", pady=(8, 0))
+
         custom_frame = create_settings_card(roblox_tab, "Launch Timing & Executable")
 
         ttk.Label(
@@ -8611,9 +8647,6 @@ class AccountManagerUI:
         auto_relaunch_enabled_var = tk.BooleanVar(value=self.settings.get("auto_relaunch_enabled", False))
         auto_relaunch_interval_var = tk.IntVar(value=self.settings.get("auto_relaunch_interval_minutes", 60))
         auto_relaunch_group_var = tk.StringVar(value=self.settings.get("auto_relaunch_group", ""))
-        auto_arrange_after_group_launch_var = tk.BooleanVar(
-            value=self.settings.get("auto_arrange_after_group_launch", False)
-        )
 
         def on_auto_relaunch_update(*_):
             try:
@@ -8628,7 +8661,6 @@ class AccountManagerUI:
             self.settings["auto_relaunch_enabled"] = bool(auto_relaunch_enabled_var.get())
             self.settings["auto_relaunch_interval_minutes"] = int(interval)
             self.settings["auto_relaunch_group"] = (auto_relaunch_group_var.get() or "").strip()
-            self.settings["auto_arrange_after_group_launch"] = bool(auto_arrange_after_group_launch_var.get())
             self.save_settings()
 
             if self.settings.get("auto_relaunch_enabled", False):
@@ -8684,14 +8716,6 @@ class AccountManagerUI:
         )
         auto_relaunch_group_combo.pack(side="right", fill="x", expand=True)
         auto_relaunch_group_combo.bind("<<ComboboxSelected>>", lambda _=None: on_auto_relaunch_update())
-
-        ttk.Checkbutton(
-            auto_relaunch_card,
-            text="Auto Arrange Clients After Group Launch",
-            variable=auto_arrange_after_group_launch_var,
-            style="Dark.TCheckbutton",
-            command=on_auto_relaunch_update
-        ).pack(anchor="w", pady=(8, 0))
 
         ttk.Button(
             auto_relaunch_card,
@@ -9830,6 +9854,7 @@ class AccountManagerUI:
             def worker():
                 im_log(f"Relaunch worker started for pairs: {pairs}")
                 delay_seconds = self._get_multi_launch_delay()
+                success_count = 0
                 for idx, (pid_value, account, was_running, launch_context) in enumerate(pairs):
                     before_pids = self._get_running_tracked_roblox_pid_set()
                     context = self._normalize_launch_context(launch_context)
@@ -9879,6 +9904,7 @@ class AccountManagerUI:
                                 )
                             )
                         if launched:
+                            success_count += 1
                             im_log(
                                 f"Relaunch worker launch requested for account={account} "
                                 f"mode={context_mode} game_id={context.get('game_id', '')}"
@@ -9908,6 +9934,8 @@ class AccountManagerUI:
 
                     if delay_seconds > 0 and idx < len(pairs) - 1:
                         time.sleep(delay_seconds)
+                if success_count > 0:
+                    self.root.after(0, lambda count=success_count: self._maybe_auto_arrange_after_launch(count))
                 self.root.after(0, refresh_instances)
 
             threading.Thread(target=worker, daemon=True).start()
