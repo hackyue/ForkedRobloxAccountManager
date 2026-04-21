@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import io
+import importlib.util
 import traceback
 import tempfile
 import zipfile
@@ -859,6 +860,86 @@ def get_console_output_buffer():
     return _CONSOLE_OUTPUT_BUFFER
 
 
+class FRAMAddonAPI:
+    def __init__(self, ui, addon_name, addon_path):
+        self.ui = ui
+        self.root = ui.root
+        self.manager = ui.manager
+        self.settings = ui.settings
+        self.data_folder = ui.data_folder
+        self.addons_folder = ui.addons_folder
+        self.addon_name = str(addon_name or "Addon").strip() or "Addon"
+        self.addon_path = str(addon_path or "").strip()
+        self.tk = tk
+        self.ttk = ttk
+
+    def run_on_ui_thread(self, callback, *args, **kwargs):
+        if not callable(callback):
+            return None
+        return self.root.after(0, lambda: callback(*args, **kwargs))
+
+    def show_info(self, message, title=None):
+        messagebox.showinfo(
+            title or self.addon_name,
+            str(message or ""),
+            parent=getattr(self.ui, "addons_window", None) or self.root,
+        )
+
+    def show_error(self, message, title=None):
+        messagebox.showerror(
+            title or self.addon_name,
+            str(message or ""),
+            parent=getattr(self.ui, "addons_window", None) or self.root,
+        )
+
+    def show_success(self, message, title=None):
+        self.ui.show_success_message(str(message or ""), title=title or self.addon_name)
+
+    def get_selected_username(self):
+        try:
+            return self.ui.get_selected_username()
+        except Exception:
+            return None
+
+    def get_selected_usernames(self):
+        try:
+            if self.ui.settings.get("enable_multi_select", False):
+                return list(self.ui.get_selected_usernames() or [])
+            username = self.ui.get_selected_username()
+            return [username] if username else []
+        except Exception:
+            return []
+
+    def get_setting(self, key, default=None):
+        return self.settings.get(key, default)
+
+    def set_setting(self, key, value, save=True):
+        self.settings[key] = value
+        if save:
+            self.ui.save_settings()
+
+    def refresh_accounts(self, selected_usernames=None):
+        return self.ui.refresh_accounts(selected_usernames=selected_usernames)
+
+    def refresh_game_list(self):
+        return self.ui.refresh_game_list()
+
+    def launch_game(self, *args, **kwargs):
+        return self.ui.launch_game(*args, **kwargs)
+
+    def launch_home(self, *args, **kwargs):
+        return self.ui.launch_home(*args, **kwargs)
+
+    def launch_home_app(self, *args, **kwargs):
+        return self.ui.launch_home_app(*args, **kwargs)
+
+    def auto_arrange_clients(self, show_feedback=True):
+        return self.ui.auto_arrange_clients(show_feedback=show_feedback)
+
+    def open_addons_folder(self):
+        return self.ui._open_addons_folder()
+
+
 class AccountManagerUI:
     ROBLOX_CLIENT_EXECUTABLES = {
         "robloxplayerbeta.exe",
@@ -940,6 +1021,7 @@ class AccountManagerUI:
         self.global_settings_xml_names = None
         self.fastflags_window = None
         self.instance_manager_window = None
+        self.addons_window = None
 
         self.style = ttk.Style()
         self.style.theme_use("clam")
@@ -962,7 +1044,9 @@ class AccountManagerUI:
         self.data_folder = "AccountManagerData"
         if not os.path.exists(self.data_folder):
             os.makedirs(self.data_folder)
-        
+        self.addons_folder = os.path.join(self.data_folder, "addons")
+        self._ensure_addons_folder()
+
         self.settings_file = os.path.join(self.data_folder, "ui_settings.json")
         self.custom_themes_file = os.path.join(self.data_folder, "custom_themes.json")
         self.custom_themes = {}
@@ -2315,6 +2399,773 @@ class AccountManagerUI:
                 self.add_account_menu.grab_release()
             except Exception:
                 pass
+
+    def _ensure_addons_folder(self):
+        addons_dir = str(getattr(self, "addons_folder", "") or "").strip()
+        if not addons_dir:
+            addons_dir = os.path.join(str(getattr(self, "data_folder", "AccountManagerData") or "AccountManagerData"), "addons")
+            self.addons_folder = addons_dir
+
+        try:
+            os.makedirs(addons_dir, exist_ok=True)
+        except Exception:
+            return addons_dir
+
+        template_path = os.path.join(addons_dir, "_template_addon.py")
+        if not os.path.exists(template_path):
+            template_text = (
+                "\"\"\"FRAM addon template.\n"
+                "Rename this file so it no longer starts with an underscore to load it.\n"
+                "\"\"\"\n\n"
+                "ADDON_NAME = \"Example Addon\"\n"
+                "ADDON_DESCRIPTION = \"Opened from Settings > Tools > Utilities.\"\n\n"
+                "def build_tab(parent, api):\n"
+                "    from tkinter import ttk\n\n"
+                "    ttk.Label(\n"
+                "        parent,\n"
+                "        text=\"Hello from a FRAM addon.\",\n"
+                "        style=\"Dark.TLabel\",\n"
+                "        font=(\"Segoe UI\", 11, \"bold\"),\n"
+                "    ).pack(anchor=\"w\")\n"
+                "    ttk.Label(\n"
+                "        parent,\n"
+                "        text=\"Use the api object to interact with FRAM.\",\n"
+                "        style=\"Dark.TLabel\",\n"
+                "    ).pack(anchor=\"w\", pady=(4, 10))\n"
+                "    ttk.Button(\n"
+                "        parent,\n"
+                "        text=\"Refresh Accounts\",\n"
+                "        style=\"Dark.TButton\",\n"
+                "        command=api.refresh_accounts,\n"
+                "    ).pack(anchor=\"w\")\n"
+            )
+            try:
+                with open(template_path, "w", encoding="utf-8", newline="\n") as template_file:
+                    template_file.write(template_text)
+            except Exception:
+                pass
+
+        return addons_dir
+
+    def _open_addons_folder(self, owner_window=None):
+        addons_dir = self._ensure_addons_folder()
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(addons_dir)
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", addons_dir], **subprocess_no_window_kwargs())
+            else:
+                subprocess.Popen(["xdg-open", addons_dir], **subprocess_no_window_kwargs())
+            return True
+        except Exception as exc:
+            messagebox.showerror(
+                "Addons",
+                f"Failed to open the addons folder:\n{exc}",
+                parent=owner_window or getattr(self, "addons_window", None) or self.root,
+            )
+            return False
+
+    def _get_addon_file_paths(self):
+        addons_dir = self._ensure_addons_folder()
+        try:
+            names = os.listdir(addons_dir)
+        except Exception:
+            return []
+
+        addon_files = []
+        for name in names:
+            if not str(name).lower().endswith(".py"):
+                continue
+            if str(name).startswith("_"):
+                continue
+            full_path = os.path.join(addons_dir, name)
+            if os.path.isfile(full_path):
+                addon_files.append(full_path)
+
+        addon_files.sort(key=lambda path: os.path.basename(path).lower())
+        return addon_files
+
+    def _load_addon_module(self, file_path):
+        seed = f"{os.path.abspath(file_path)}:{time.time_ns()}"
+        module_name = f"fram_addon_{hashlib.sha1(seed.encode('utf-8')).hexdigest()[:16]}"
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Unable to create an import spec for the addon.")
+
+        module = importlib.util.module_from_spec(spec)
+        addons_dir = self._ensure_addons_folder()
+        added_to_path = False
+        if addons_dir and addons_dir not in sys.path:
+            sys.path.insert(0, addons_dir)
+            added_to_path = True
+
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            if added_to_path:
+                try:
+                    sys.path.remove(addons_dir)
+                except ValueError:
+                    pass
+
+        return module
+
+    def _get_addon_builder(self, module):
+        for attr_name in ("build_tab", "build_ui", "register"):
+            builder = getattr(module, attr_name, None)
+            if callable(builder):
+                return builder
+        raise RuntimeError("Addon must define a callable build_tab(parent, api).")
+
+    def _collect_addon_entries(self):
+        addon_files = self._get_addon_file_paths()
+        entries = []
+        loaded_count = 0
+        failed_count = 0
+
+        for file_path in addon_files:
+            file_label = os.path.basename(file_path)
+            entry = {
+                "kind": "addon",
+                "file_path": file_path,
+                "file_label": file_label,
+                "name": os.path.splitext(file_label)[0],
+                "description": "",
+                "module": None,
+                "builder": None,
+                "traceback": "",
+                "content_frame": None,
+            }
+            try:
+                module = self._load_addon_module(file_path)
+                builder = self._get_addon_builder(module)
+                entry["module"] = module
+                entry["builder"] = builder
+                entry["name"] = str(getattr(module, "ADDON_NAME", entry["name"]) or "").strip() or entry["name"]
+                entry["description"] = str(getattr(module, "ADDON_DESCRIPTION", "") or "").strip()
+                loaded_count += 1
+            except Exception:
+                entry["kind"] = "error"
+                entry["traceback"] = traceback.format_exc()
+                failed_count += 1
+            entries.append(entry)
+
+        summary = {
+            "files": len(addon_files),
+            "loaded": loaded_count,
+            "failed": failed_count,
+        }
+        return entries, summary
+
+    def _build_addons_panel(self, parent, owner_window=None, close_callback=None):
+        panel = tk.Frame(parent, bg=self.BG_DARK, highlightthickness=0, bd=0)
+        panel.pack(fill="both", expand=True)
+
+        title_font = ("Segoe UI", 16, "bold")
+        section_title_font = ("Segoe UI", 11, "bold")
+        body_font = ("Segoe UI", 10)
+        small_font = ("Segoe UI", 9)
+
+        state = {
+            "entries": [],
+            "summary": {"files": 0, "loaded": 0, "failed": 0},
+            "overview_frame": None,
+            "active_frame": None,
+        }
+
+        def create_text_area(parent_widget, text_value, height=10):
+            container = tk.Frame(parent_widget, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
+            container.pack(fill="both", expand=True)
+            text_widget = tk.Text(
+                container,
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                insertbackground=self.FG_TEXT,
+                relief="flat",
+                borderwidth=0,
+                wrap="word",
+                height=height,
+                font=body_font,
+                padx=4,
+                pady=4,
+            )
+            scrollbar = ttk.Scrollbar(container, orient="vertical", command=text_widget.yview)
+            text_widget.configure(yscrollcommand=scrollbar.set)
+            text_widget.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            text_widget.insert("1.0", text_value)
+            text_widget.configure(state="disabled")
+            return container
+
+        def create_section_card(parent_widget, title_text, subtitle_text=""):
+            outer = tk.Frame(
+                parent_widget,
+                bg=self.BG_LIGHT,
+                highlightbackground=self.BORDER_COLOR,
+                highlightthickness=1,
+                bd=0,
+                padx=12,
+                pady=12,
+            )
+            title_label = tk.Label(
+                outer,
+                text=title_text,
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                font=section_title_font,
+                anchor="w",
+                justify="left",
+            )
+            title_label.pack(anchor="w")
+            if subtitle_text:
+                subtitle_label = tk.Label(
+                    outer,
+                    text=subtitle_text,
+                    bg=self.BG_LIGHT,
+                    fg=self.FG_MUTED,
+                    font=small_font,
+                    anchor="w",
+                    justify="left",
+                    wraplength=520,
+                )
+                subtitle_label.pack(anchor="w", pady=(4, 10))
+            body = tk.Frame(outer, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
+            body.pack(fill="both", expand=True)
+            return outer, body
+
+        def create_stat_card(parent_widget, label_text, accent_color):
+            card = tk.Frame(
+                parent_widget,
+                bg=self.BG_LIGHT,
+                highlightbackground=self.BORDER_COLOR,
+                highlightthickness=1,
+                bd=0,
+                padx=12,
+                pady=12,
+            )
+            accent = tk.Frame(card, bg=accent_color, width=36, height=4, highlightthickness=0, bd=0)
+            accent.pack(anchor="w", pady=(0, 10))
+            value_var = tk.StringVar(value="0")
+            tk.Label(
+                card,
+                textvariable=value_var,
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                font=("Segoe UI", 18, "bold"),
+                anchor="w",
+            ).pack(anchor="w")
+            tk.Label(
+                card,
+                text=label_text,
+                bg=self.BG_LIGHT,
+                fg=self.FG_MUTED,
+                font=small_font,
+                anchor="w",
+            ).pack(anchor="w", pady=(2, 0))
+            return card, value_var
+
+        header_card = tk.Frame(
+            panel,
+            bg=self.BG_MID,
+            highlightbackground=self.BORDER_COLOR,
+            highlightthickness=1,
+            bd=0,
+            padx=14,
+            pady=14,
+        )
+        header_card.pack(fill="x", pady=(0, 12))
+
+        hero_row = tk.Frame(header_card, bg=self.BG_MID, highlightthickness=0, bd=0)
+        hero_row.pack(fill="x")
+
+        hero_text = tk.Frame(hero_row, bg=self.BG_MID, highlightthickness=0, bd=0)
+        hero_text.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            hero_text,
+            text="FRAM Addons",
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            font=title_font,
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            hero_text,
+            text="Manage your addon library, inspect load errors, and launch addon tools from one place.",
+            bg=self.BG_MID,
+            fg=self.FG_MUTED,
+            font=body_font,
+            anchor="w",
+            justify="left",
+            wraplength=520,
+        ).pack(anchor="w", pady=(4, 0))
+
+        action_row = tk.Frame(hero_row, bg=self.BG_MID, highlightthickness=0, bd=0)
+        action_row.pack(side="right", anchor="ne")
+
+        def close_panel():
+            if callable(close_callback):
+                close_callback()
+
+        summary_row = tk.Frame(header_card, bg=self.BG_MID, highlightthickness=0, bd=0)
+        summary_row.pack(fill="x", pady=(14, 0))
+        summary_row.grid_columnconfigure(0, weight=1)
+        summary_row.grid_columnconfigure(1, weight=1)
+        summary_row.grid_columnconfigure(2, weight=1)
+
+        scripts_card, scripts_value_var = create_stat_card(summary_row, "Detected Scripts", self.FG_ACCENT)
+        scripts_card.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        loaded_card, loaded_value_var = create_stat_card(summary_row, "Loaded Cleanly", "#5fbf88")
+        loaded_card.grid(row=0, column=1, sticky="ew", padx=4)
+        failed_card, failed_value_var = create_stat_card(summary_row, "Load Errors", "#d96c6c")
+        failed_card.grid(row=0, column=2, sticky="ew", padx=(8, 0))
+
+        body_frame = tk.Frame(panel, bg=self.BG_DARK, highlightthickness=0, bd=0)
+        body_frame.pack(fill="both", expand=True)
+        body_frame.grid_rowconfigure(0, weight=1)
+        body_frame.grid_columnconfigure(1, weight=1)
+
+        library_card = tk.Frame(
+            body_frame,
+            bg=self.BG_MID,
+            highlightbackground=self.BORDER_COLOR,
+            highlightthickness=1,
+            bd=0,
+            padx=12,
+            pady=12,
+            width=250,
+        )
+        library_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        library_card.grid_propagate(False)
+        library_card.grid_rowconfigure(2, weight=1)
+        library_card.grid_columnconfigure(0, weight=1)
+
+        tk.Label(
+            library_card,
+            text="Library",
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            font=section_title_font,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            library_card,
+            text="Overview, loaded addons, and import failures.",
+            bg=self.BG_MID,
+            fg=self.FG_MUTED,
+            font=small_font,
+            anchor="w",
+            justify="left",
+            wraplength=210,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 10))
+
+        list_frame = tk.Frame(library_card, bg=self.BG_MID, highlightthickness=0, bd=0)
+        list_frame.grid(row=2, column=0, sticky="nsew")
+        list_frame.grid_rowconfigure(0, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
+
+        addon_list = tk.Listbox(
+            list_frame,
+            bg=self.LIST_BG,
+            fg=self.FG_TEXT,
+            selectbackground=self.FG_ACCENT,
+            selectforeground=self.FG_TEXT,
+            highlightbackground=self.BORDER_COLOR,
+            highlightcolor=self.BORDER_COLOR,
+            relief="flat",
+            borderwidth=0,
+            activestyle="none",
+            exportselection=False,
+            font=("Segoe UI", 10),
+        )
+        addon_list.grid(row=0, column=0, sticky="nsew")
+        list_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=addon_list.yview)
+        list_scroll.grid(row=0, column=1, sticky="ns")
+        addon_list.configure(yscrollcommand=list_scroll.set)
+
+        tk.Label(
+            library_card,
+            text="Tip: scripts starting with '_' are ignored.",
+            bg=self.BG_MID,
+            fg=self.FG_MUTED,
+            font=small_font,
+            anchor="w",
+            justify="left",
+            wraplength=210,
+        ).grid(row=3, column=0, sticky="w", pady=(10, 0))
+
+        detail_card = tk.Frame(
+            body_frame,
+            bg=self.BG_MID,
+            highlightbackground=self.BORDER_COLOR,
+            highlightthickness=1,
+            bd=0,
+            padx=16,
+            pady=16,
+        )
+        detail_card.grid(row=0, column=1, sticky="nsew")
+        detail_card.grid_rowconfigure(2, weight=1)
+        detail_card.grid_columnconfigure(0, weight=1)
+
+        detail_header = tk.Frame(detail_card, bg=self.BG_MID, highlightthickness=0, bd=0)
+        detail_header.grid(row=0, column=0, sticky="ew")
+        detail_header.grid_columnconfigure(0, weight=1)
+
+        detail_title_var = tk.StringVar(value="FRAM Addons")
+        detail_subtitle_var = tk.StringVar(value="")
+        detail_path_var = tk.StringVar(value="")
+        detail_badge_var = tk.StringVar(value="Overview")
+
+        title_column = tk.Frame(detail_header, bg=self.BG_MID, highlightthickness=0, bd=0)
+        title_column.grid(row=0, column=0, sticky="ew")
+
+        tk.Label(
+            title_column,
+            textvariable=detail_title_var,
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            font=("Segoe UI", 15, "bold"),
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            title_column,
+            textvariable=detail_subtitle_var,
+            bg=self.BG_MID,
+            fg=self.FG_MUTED,
+            font=body_font,
+            anchor="w",
+            justify="left",
+            wraplength=560,
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Label(
+            title_column,
+            textvariable=detail_path_var,
+            bg=self.BG_MID,
+            fg=self.FG_MUTED,
+            font=small_font,
+            anchor="w",
+            justify="left",
+            wraplength=560,
+        ).pack(anchor="w", pady=(8, 0))
+
+        detail_badge = tk.Label(
+            detail_header,
+            textvariable=detail_badge_var,
+            bg=self.FG_ACCENT_ALT,
+            fg=self.FG_TEXT,
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=4,
+        )
+        detail_badge.grid(row=0, column=1, sticky="ne", padx=(12, 0))
+
+        divider = tk.Frame(detail_card, bg=self.BORDER_COLOR, height=1, highlightthickness=0, bd=0)
+        divider.grid(row=1, column=0, sticky="ew", pady=(14, 14))
+
+        content_host = tk.Frame(detail_card, bg=self.BG_MID, highlightthickness=0, bd=0)
+        content_host.grid(row=2, column=0, sticky="nsew")
+
+        status_var = tk.StringVar(value="")
+        status_label = tk.Label(
+            panel,
+            textvariable=status_var,
+            bg=self.BG_DARK,
+            fg=self.FG_MUTED,
+            font=small_font,
+            anchor="w",
+            justify="left",
+        )
+        status_label.pack(fill="x", pady=(10, 0))
+
+        def set_badge(kind):
+            if kind == "error":
+                detail_badge.configure(bg="#8f3a3a", fg="#f8fbff")
+                detail_badge_var.set("Load Error")
+            elif kind == "addon":
+                detail_badge.configure(bg="#335f46", fg="#f8fbff")
+                detail_badge_var.set("Loaded")
+            else:
+                detail_badge.configure(bg=self.FG_ACCENT_ALT, fg=self.FG_TEXT)
+                detail_badge_var.set("Overview")
+
+        def show_frame(frame):
+            active_frame = state.get("active_frame")
+            if active_frame is not None:
+                try:
+                    active_frame.pack_forget()
+                except Exception:
+                    pass
+            state["active_frame"] = frame
+            if frame is not None:
+                frame.pack(fill="both", expand=True)
+
+        def build_overview_frame():
+            frame = tk.Frame(content_host, bg=self.BG_MID, highlightthickness=0, bd=0)
+            frame.grid_columnconfigure(0, weight=1)
+            frame.grid_columnconfigure(1, weight=1)
+
+            intro_card, intro_body = create_section_card(
+                frame,
+                "Quick Start",
+                "Drop FRAM-compatible Python scripts into the addons folder, then reload the library.",
+            )
+            intro_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
+            quick_start_lines = [
+                "1. Put a .py script in AccountManagerData/addons",
+                "2. Keep the filename from starting with '_'",
+                "3. Define build_tab(parent, api)",
+                "4. Optionally set ADDON_NAME and ADDON_DESCRIPTION",
+            ]
+            tk.Label(
+                intro_body,
+                text="\n".join(quick_start_lines),
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                font=body_font,
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w")
+
+            api_card, api_body = create_section_card(
+                frame,
+                "Available API",
+                "Your addon receives a lightweight FRAM API object for common actions.",
+            )
+            api_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
+            api_lines = [
+                "ui / manager / settings",
+                "launch_game / launch_home / launch_home_app",
+                "refresh_accounts / refresh_game_list",
+                "show_info / show_error / show_success",
+                "data_folder / addons_folder / open_addons_folder",
+            ]
+            tk.Label(
+                api_body,
+                text="\n".join(api_lines),
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                font=body_font,
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w")
+
+            files_card, files_body = create_section_card(
+                frame,
+                "Detected Scripts",
+                "Anything listed here is eligible to load unless the import or UI build fails.",
+            )
+            files_card.grid(row=1, column=0, columnspan=2, sticky="nsew")
+
+            addon_files = [entry["file_label"] for entry in state.get("entries", [])]
+            files_text = "\n".join(f"- {file_name}" for file_name in addon_files)
+            if not files_text:
+                files_text = "No addon scripts found yet."
+            create_text_area(files_body, files_text, height=10)
+            return frame
+
+        def build_error_frame(entry):
+            frame = tk.Frame(content_host, bg=self.BG_MID, highlightthickness=0, bd=0)
+            alert_card, alert_body = create_section_card(
+                frame,
+                "Import Failure",
+                "FRAM found the script, but it failed during import or did not expose a valid addon builder.",
+            )
+            alert_card.pack(fill="x", pady=(0, 12))
+            tk.Label(
+                alert_body,
+                text="Check the traceback below, fix the script, then click Reload.",
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                font=body_font,
+                anchor="w",
+                justify="left",
+                wraplength=560,
+            ).pack(anchor="w")
+
+            trace_card, trace_body = create_section_card(
+                frame,
+                "Traceback",
+                entry.get("file_path", ""),
+            )
+            trace_card.pack(fill="both", expand=True)
+            create_text_area(trace_body, entry.get("traceback", "").strip() or "Unknown addon load error.", height=20)
+            return frame
+
+        def build_addon_frame(entry):
+            frame = tk.Frame(content_host, bg=self.BG_MID, highlightthickness=0, bd=0)
+
+            surface_card, surface_body = create_section_card(
+                frame,
+                "Addon UI",
+                "This area is rendered by the addon script.",
+            )
+            surface_card.pack(fill="both", expand=True)
+
+            addon_host = ttk.Frame(surface_body, style="Dark.TFrame")
+            addon_host.pack(fill="both", expand=True)
+
+            try:
+                api = FRAMAddonAPI(self, entry.get("name", "Addon"), entry.get("file_path", ""))
+                build_result = entry["builder"](addon_host, api)
+                if isinstance(build_result, tk.Widget) and not build_result.winfo_manager():
+                    build_result.pack(fill="both", expand=True)
+            except Exception:
+                entry["kind"] = "error"
+                entry["traceback"] = traceback.format_exc()
+                try:
+                    frame.destroy()
+                except Exception:
+                    pass
+                return build_error_frame(entry)
+
+            return frame
+
+        def get_entry_frame(entry):
+            frame = entry.get("content_frame")
+            if frame is not None:
+                return frame
+            if entry.get("kind") == "error":
+                frame = build_error_frame(entry)
+            else:
+                frame = build_addon_frame(entry)
+            entry["content_frame"] = frame
+            return frame
+
+        def show_overview():
+            if state.get("overview_frame") is None:
+                state["overview_frame"] = build_overview_frame()
+            detail_title_var.set("FRAM Addons")
+            detail_subtitle_var.set("Review the library, loader contract, and discovered scripts before opening an addon.")
+            detail_path_var.set(f"Folder: {self.addons_folder}")
+            set_badge("overview")
+            show_frame(state["overview_frame"])
+
+        def show_entry(index):
+            if index <= 0:
+                show_overview()
+                return
+            if index - 1 >= len(state.get("entries", [])):
+                show_overview()
+                return
+
+            entry = state["entries"][index - 1]
+            detail_title_var.set(entry.get("name", entry.get("file_label", "Addon")))
+            frame = get_entry_frame(entry)
+            if entry.get("kind") == "error":
+                detail_subtitle_var.set("This script was detected but failed to load cleanly.")
+            else:
+                detail_subtitle_var.set(entry.get("description", "") or "This addon loaded successfully and exposed a FRAM addon view.")
+            detail_path_var.set(entry.get("file_path", ""))
+            set_badge(entry.get("kind"))
+            show_frame(frame)
+
+        def handle_list_selection(_event=None):
+            selection = addon_list.curselection()
+            if not selection:
+                return
+            show_entry(int(selection[0]))
+
+        def reload_addons():
+            addon_list.delete(0, tk.END)
+            for child in list(content_host.winfo_children()):
+                try:
+                    child.destroy()
+                except Exception:
+                    pass
+
+            entries, summary = self._collect_addon_entries()
+            state["entries"] = entries
+            state["summary"] = summary
+            state["overview_frame"] = None
+            state["active_frame"] = None
+
+            scripts_value_var.set(str(summary.get("files", 0)))
+            loaded_value_var.set(str(summary.get("loaded", 0)))
+            failed_value_var.set(str(summary.get("failed", 0)))
+
+            addon_list.insert(tk.END, "Overview")
+            for entry in entries:
+                label = entry.get("name", entry.get("file_label", "Addon"))
+                if entry.get("kind") == "error":
+                    label = f"Error: {label}"
+                addon_list.insert(tk.END, label)
+
+            if summary.get("files", 0) == 0:
+                status_var.set("No addons found yet. Open the folder, add a script, then reload.")
+            else:
+                status_var.set(
+                    f"Detected {summary.get('files', 0)} script(s). "
+                    f"Loaded {summary.get('loaded', 0)} cleanly, "
+                    f"{summary.get('failed', 0)} failed."
+                )
+
+            addon_list.selection_clear(0, tk.END)
+            addon_list.selection_set(0)
+            addon_list.activate(0)
+            show_overview()
+
+        ttk.Button(
+            action_row,
+            text="Reload",
+            style="Dark.TButton",
+            command=reload_addons,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            action_row,
+            text="Open Folder",
+            style="Dark.TButton",
+            command=lambda: self._open_addons_folder(owner_window=owner_window),
+        ).pack(side="left", padx=(0, 6))
+        if callable(close_callback):
+            ttk.Button(
+                action_row,
+                text="Close",
+                style="Dark.TButton",
+                command=close_panel,
+            ).pack(side="left")
+
+        addon_list.bind("<<ListboxSelect>>", handle_list_selection)
+        addon_list.bind("<Double-Button-1>", handle_list_selection)
+
+        reload_addons()
+        return panel
+
+    def open_addons_window(self):
+        self._ensure_addons_folder()
+        existing_window = getattr(self, "addons_window", None)
+        if existing_window and existing_window.winfo_exists():
+            existing_window.deiconify()
+            existing_window.lift()
+            existing_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("FRAM Addons")
+        window.geometry("920x620")
+        window.minsize(760, 500)
+        window.configure(bg=self.BG_DARK)
+        window.transient(self.root)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+        self.addons_window = window
+
+        main_frame = ttk.Frame(window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=16, pady=14)
+
+        def on_close():
+            self.addons_window = None
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+        self._build_addons_panel(main_frame, owner_window=window, close_callback=on_close)
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
+        window.update_idletasks()
+        self._center_window(window, max(920, window.winfo_reqwidth() + 20), max(620, window.winfo_reqheight() + 20))
+        window.deiconify()
 
     def refresh_installer_menu(self):
         """Populate the Roblox Installer menu with up to five recent versions."""
@@ -8843,11 +9694,22 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_fastflags_editor()
 
+        def open_addons_and_close_settings():
+            settings_window.destroy()
+            self.open_addons_window()
+
         ttk.Button(
             tools_card,
             text="Fast Flags Editor",
             style="Dark.TButton",
             command=open_fastflags_and_close_settings
+        ).pack(fill="x", pady=(0, 10))
+
+        ttk.Button(
+            tools_card,
+            text="Addons",
+            style="Dark.TButton",
+            command=open_addons_and_close_settings
         ).pack(fill="x", pady=(0, 0))
 
         self.register_theme_refresh(settings_window, _refresh_settings_theme)
