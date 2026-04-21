@@ -945,6 +945,7 @@ class AccountManagerUI:
         "robloxplayerbeta.exe",
         "robloxplayerlauncher.exe",
     }
+    KEEP_CLIENTS_ARRANGED_INTERVAL_MS = 1500
 
     def __init__(self, root, manager, icon_path=None):
         self.root = root
@@ -960,7 +961,8 @@ class AccountManagerUI:
         self._auto_relaunch_in_progress = False
         self._auto_memory_trim_after_id = None
         self._auto_memory_trim_in_progress = False
-        self._auto_arrange_after_launch_after_id = None
+        self._keep_clients_arranged_after_id = None
+        self._keep_clients_arranged_last_signature = None
         self._auto_update_check_started = False
         self._auto_update_prompt_shown = False
 
@@ -1358,7 +1360,7 @@ class AccountManagerUI:
             "auto_arrange_dimension_mode": "auto",
             "auto_arrange_target_width": 800,
             "auto_arrange_target_height": 600,
-            "auto_arrange_after_launch": False,
+            "keep_roblox_clients_arranged": False,
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_roblox_player_path": "",
             "selected_group": "All",
@@ -1382,7 +1384,12 @@ class AccountManagerUI:
             self.settings = defaults.copy()
 
         legacy_auto_arrange_after_group_launch = self.settings.pop("auto_arrange_after_group_launch", False)
-        self.settings.setdefault("auto_arrange_after_launch", bool(legacy_auto_arrange_after_group_launch))
+        legacy_auto_arrange_after_launch = self.settings.pop("auto_arrange_after_launch", None)
+        if "keep_roblox_clients_arranged" not in self.settings:
+            migrated_keep_clients_arranged = legacy_auto_arrange_after_launch
+            if migrated_keep_clients_arranged is None:
+                migrated_keep_clients_arranged = legacy_auto_arrange_after_group_launch
+            self.settings["keep_roblox_clients_arranged"] = bool(migrated_keep_clients_arranged)
 
         for key, value in defaults.items():
             self.settings.setdefault(key, value)
@@ -1437,6 +1444,11 @@ class AccountManagerUI:
         except (TypeError, ValueError):
             auto_rejoin_max_attempts = 0
         self.settings["auto_rejoin_max_attempts"] = max(0, auto_rejoin_max_attempts)
+        self._set_keep_clients_arranged_enabled(
+            self.settings.get("keep_roblox_clients_arranged", False),
+            save=False,
+            arrange_now=True,
+        )
 
     def _ensure_auto_arrange_scope_valid(self):
         """Keep auto-arrange scope sane, especially when only one monitor is available."""
@@ -6558,6 +6570,14 @@ class AccountManagerUI:
                 messagebox.showerror("Auto-Arrange Clients", f"Failed to arrange Roblox clients:\n{exc}")
             return False
 
+        if self.settings.get("keep_roblox_clients_arranged", False):
+            try:
+                self._keep_clients_arranged_last_signature = self._get_roblox_window_signature(
+                    self._get_roblox_client_windows()
+                )
+            except Exception:
+                self._keep_clients_arranged_last_signature = None
+
         if show_feedback:
             self.show_success_message(
                 f"Auto-arranged {len(roblox_windows)} Roblox client(s)!",
@@ -6565,21 +6585,107 @@ class AccountManagerUI:
             )
         return True
 
-    def _maybe_auto_arrange_after_launch(self, success_count):
+    def _cancel_keep_clients_arranged_check(self):
+        after_id = getattr(self, "_keep_clients_arranged_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        self._keep_clients_arranged_after_id = None
+
+    def _set_keep_clients_arranged_enabled(self, enabled, save=False, arrange_now=False):
+        enabled = bool(enabled)
+        self.settings["keep_roblox_clients_arranged"] = enabled
+        if save:
+            self.save_settings()
+        if not enabled:
+            self._cancel_keep_clients_arranged_check()
+            self._keep_clients_arranged_last_signature = None
+            return
+        delay_ms = 250 if arrange_now else self.KEEP_CLIENTS_ARRANGED_INTERVAL_MS
+        self._schedule_keep_clients_arranged_check(delay_ms=delay_ms, reset_signature=True)
+
+    def _get_roblox_window_signature(self, hwnds):
+        signature = []
+        for hwnd in self._sort_windows_by_position(list(hwnds or [])):
+            try:
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            except Exception:
+                left = top = right = bottom = 0
+            signature.append(
+                (
+                    int(hwnd),
+                    int(left),
+                    int(top),
+                    max(0, int(right) - int(left)),
+                    max(0, int(bottom) - int(top)),
+                )
+            )
+        return tuple(signature)
+
+    def _schedule_keep_clients_arranged_check(self, delay_ms=None, reset_signature=False):
+        if reset_signature:
+            self._keep_clients_arranged_last_signature = None
+
+        self._cancel_keep_clients_arranged_check()
+
+        if not self.settings.get("keep_roblox_clients_arranged", False):
+            return
+
+        if platform.system() != "Windows" or not win32gui:
+            return
+
+        if delay_ms is None:
+            delay_ms = self.KEEP_CLIENTS_ARRANGED_INTERVAL_MS
+
+        self._keep_clients_arranged_after_id = self.root.after(
+            max(100, int(delay_ms)),
+            self._run_keep_clients_arranged_check,
+        )
+
+    def _run_keep_clients_arranged_check(self):
+        self._keep_clients_arranged_after_id = None
+
+        if not self.settings.get("keep_roblox_clients_arranged", False):
+            return
+
+        if platform.system() != "Windows" or not win32gui:
+            return
+
+        try:
+            roblox_windows = self._get_roblox_client_windows()
+        except Exception:
+            self._keep_clients_arranged_last_signature = None
+            self._schedule_keep_clients_arranged_check()
+            return
+
+        current_signature = self._get_roblox_window_signature(roblox_windows)
+        previous_signature = self._keep_clients_arranged_last_signature
+
+        if roblox_windows and current_signature != previous_signature:
+            if self.auto_arrange_clients(show_feedback=False):
+                try:
+                    current_signature = self._get_roblox_window_signature(self._get_roblox_client_windows())
+                except Exception:
+                    pass
+                self._keep_clients_arranged_last_signature = current_signature
+            else:
+                self._keep_clients_arranged_last_signature = None
+        else:
+            self._keep_clients_arranged_last_signature = current_signature
+
+        self._schedule_keep_clients_arranged_check()
+
+    def _notify_roblox_windows_changed(self, success_count, delay_ms=2000):
         if int(success_count or 0) <= 0:
             return
-        if not self.settings.get("auto_arrange_after_launch", False):
+        if not self.settings.get("keep_roblox_clients_arranged", False):
             return
-        pending_after_id = getattr(self, "_auto_arrange_after_launch_after_id", None)
-        if pending_after_id is not None:
-            try:
-                self.root.after_cancel(pending_after_id)
-            except Exception:
-                pass
-            self._auto_arrange_after_launch_after_id = None
-        self._auto_arrange_after_launch_after_id = self.root.after(
-            2500,
-            lambda: self._schedule_auto_arrange_after_launch(attempts_remaining=20, delay_ms=1500),
+        self._schedule_keep_clients_arranged_check(
+            delay_ms=delay_ms,
+            reset_signature=True,
         )
 
     def _get_roblox_client_windows(self):
@@ -7606,7 +7712,7 @@ class AccountManagerUI:
                     else:
                         self.show_success_message(f"Roblox is launching to home for {success_count} account(s)! Check your desktop.")
 
-                    self._maybe_auto_arrange_after_launch(success_count)
+                    self._notify_roblox_windows_changed(success_count)
 
                     if on_done_callback is not None:
                         try:
@@ -8308,7 +8414,7 @@ class AccountManagerUI:
                             f"Roblox is launching for {success_count} account(s)! Check your desktop."
                         )
 
-                self._maybe_auto_arrange_after_launch(success_count)
+                self._notify_roblox_windows_changed(success_count)
 
                 if on_done_callback is not None:
                     try:
@@ -8353,7 +8459,7 @@ class AccountManagerUI:
             show_feedback
             or update_recent_history
             or on_done_callback is not None
-            or self.settings.get("auto_arrange_after_launch", False)
+            or self.settings.get("keep_roblox_clients_arranged", False)
         ):
             if threading.current_thread() is threading.main_thread():
                 return handle_launch_result(result)
@@ -8370,30 +8476,6 @@ class AccountManagerUI:
             done_event.wait(timeout=10)
             return bool(success_holder["ok"])
         return bool(result.get("success_count", 0))
-
-    def _schedule_auto_arrange_after_launch(self, attempts_remaining=20, delay_ms=1500):
-        """Run Arrange Clients after launches settle, without showing popups."""
-        self._auto_arrange_after_launch_after_id = None
-
-        if attempts_remaining <= 0:
-            return
-
-        if not self.settings.get("auto_arrange_after_launch", False):
-            return
-
-        if platform.system() != "Windows" or not win32gui:
-            return
-
-        if self.auto_arrange_clients(show_feedback=False):
-            return
-
-        self._auto_arrange_after_launch_after_id = self.root.after(
-            max(100, int(delay_ms)),
-            lambda: self._schedule_auto_arrange_after_launch(
-                attempts_remaining=attempts_remaining - 1,
-                delay_ms=delay_ms,
-            ),
-        )
 
     def enable_multi_roblox(self):
         """Enable Multi Roblox + 773 fix"""
@@ -8589,8 +8671,8 @@ class AccountManagerUI:
         auto_arrange_dimension_mode_var = tk.StringVar(
             value=self.settings.get("auto_arrange_dimension_mode", "auto")
         )
-        auto_arrange_after_launch_var = tk.BooleanVar(
-            value=self.settings.get("auto_arrange_after_launch", False)
+        keep_clients_arranged_var = tk.BooleanVar(
+            value=self.settings.get("keep_roblox_clients_arranged", False)
         )
         auto_arrange_target_width_var = tk.IntVar(
             value=int(self.settings.get("auto_arrange_target_width", 800) or 800)
@@ -8610,6 +8692,13 @@ class AccountManagerUI:
                     self.console_window.update_topmost(var.get())
                 self.save_settings()
             return save
+
+        def on_keep_clients_arranged_toggle():
+            self._set_keep_clients_arranged_enabled(
+                keep_clients_arranged_var.get(),
+                save=True,
+                arrange_now=keep_clients_arranged_var.get(),
+            )
         
         def on_multi_roblox_toggle():
             if multi_roblox_var.get():
@@ -9180,6 +9269,7 @@ class AccountManagerUI:
                 auto_arrange_scope_var.set(value)
                 self.settings["auto_arrange_scope"] = value
                 self.save_settings()
+                self._schedule_keep_clients_arranged_check(delay_ms=250, reset_signature=True)
 
             scope_combo.bind("<<ComboboxSelected>>", on_scope_change)
         else:
@@ -9272,6 +9362,7 @@ class AccountManagerUI:
             self.settings["auto_arrange_target_height"] = target_height
             self.save_settings()
             _update_target_size_state()
+            self._schedule_keep_clients_arranged_check(delay_ms=250, reset_signature=True)
 
         def _update_target_size_state():
             is_target_size_mode = auto_arrange_dimension_mode_var.get() == "target_size"
@@ -9296,10 +9387,10 @@ class AccountManagerUI:
 
         ttk.Checkbutton(
             roblox_auto_arrange_card,
-            text="Auto Arrange Clients After Launch",
-            variable=auto_arrange_after_launch_var,
+            text="Keep Roblox Clients Arranged",
+            variable=keep_clients_arranged_var,
             style="Dark.TCheckbutton",
-            command=auto_save_setting("auto_arrange_after_launch", auto_arrange_after_launch_var)
+            command=on_keep_clients_arranged_toggle
         ).pack(anchor="w", pady=(8, 0))
 
         custom_frame = create_settings_card(roblox_tab, "Launch Timing & Executable")
@@ -10797,7 +10888,7 @@ class AccountManagerUI:
                     if delay_seconds > 0 and idx < len(pairs) - 1:
                         time.sleep(delay_seconds)
                 if success_count > 0:
-                    self.root.after(0, lambda count=success_count: self._maybe_auto_arrange_after_launch(count))
+                    self.root.after(0, lambda count=success_count: self._notify_roblox_windows_changed(count))
                 self.root.after(0, refresh_instances)
 
             threading.Thread(target=worker, daemon=True).start()
