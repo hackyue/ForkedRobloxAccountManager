@@ -1119,6 +1119,7 @@ class AccountManagerUI:
         self.private_server_entry.pack(fill="x")
         self.private_server_entry.insert(0, self.settings.get("last_private_server", ""))
         self.private_server_entry.bind("<KeyRelease>", self.on_private_server_change)
+        self.private_server_entry.bind("<FocusOut>", self.on_private_server_change)
         self.private_server_entry.bind("<Button-1>", self.on_place_target_field_click)
         self.private_server_label.bind("<Button-3>", self.show_place_target_context_menu)
         self.private_server_entry.bind("<Button-3>", self.show_place_target_context_menu)
@@ -3861,8 +3862,30 @@ class AccountManagerUI:
 
     def on_private_server_change(self, event=None):
         """Called when private server ID changes"""
-        private_server = self.private_server_entry.get().strip()
-        self._schedule_setting_save("last_private_server", private_server, delay_ms=250)
+        self._apply_private_server_entry_normalization(save=True)
+
+    def _normalize_private_server_entry_value(self, value):
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if self._normalize_place_target_mode(getattr(self, "place_join_target_mode", "private_server")) != "private_server":
+            return text
+        return self.manager.normalize_private_server(text)
+
+    def _apply_private_server_entry_normalization(self, save=True):
+        entry = getattr(self, "private_server_entry", None)
+        if entry is None:
+            return ""
+
+        raw_value = str(entry.get() or "")
+        normalized_value = self._normalize_private_server_entry_value(raw_value)
+        if raw_value != normalized_value:
+            entry.delete(0, tk.END)
+            entry.insert(0, normalized_value)
+
+        if save:
+            self._schedule_setting_save("last_private_server", normalized_value, delay_ms=250)
+        return normalized_value
 
     def on_place_target_field_click(self, event=None):
         if self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id")) != "place_id":
@@ -3895,6 +3918,7 @@ class AccountManagerUI:
             self.private_server_label.configure(text="SubPlace ID (Optional)")
         else:
             self.private_server_label.configure(text="Private Server ID (Optional)")
+        self._apply_private_server_entry_normalization(save=False)
         if save:
             self._schedule_setting_save("place_join_target_mode", normalized, delay_ms=0)
 
@@ -4216,6 +4240,7 @@ class AccountManagerUI:
     def add_game_to_list(self, place_id, game_name, private_server=""):
         """Add a game to the saved list (max based on settings)"""
         self.update_game_name()
+        private_server = self.manager.normalize_private_server(private_server)
         
         for game in self.settings["game_list"]:
             if game["place_id"] == place_id and game.get("private_server", "") == private_server:
@@ -4319,7 +4344,9 @@ class AccountManagerUI:
             self.place_entry.insert(0, game["place_id"])
             self.settings["last_place_id"] = game["place_id"]
             
-            private_server = game.get("private_server", "")
+            private_server = self.manager.normalize_private_server(game.get("private_server", ""))
+            if game.get("private_server", "") != private_server:
+                game["private_server"] = private_server
             self.private_server_entry.delete(0, tk.END)
             self.private_server_entry.insert(0, private_server)
             self.settings["last_private_server"] = private_server
