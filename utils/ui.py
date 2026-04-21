@@ -185,6 +185,7 @@ WS_MAXIMIZEBOX = 0x00010000
 WS_MINIMIZEBOX = 0x00020000
 INVALID_ACCOUNT_SYMBOL = "\u26A0"
 AUTO_REJOIN_SYMBOL = "\u21BB"
+ACTIVE_CLIENT_SYMBOL = "\u2B24"
 
 
 def clamp_multi_launch_delay(value):
@@ -973,6 +974,7 @@ class AccountManagerUI:
         self._account_validation_status = {}
         self._account_rejoin_status = {}
         self._account_rejoin_status_after_ids = {}
+        self._active_client_indicator_cache = {"ts": 0.0, "usernames": set()}
         self._auto_rejoin_monitor = None
         self._startup_validation_started = False
         self._startup_validation_in_progress = False
@@ -1354,6 +1356,7 @@ class AccountManagerUI:
             "keep_roblox_clients_arranged": False,
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_roblox_player_path": "",
+            "show_active_client_indicator": True,
             "selected_group": "All",
             "auto_rejoin_enable_all_accounts": False,
             "auto_rejoin_delay_seconds": 5,
@@ -1551,6 +1554,45 @@ class AccountManagerUI:
         if not isinstance(session, dict):
             return False
         return bool(session.get("auto_rejoin", False))
+
+    def _get_active_client_indicator_enabled(self):
+        return bool(self.settings.get("show_active_client_indicator", True))
+
+    def _invalidate_active_client_indicator_cache(self):
+        self._active_client_indicator_cache = {"ts": 0.0, "usernames": set()}
+
+    def _get_active_client_usernames(self):
+        if not self._get_active_client_indicator_enabled():
+            return set()
+
+        cache = getattr(self, "_active_client_indicator_cache", None)
+        now = time.time()
+        if (
+            isinstance(cache, dict)
+            and isinstance(cache.get("usernames"), set)
+            and (now - float(cache.get("ts", 0.0))) < 1.5
+        ):
+            return set(cache.get("usernames", set()))
+
+        running_pids = self._get_running_tracked_roblox_pid_set()
+        usernames = set()
+        try:
+            with self._pid_account_lock:
+                pid_account_map = dict(self._pid_account_map)
+        except Exception:
+            pid_account_map = {}
+
+        for pid_value, username in pid_account_map.items():
+            try:
+                normalized_pid = int(pid_value)
+            except Exception:
+                continue
+            normalized_username = str(username or "").strip()
+            if normalized_pid in running_pids and normalized_username:
+                usernames.add(normalized_username)
+
+        self._active_client_indicator_cache = {"ts": now, "usernames": set(usernames)}
+        return usernames
 
     def log_auto_rejoin_event(self, message):
         print(str(message or "").strip())
@@ -1900,6 +1942,7 @@ class AccountManagerUI:
 
     def _mark_active_sessions_manually_stopped(self, usernames=None, pids=None):
         cleared_usernames = set()
+        self._invalidate_active_client_indicator_cache()
 
         for username in list(usernames or []):
             normalized_username = str(username or "").strip()
@@ -5276,6 +5319,7 @@ class AccountManagerUI:
     def _extract_username(self, display_text):
         prefixes = [
             f"{INVALID_ACCOUNT_SYMBOL} ",
+            f"{ACTIVE_CLIENT_SYMBOL} ",
             f"{AUTO_REJOIN_SYMBOL} ",
         ]
         trimmed = True
@@ -5301,6 +5345,7 @@ class AccountManagerUI:
 
         self.account_list.delete(0, tk.END)
         active_group = self._get_active_group()
+        active_client_usernames = self._get_active_client_usernames()
         display_items = []
         username_to_indices = {}
         invalid_indices = []
@@ -5327,9 +5372,12 @@ class AccountManagerUI:
             vip_server = (data.get('vip_server') or '').strip()
             rejoin_status = str(self._account_rejoin_status.get(username, "") or "").strip()
             is_monitored = self._is_account_auto_rejoin_monitored(username)
+            has_active_client = username in active_client_usernames
             display_text = f"{username}"
             if is_monitored:
                 display_text = f"{AUTO_REJOIN_SYMBOL} {display_text}"
+            if has_active_client:
+                display_text = f"{ACTIVE_CLIENT_SYMBOL} {display_text}"
             if self._account_validation_status.get(username) is False:
                 display_text = f"{INVALID_ACCOUNT_SYMBOL} {display_text}"
             if group:
@@ -8020,6 +8068,8 @@ class AccountManagerUI:
         except Exception:
             pass
 
+        self._invalidate_active_client_indicator_cache()
+
         for pid_value in new_pids:
             self._rename_roblox_client_window_title(int(pid_value), str(username))
 
@@ -8030,6 +8080,18 @@ class AccountManagerUI:
             except Exception:
                 pass
             self.set_account_rejoin_status(username, "", 0)
+
+        root = getattr(self, "root", None)
+        if root is not None:
+            try:
+                root.after(
+                    0,
+                    lambda target_username=str(username): self.refresh_accounts(
+                        selected_usernames=self._get_selected_usernames_silent() or [target_username]
+                    ),
+                )
+            except Exception:
+                pass
 
     def _rename_roblox_client_window_title(self, pid_value, username):
         if platform.system() != "Windows":
@@ -8674,6 +8736,7 @@ class AccountManagerUI:
         randomize_job_id_var = tk.BooleanVar(value=self.settings.get("randomize_server_job_ids", False))
         prefer_small_servers_var = tk.BooleanVar(value=self.settings.get("prefer_small_public_servers", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
+        active_client_indicator_var = tk.BooleanVar(value=self.settings.get("show_active_client_indicator", True))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         hide_sensitive_var = tk.BooleanVar(value=self.settings.get("hide_sensitive_info", False))
         bug_prompt_var = tk.BooleanVar(value=self.settings.get("bug_issue_prompt_enabled", True))
@@ -8736,6 +8799,12 @@ class AccountManagerUI:
             else:
                 self.account_list.config(selectmode=tk.SINGLE)
             self.save_settings()
+
+        def on_active_client_indicator_toggle():
+            self.settings["show_active_client_indicator"] = active_client_indicator_var.get()
+            self.save_settings()
+            self._invalidate_active_client_indicator_cache()
+            self.refresh_accounts(selected_usernames=self._get_selected_usernames_silent())
 
         tab_var = tk.StringVar(value="general")
         tab_buttons = {}
@@ -9166,6 +9235,14 @@ class AccountManagerUI:
             variable=multi_select_var,
             style="Dark.TCheckbutton",
             command=on_multi_select_toggle
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            window_behavior_card,
+            text="Active Accounts Indicator",
+            variable=active_client_indicator_var,
+            style="Dark.TCheckbutton",
+            command=on_active_client_indicator_toggle
         ).pack(anchor="w", pady=2)
 
         notifications_card = create_settings_card(general_tab, "Notifications", "App feedback shown after actions complete")
