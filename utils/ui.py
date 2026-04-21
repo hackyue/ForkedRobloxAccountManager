@@ -8591,7 +8591,7 @@ class AccountManagerUI:
         ).pack(anchor="w")
         settings_intro_label = ttk.Label(
             header_text_frame,
-            text="Manage app preferences, Roblox launch behavior, and automation tools.",
+            text="Manage interface preferences, Roblox launch behavior, automation, and tools.",
             style="Dark.TLabel",
             font=("Segoe UI", 9),
             foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
@@ -8819,7 +8819,7 @@ class AccountManagerUI:
             tabs[tab_name] = tab_container
             return frame
 
-        create_tab_button("Experience", "general")
+        create_tab_button("Interface", "general")
         create_tab_button("Roblox", "roblox")
         create_tab_button("Automation", "automation")
         create_tab_button("Tools", "advanced")
@@ -9009,10 +9009,10 @@ class AccountManagerUI:
                 if canvas and canvas.winfo_exists():
                     canvas.configure(bg=self.BG_DARK)
 
-        interface_card = create_settings_card(general_tab, "Interface & Notifications", "Behavior and interaction preferences")
+        window_behavior_card = create_settings_card(general_tab, "Window Behavior", "Window and account list interaction")
 
         ttk.Checkbutton(
-            interface_card,
+            window_behavior_card,
             text="Enable Topmost",
             variable=topmost_var,
             style="Dark.TCheckbutton",
@@ -9020,89 +9020,27 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
-            interface_card,
+            window_behavior_card,
             text="Multi Select (Ctrl + Click)",
             variable=multi_select_var,
             style="Dark.TCheckbutton",
             command=on_multi_select_toggle
         ).pack(anchor="w", pady=2)
 
+        notifications_card = create_settings_card(general_tab, "Notifications", "App feedback shown after actions complete")
+
         ttk.Checkbutton(
-            interface_card,
+            notifications_card,
             text="Disable Success Popups",
             variable=disable_success_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("disable_success_popups", disable_success_var)
         ).pack(anchor="w", pady=2)
 
-        installer_versions_frame = create_settings_card(general_tab, "Installer", "Version list and update visibility")
-
-        installer_versions_row = ttk.Frame(installer_versions_frame, style="Dark.TFrame")
-        installer_versions_row.pack(fill="x")
-
-        ttk.Label(
-            installer_versions_row,
-            text="Previous versions visible",
-            style="Dark.TLabel"
-        ).pack(side="left")
-
-        installer_versions_after_id = None
-
-        def _apply_installer_previous_versions_setting():
-            nonlocal installer_versions_after_id
-            installer_versions_after_id = None
-
-            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
-            if installer_previous_versions_var.get() != clamped:
-                installer_previous_versions_var.set(clamped)
-
-            if self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS) != clamped:
-                self.settings["installer_previous_versions"] = clamped
-                self.save_settings()
-                self.refresh_installer_menu()
-
-        def on_installer_previous_versions_update(*_):
-            nonlocal installer_versions_after_id
-            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
-            if installer_previous_versions_var.get() != clamped:
-                installer_previous_versions_var.set(clamped)
-
-            if installer_versions_after_id is not None:
-                try:
-                    settings_window.after_cancel(installer_versions_after_id)
-                except Exception:
-                    pass
-            installer_versions_after_id = settings_window.after(250, _apply_installer_previous_versions_setting)
-
-        installer_versions_spin = ttk.Spinbox(
-            installer_versions_row,
-            from_=MIN_INSTALLER_PREVIOUS_VERSIONS,
-            to=MAX_INSTALLER_PREVIOUS_VERSIONS,
-            increment=1,
-            textvariable=installer_previous_versions_var,
-            width=8,
-            style="Dark.TSpinbox",
-            justify="center",
-            command=on_installer_previous_versions_update
-        )
-        installer_versions_spin.pack(side="right")
-        installer_versions_spin.bind("<FocusOut>", lambda _: on_installer_previous_versions_update())
-        installer_versions_spin.bind("<Return>", lambda _: on_installer_previous_versions_update())
-
-        updates_card = create_settings_card(general_tab, "App Updates", "Automatic update checks")
-
-        ttk.Checkbutton(
-            updates_card,
-            text="Enable Auto Updates",
-            variable=auto_update_var,
-            style="Dark.TCheckbutton",
-            command=auto_save_setting("auto_update_enabled", auto_update_var)
-        ).pack(anchor="w", pady=2)
-
-        theme_card = create_settings_card(general_tab, "Theme")
+        appearance_card = create_settings_card(general_tab, "Appearance")
 
         theme_combo = ttk.Combobox(
-            theme_card,
+            appearance_card,
             values=list(THEMES.keys()),
             textvariable=theme_var,
             state="readonly",
@@ -9137,86 +9075,77 @@ class AccountManagerUI:
         install_themes_button = None
         if not bool(self.custom_themes):
             install_themes_button = ttk.Button(
-                theme_card,
+                appearance_card,
                 text="Install Additional Themes",
                 style="Dark.TButton",
                 command=install_additional_themes,
             )
             install_themes_button.pack(fill="x", pady=(2, 0))
 
-        browser_card = create_settings_card(general_tab, "Browser Automation")
-        available_browsers = self._get_available_browsers()
-        browser_value_to_label = {}
-        if len(available_browsers) >= 2:
-            browser_value_to_label["auto"] = "Auto (Chrome first, then Firefox)"
-        if "chrome" in available_browsers:
-            browser_value_to_label["chrome"] = "Chrome only"
-        if "firefox" in available_browsers:
-            browser_value_to_label["firefox"] = "Firefox only"
-        browser_label_to_value = {label: value for value, label in browser_value_to_label.items()}
-        current_browser_pref = browser_preference_var.get()
-        if len(available_browsers) == 1:
-            current_browser_pref = available_browsers[0]
-        elif current_browser_pref not in browser_value_to_label:
-            current_browser_pref = "auto" if "auto" in browser_value_to_label else available_browsers[0] if available_browsers else "auto"
+        installer_versions_after_id = None
 
-        browser_preference_var.set(current_browser_pref)
-        self.settings["browser_preference"] = current_browser_pref
-        self.save_settings()
+        def _apply_installer_previous_versions_setting():
+            nonlocal installer_versions_after_id
+            installer_versions_after_id = None
 
-        if browser_value_to_label:
-            browser_pref_label_var = tk.StringVar(
-                value=browser_value_to_label.get(current_browser_pref, next(iter(browser_value_to_label.values())))
-            )
-            browser_combo = ttk.Combobox(
-                browser_card,
-                values=list(browser_value_to_label.values()),
-                textvariable=browser_pref_label_var,
-                state="readonly",
-                style="Dark.TCombobox",
-            )
-            browser_combo.pack(fill="x", pady=(0, 4))
+            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
+            if installer_previous_versions_var.get() != clamped:
+                installer_previous_versions_var.set(clamped)
 
-            def on_browser_preference_change(_=None):
-                selected_label = (browser_combo.get() or "").strip()
-                selected_value = browser_label_to_value.get(selected_label, current_browser_pref)
-                browser_preference_var.set(selected_value)
-                self.settings["browser_preference"] = selected_value
+            if self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS) != clamped:
+                self.settings["installer_previous_versions"] = clamped
                 self.save_settings()
+                self.refresh_installer_menu()
 
-            browser_combo.bind("<<ComboboxSelected>>", on_browser_preference_change)
-        else:
-            ttk.Label(
-                browser_card,
-                text=(
-                    "No supported browser detected.\n"
-                    "Please download Google Chrome or Mozilla Firefox."
-                ),
-                style="Dark.TLabel",
-                wraplength=340,
-                justify="left",
-            ).pack(fill="x", pady=(0, 4))
+        def on_installer_previous_versions_update(*_):
+            nonlocal installer_versions_after_id
+            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
+            if installer_previous_versions_var.get() != clamped:
+                installer_previous_versions_var.set(clamped)
 
-        roblox_client_card = create_settings_card(roblox_tab, "Launch Rules")
+            if installer_versions_after_id is not None:
+                try:
+                    settings_window.after_cancel(installer_versions_after_id)
+                except Exception:
+                    pass
+            installer_versions_after_id = settings_window.after(250, _apply_installer_previous_versions_setting)
+
+        launch_confirmation_card = create_settings_card(
+            roblox_tab,
+            "Launch Confirmation",
+            "Review multi-account launches before they start",
+        )
 
         ttk.Checkbutton(
-            roblox_client_card,
+            launch_confirmation_card,
             text="Confirm Before Launch",
             variable=confirm_launch_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("confirm_before_launch", confirm_launch_var)
         ).pack(anchor="w", pady=2)
 
+        multi_client_card = create_settings_card(
+            roblox_tab,
+            "Multi-Client Launching",
+            "Allow multiple Roblox clients to run at once",
+        )
+
         ttk.Checkbutton(
-            roblox_client_card,
+            multi_client_card,
             text="Enable Multi Roblox",
             variable=multi_roblox_var,
             style="Dark.TCheckbutton",
             command=on_multi_roblox_toggle
         ).pack(anchor="w", pady=2)
 
+        server_selection_card = create_settings_card(
+            roblox_tab,
+            "Server Selection",
+            "Control how place launches choose public servers",
+        )
+
         ttk.Checkbutton(
-            roblox_client_card,
+            server_selection_card,
             text="Randomize Server Job IDs",
             variable=randomize_job_id_var,
             style="Dark.TCheckbutton",
@@ -9224,26 +9153,185 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
-            roblox_client_card,
+            server_selection_card,
             text="Prefer Small Servers",
             variable=prefer_small_servers_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("prefer_small_public_servers", prefer_small_servers_var)
         ).pack(anchor="w", pady=2)
 
+        version_history_card = create_settings_card(
+            roblox_tab,
+            "Version History",
+            "How many previous Roblox builds stay available in the version list",
+        )
+
+        installer_versions_row = ttk.Frame(version_history_card, style="Dark.TFrame")
+        installer_versions_row.pack(fill="x")
+
+        ttk.Label(
+            installer_versions_row,
+            text="Previous versions visible",
+            style="Dark.TLabel"
+        ).pack(side="left")
+
+        installer_versions_spin = ttk.Spinbox(
+            installer_versions_row,
+            from_=MIN_INSTALLER_PREVIOUS_VERSIONS,
+            to=MAX_INSTALLER_PREVIOUS_VERSIONS,
+            increment=1,
+            textvariable=installer_previous_versions_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_installer_previous_versions_update
+        )
+        installer_versions_spin.pack(side="right")
+        installer_versions_spin.bind("<FocusOut>", lambda _: on_installer_previous_versions_update())
+        installer_versions_spin.bind("<Return>", lambda _: on_installer_previous_versions_update())
+
+        launch_delay_card = create_settings_card(
+            roblox_tab,
+            "Launch Delay",
+            "Delay between each account when launching multiple clients",
+        )
+
+        ttk.Label(
+            launch_delay_card,
+            text="Launch Delay (seconds)",
+            style="Dark.TLabel",
+        ).pack(anchor="w", pady=(0, 2))
+
+        delay_var = tk.DoubleVar(value=self._get_multi_launch_delay())
+
+        def on_delay_var_change(*_):
+            try:
+                value = float(delay_var.get())
+            except (tk.TclError, ValueError):
+                return
+            clamped = clamp_multi_launch_delay(value)
+            if not math.isclose(value, clamped):
+                delay_var.set(clamped)
+                return
+            if not math.isclose(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS), clamped):
+                self.settings["multi_launch_delay"] = clamped
+                self.save_settings()
+
+        vcmd = (self.root.register(lambda text: text == "" or re.match(r"^\d*\.?\d*$", text) is not None), "%P")
+
+        delay_spin = ttk.Spinbox(
+            launch_delay_card,
+            from_=MIN_LAUNCH_DELAY_SECONDS,
+            to=MAX_LAUNCH_DELAY_SECONDS,
+            increment=0.5,
+            textvariable=delay_var,
+            format="%.1f",
+            width=8,
+            validate="key",
+            validatecommand=vcmd,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_delay_var_change
+        )
+        delay_spin.pack(anchor="w")
+        delay_spin.bind("<FocusOut>", lambda _: on_delay_var_change())
+        delay_spin.bind("<Return>", lambda _: on_delay_var_change())
+        delay_var.trace_add("write", on_delay_var_change)
+
+        custom_player_card = create_settings_card(
+            roblox_tab,
+            "Roblox Executable",
+            "Override the Roblox player used when launching accounts",
+        )
+
+        ttk.Label(
+            custom_player_card,
+            text="Custom Roblox Player",
+            style="Dark.TLabel",
+        ).pack(anchor="w", pady=(0, 2))
+
+        custom_player_frame = ttk.Frame(custom_player_card, style="Dark.TFrame")
+        custom_player_frame.pack(fill="x", pady=(0, 6))
+        custom_player_frame.columnconfigure(0, weight=1)
+        custom_player_entry = ttk.Entry(custom_player_frame, style="Dark.TEntry", textvariable=custom_roblox_player_path_var)
+        custom_player_entry.grid(row=0, column=0, sticky="ew")
+
+        def save_custom_player_path(value):
+            if value is None:
+                return
+            value = (value or "").strip()
+            self.settings["custom_roblox_player_path"] = value
+            custom_roblox_player_path_var.set(value)
+            self.save_settings()
+            if hasattr(self, "version_dropdown") and hasattr(self, "version_var"):
+                self.load_roblox_versions()
+                if value:
+                    self._select_version_by_path(value)
+
+        def browse_custom_player_path():
+            path = filedialog.askopenfilename(
+                parent=settings_window,
+                title="Select RobloxPlayer executable",
+                filetypes=[("Executable", "*.exe"), ("All Files", "*.*")]
+            )
+            if not path:
+                return
+            path = os.path.normpath(path)
+            if not os.path.isfile(path):
+                messagebox.showerror("Custom RobloxPlayer", "Selected path is not a file.")
+                return
+            exe_name = os.path.basename(path).lower()
+            if exe_name not in self.ROBLOX_CLIENT_EXECUTABLES:
+                messagebox.showerror(
+                    "Custom RobloxPlayer",
+                    "Please select RobloxPlayerBeta.exe or RobloxPlayerLauncher.exe."
+                )
+                return
+            save_custom_player_path(path)
+
+        def clear_custom_player_path():
+            save_custom_player_path("")
+
+        ttk.Button(
+            custom_player_frame,
+            text="Browse",
+            style="Dark.TButton",
+            command=browse_custom_player_path
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        ttk.Button(
+            custom_player_frame,
+            text="Clear",
+            style="Dark.TButton",
+            command=clear_custom_player_path
+        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+
+        custom_player_entry.bind("<FocusOut>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
+        custom_player_entry.bind("<Return>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
+
         def open_global_settings_and_close_settings():
             """Open Roblox Settings and close settings window"""
             settings_window.destroy()
             self.open_global_settings_editor()
 
+        roblox_settings_card = create_settings_card(
+            roblox_tab,
+            "Roblox Settings",
+            "Open the Roblox client settings editor",
+        )
+
         ttk.Button(
-            roblox_client_card,
+            roblox_settings_card,
             text="Open Roblox Settings",
             style="Dark.TButton",
             command=open_global_settings_and_close_settings
-        ).pack(fill="x", pady=(8, 0))
+        ).pack(fill="x")
 
-        roblox_auto_arrange_card = create_settings_card(roblox_tab, "Roblox Window Arrangement")
+        roblox_auto_arrange_card = create_settings_card(
+            roblox_tab,
+            "Window Arrangement",
+            "Keep Roblox clients organized across your monitors",
+        )
 
         if self._has_multiple_monitors():
             scope_display_map = {
@@ -9393,116 +9481,73 @@ class AccountManagerUI:
             command=on_keep_clients_arranged_toggle
         ).pack(anchor="w", pady=(8, 0))
 
-        custom_frame = create_settings_card(roblox_tab, "Launch Timing & Executable")
+        automation_browser_card = create_settings_card(
+            automation_tab,
+            "Browser Automation",
+            "Choose which browser Roblox web launches should use",
+        )
 
-        ttk.Label(
-            custom_frame,
-            text="Launch Delay (seconds)",
-            style="Dark.TLabel",
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(0, 2))
+        available_browsers = self._get_available_browsers()
+        browser_value_to_label = {}
+        if len(available_browsers) >= 2:
+            browser_value_to_label["auto"] = "Auto (Chrome first, then Firefox)"
+        if "chrome" in available_browsers:
+            browser_value_to_label["chrome"] = "Chrome only"
+        if "firefox" in available_browsers:
+            browser_value_to_label["firefox"] = "Firefox only"
+        browser_label_to_value = {label: value for value, label in browser_value_to_label.items()}
+        current_browser_pref = browser_preference_var.get()
+        if len(available_browsers) == 1:
+            current_browser_pref = available_browsers[0]
+        elif current_browser_pref not in browser_value_to_label:
+            current_browser_pref = "auto" if "auto" in browser_value_to_label else available_browsers[0] if available_browsers else "auto"
 
-        delay_var = tk.DoubleVar(value=self._get_multi_launch_delay())
+        browser_preference_var.set(current_browser_pref)
+        self.settings["browser_preference"] = current_browser_pref
+        self.save_settings()
 
-        def on_delay_var_change(*_):
-            try:
-                value = float(delay_var.get())
-            except (tk.TclError, ValueError):
-                return
-            clamped = clamp_multi_launch_delay(value)
-            if not math.isclose(value, clamped):
-                delay_var.set(clamped)
-                return
-            if not math.isclose(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS), clamped):
-                self.settings["multi_launch_delay"] = clamped
+        if browser_value_to_label:
+            browser_pref_label_var = tk.StringVar(
+                value=browser_value_to_label.get(current_browser_pref, next(iter(browser_value_to_label.values())))
+            )
+            browser_combo = ttk.Combobox(
+                automation_browser_card,
+                values=list(browser_value_to_label.values()),
+                textvariable=browser_pref_label_var,
+                state="readonly",
+                style="Dark.TCombobox",
+            )
+            browser_combo.pack(fill="x", pady=(0, 4))
+
+            def on_browser_preference_change(_=None):
+                selected_label = (browser_combo.get() or "").strip()
+                selected_value = browser_label_to_value.get(selected_label, current_browser_pref)
+                browser_preference_var.set(selected_value)
+                self.settings["browser_preference"] = selected_value
                 self.save_settings()
 
-        vcmd = (self.root.register(lambda text: text == "" or re.match(r"^\d*\.?\d*$", text) is not None), "%P")
+            browser_combo.bind("<<ComboboxSelected>>", on_browser_preference_change)
+        else:
+            ttk.Label(
+                automation_browser_card,
+                text=(
+                    "No supported browser detected.\n"
+                    "Please download Google Chrome or Mozilla Firefox."
+                ),
+                style="Dark.TLabel",
+                wraplength=340,
+                justify="left",
+            ).pack(fill="x", pady=(0, 4))
 
-        delay_spin = ttk.Spinbox(
-            custom_frame,
-            from_=MIN_LAUNCH_DELAY_SECONDS,
-            to=MAX_LAUNCH_DELAY_SECONDS,
-            increment=0.5,
-            textvariable=delay_var,
-            format="%.1f",
-            width=8,
-            validate="key",
-            validatecommand=vcmd,
-            style="Dark.TSpinbox",
-            justify="center",
-            command=on_delay_var_change
-        )
-        delay_spin.pack(anchor="w")
-        delay_spin.bind("<FocusOut>", lambda _: on_delay_var_change())
-        delay_spin.bind("<Return>", lambda _: on_delay_var_change())
-        delay_var.trace_add("write", on_delay_var_change)
+        updates_card = create_settings_card(automation_tab, "App Updates", "Automatic update checks")
 
-        ttk.Label(
-            custom_frame,
-            text="Custom Roblox Player",
-            style="Dark.TLabel",
-            font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w", pady=(10, 2))
-
-        custom_player_frame = ttk.Frame(custom_frame, style="Dark.TFrame")
-        custom_player_frame.pack(fill="x", pady=(0, 6))
-        custom_player_frame.columnconfigure(0, weight=1)
-        custom_player_entry = ttk.Entry(custom_player_frame, style="Dark.TEntry", textvariable=custom_roblox_player_path_var)
-        custom_player_entry.grid(row=0, column=0, sticky="ew")
-
-        def save_custom_player_path(value):
-            if value is None:
-                return
-            value = (value or "").strip()
-            self.settings["custom_roblox_player_path"] = value
-            custom_roblox_player_path_var.set(value)
-            self.save_settings()
-            if hasattr(self, "version_dropdown") and hasattr(self, "version_var"):
-                self.load_roblox_versions()
-                if value:
-                    self._select_version_by_path(value)
-
-        def browse_custom_player_path():
-            path = filedialog.askopenfilename(
-                parent=settings_window,
-                title="Select RobloxPlayer executable",
-                filetypes=[("Executable", "*.exe"), ("All Files", "*.*")]
-            )
-            if not path:
-                return
-            path = os.path.normpath(path)
-            if not os.path.isfile(path):
-                messagebox.showerror("Custom RobloxPlayer", "Selected path is not a file.")
-                return
-            exe_name = os.path.basename(path).lower()
-            if exe_name not in self.ROBLOX_CLIENT_EXECUTABLES:
-                messagebox.showerror(
-                    "Custom RobloxPlayer",
-                    "Please select RobloxPlayerBeta.exe or RobloxPlayerLauncher.exe."
-                )
-                return
-            save_custom_player_path(path)
-
-        def clear_custom_player_path():
-            save_custom_player_path("")
-
-        ttk.Button(
-            custom_player_frame,
-            text="Browse",
-            style="Dark.TButton",
-            command=browse_custom_player_path
-        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
-
-        ttk.Button(
-            custom_player_frame,
-            text="Clear",
-            style="Dark.TButton",
-            command=clear_custom_player_path
-        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
-
-        custom_player_entry.bind("<FocusOut>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
-        custom_player_entry.bind("<Return>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
+        ttk.Checkbutton(
+            updates_card,
+            text="Enable Auto Updates",
+            variable=auto_update_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("auto_update_enabled", auto_update_var)
+        ).pack(anchor="w", pady=2)
 
         auto_rejoin_enable_all_var = tk.BooleanVar(
             value=bool(self.settings.get("auto_rejoin_enable_all_accounts", False))
@@ -9742,18 +9787,24 @@ class AccountManagerUI:
                 foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
             ).pack(anchor="w", pady=(6, 0))
 
-        logging_card = create_settings_card(advanced_tab, "Diagnostics")
+        diagnostics_card = create_settings_card(advanced_tab, "Diagnostics", "Verbose logging for troubleshooting")
 
         ttk.Checkbutton(
-            logging_card,
+            diagnostics_card,
             text="Enable Debug Logging",
             variable=debug_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("enable_debug_logging", debug_var)
         ).pack(anchor="w", pady=2)
 
+        privacy_reports_card = create_settings_card(
+            advanced_tab,
+            "Privacy & Reports",
+            "Mask sensitive values and control bug report prompts",
+        )
+
         ttk.Checkbutton(
-            logging_card,
+            privacy_reports_card,
             text="Hide Sensitive Info",
             variable=hide_sensitive_var,
             style="Dark.TCheckbutton",
@@ -9761,7 +9812,7 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
-            logging_card,
+            privacy_reports_card,
             text="Prompt for Bug Reports",
             variable=bug_prompt_var,
             style="Dark.TCheckbutton",
@@ -9772,14 +9823,27 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_instance_manager()
 
-        tools_card = create_settings_card(advanced_tab, "Utilities")
+        console_card = create_settings_card(advanced_tab, "Console", "Open the live log console")
 
         ttk.Button(
-            tools_card,
+            console_card,
+            text="Open Console",
+            style="Dark.TButton",
+            command=self.open_console_output
+        ).pack(fill="x")
+
+        instance_manager_card = create_settings_card(
+            advanced_tab,
+            "Instance Manager",
+            "Inspect and control active Roblox clients",
+        )
+
+        ttk.Button(
+            instance_manager_card,
             text="Instance Manager",
             style="Dark.TButton",
             command=open_instance_manager_and_close_settings
-        ).pack(fill="x", pady=(0, 10))
+        ).pack(fill="x")
 
         def open_fastflags_and_close_settings():
             settings_window.destroy()
@@ -9789,19 +9853,41 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_addons_window()
 
+        fastflags_card = create_settings_card(
+            advanced_tab,
+            "Fast Flags",
+            "Open the Roblox fast flags editor",
+        )
+
         ttk.Button(
-            tools_card,
+            fastflags_card,
             text="Fast Flags Editor",
             style="Dark.TButton",
             command=open_fastflags_and_close_settings
-        ).pack(fill="x", pady=(0, 10))
+        ).pack(fill="x")
+
+        addons_card = create_settings_card(
+            advanced_tab,
+            "Addons",
+            "Manage addon tabs and extensions",
+        )
 
         ttk.Button(
-            tools_card,
+            addons_card,
             text="Addons",
             style="Dark.TButton",
             command=open_addons_and_close_settings
-        ).pack(fill="x", pady=(0, 0))
+        ).pack(fill="x")
+
+        footer_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        footer_frame.pack(fill="x", pady=(8, 0))
+
+        ttk.Button(
+            footer_frame,
+            text="Close",
+            style="Dark.TButton",
+            command=settings_window.destroy
+        ).pack(fill="x")
 
         self.register_theme_refresh(settings_window, _refresh_settings_theme)
         set_active_tab("general")
@@ -9815,25 +9901,6 @@ class AccountManagerUI:
         final_h = max(req_h, min_h)
         self._center_window(settings_window, final_w, final_h)
         settings_window.deiconify()
-
-        footer_frame = ttk.Frame(main_frame, style="Dark.TFrame")
-        footer_frame.pack(fill="x", pady=(8, 0))
-        footer_frame.columnconfigure(0, weight=1)
-        footer_frame.columnconfigure(1, weight=1)
-
-        ttk.Button(
-            footer_frame,
-            text="Open Console",
-            style="Dark.TButton",
-            command=self.open_console_output
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-
-        ttk.Button(
-            footer_frame,
-            text="Close",
-            style="Dark.TButton",
-            command=settings_window.destroy
-        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     def open_instance_manager(self):
         if platform.system() != "Windows":
