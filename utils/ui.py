@@ -47,8 +47,9 @@ from classes.fastflags import FastFlagsManager
 
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
-ROBLOX_DEPLOY_HISTORY_URL = "https://setup.rbxcdn.com/DeployHistory.txt"
 WEAO_VERSIONS_CURRENT_PATH = "/api/versions/current"
+WEAO_VERSIONS_FUTURE_PATH = "/api/versions/future"
+WEAO_VERSIONS_PAST_PATH = "/api/versions/past"
 WEAO_API_HOSTS = ("weao.xyz", "whatexpsare.online", "weao.gg", "whatexploitsaretra.sh")
 WEAO_API_USER_AGENT = "WEAO-3PService"
 
@@ -171,9 +172,7 @@ RDD_APP_SETTINGS_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 MIN_LAUNCH_DELAY_SECONDS = 0.0
 MAX_LAUNCH_DELAY_SECONDS = 60.0
-
-MIN_INSTALLER_PREVIOUS_VERSIONS = 5
-MAX_INSTALLER_PREVIOUS_VERSIONS = 15
+INSTALLER_VERSION_ENTRY_LIMIT = 3
 
 # Win32 flags used for force-resizing Roblox windows (test.py approach).
 SWP_NOZORDER = 0x0004
@@ -195,14 +194,6 @@ def clamp_multi_launch_delay(value):
     except (TypeError, ValueError):
         numeric = MIN_LAUNCH_DELAY_SECONDS
     return max(MIN_LAUNCH_DELAY_SECONDS, min(MAX_LAUNCH_DELAY_SECONDS, numeric))
-
-
-def clamp_installer_previous_versions(value):
-    try:
-        int_value = int(value)
-    except (TypeError, ValueError):
-        int_value = MIN_INSTALLER_PREVIOUS_VERSIONS
-    return max(MIN_INSTALLER_PREVIOUS_VERSIONS, min(MAX_INSTALLER_PREVIOUS_VERSIONS, int_value))
 
 
 def subprocess_no_window_kwargs():
@@ -1373,7 +1364,6 @@ class AccountManagerUI:
             "auto_memory_trim_enabled": False,
             "auto_memory_trim_interval_minutes": 5,
             "auto_update_enabled": True,
-            "installer_previous_versions": MIN_INSTALLER_PREVIOUS_VERSIONS,
             "browser_preference": "auto",
         }
 
@@ -1385,6 +1375,7 @@ class AccountManagerUI:
 
         legacy_auto_arrange_after_group_launch = self.settings.pop("auto_arrange_after_group_launch", False)
         legacy_auto_arrange_after_launch = self.settings.pop("auto_arrange_after_launch", None)
+        self.settings.pop("installer_previous_versions", None)
         if "keep_roblox_clients_arranged" not in self.settings:
             migrated_keep_clients_arranged = legacy_auto_arrange_after_launch
             if migrated_keep_clients_arranged is None:
@@ -1396,10 +1387,6 @@ class AccountManagerUI:
 
         self.settings["multi_launch_delay"] = clamp_multi_launch_delay(
             self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS)
-        )
-
-        self.settings["installer_previous_versions"] = clamp_installer_previous_versions(
-            self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)
         )
         browser_pref = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
         if browser_pref not in {"auto", "chrome", "firefox"}:
@@ -3180,15 +3167,12 @@ class AccountManagerUI:
         window.deiconify()
 
     def refresh_installer_menu(self):
-        """Populate the Roblox Installer menu with up to five recent versions."""
+        """Populate the Roblox Installer menu with available versions."""
         if getattr(self, "installer_menu", None) is None:
             return
 
         self.installer_menu.delete(0, tk.END)
-        limit = clamp_installer_previous_versions(
-            self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)
-        )
-        versions = self.get_available_roblox_versions(limit=limit)
+        versions = self.get_available_roblox_versions()
         if not versions:
             self.installer_menu.add_command(label="No versions found", state="disabled")
             return
@@ -3200,7 +3184,7 @@ class AccountManagerUI:
                 continue
             self.installer_menu.add_command(
                 label=label,
-                command=lambda v=version: self.use_installer_version(v)
+                command=lambda item=entry: self.use_installer_version(item)
             )
 
     def _apply_menu_palette_defaults(self):
@@ -3245,8 +3229,17 @@ class AccountManagerUI:
                     submenu = None
                 self._style_menu_recursive(submenu)
 
-    def use_installer_version(self, version):
+    def use_installer_version(self, version_entry):
         """Begin the guided installer flow for the selected Roblox version."""
+        if isinstance(version_entry, dict):
+            version = (version_entry.get("version") or "").strip()
+        else:
+            version = str(version_entry or "").strip()
+            version_entry = {"version": version}
+
+        if not version:
+            return
+
         clients = self.get_installed_clients()
         if not clients:
             messagebox.showwarning(
@@ -3255,11 +3248,14 @@ class AccountManagerUI:
             )
             return
 
-        self._show_installer_dialog(version, clients)
+        self._show_installer_dialog(version_entry, clients)
 
-    def _show_installer_dialog(self, version, clients):
+    def _show_installer_dialog(self, version_entry, clients):
         """Create (or refresh) the installer dialog for choosing a client and tracking progress."""
         self._close_installer_dialog()
+
+        version = (version_entry.get("version") or "").strip()
+        version_label = self.format_version_display(version_entry)
 
         window = tk.Toplevel(self.root)
         window.title("Roblox Installer")
@@ -3275,7 +3271,7 @@ class AccountManagerUI:
 
         ttk.Label(
             main_frame,
-            text=f"Install {version}",
+            text=f"Install {version_label}",
             style="Dark.TLabel",
             font=("Segoe UI", 12, "bold")
         ).pack(anchor="w", pady=(0, 8))
@@ -3354,6 +3350,7 @@ class AccountManagerUI:
 
         self.installer_dialog_state = {
             "window": window,
+            "version_entry": version_entry,
             "version": version,
             "clients": clients,
             "selected_client": selected_client,
@@ -3401,9 +3398,11 @@ class AccountManagerUI:
         state["status_var"].set("Starting download...")
         state["progress_var"].set(0)
 
+        version_entry = state.get("version_entry") or {"version": version}
+
         thread = threading.Thread(
             target=self._installer_download_thread,
-            args=(version, client, target_dir),
+            args=(version_entry, client, target_dir),
             daemon=True
         )
         state["download_thread"] = thread
@@ -3445,8 +3444,14 @@ class AccountManagerUI:
             window.destroy()
         self.installer_dialog_state = None
 
-    def _installer_download_thread(self, version, client, target_dir):
+    def _installer_download_thread(self, version_entry, client, target_dir):
         root = getattr(self, "root", None)
+        version = ""
+        if isinstance(version_entry, dict):
+            version = str(version_entry.get("version") or "").strip()
+        else:
+            version = str(version_entry or "").strip()
+            version_entry = {"version": version}
 
         def ui_update(status=None, progress=None):
             if root is None:
@@ -3517,8 +3522,11 @@ class AccountManagerUI:
         temp_root = None
         try:
             channel = "LIVE"
+            download_channel = str(version_entry.get("download_channel") or "").strip().upper()
             if hasattr(self, "settings") and isinstance(self.settings, dict):
                 channel = (self.settings.get("roblox_download_channel") or channel)
+            if download_channel:
+                channel = download_channel
             channel = str(channel).strip() or "LIVE"
 
             requested_version = (version or "").strip()
@@ -3799,15 +3807,27 @@ class AccountManagerUI:
 
         return versions
 
-    def _fetch_weao_current_live_version(self):
-        """Windows Player hash for current LIVE from WEAO GET /api/versions/current (any official host)."""
+    def _fetch_weao_windows_version(self, route_path, status):
+        """Fetch a Windows Roblox version hash from a WEAO route."""
         session = requests.Session()
         session.trust_env = False
         session.proxies = {}
         headers = {"User-Agent": WEAO_API_USER_AGENT}
         last_exc = None
+        normalized_route_path = route_path if str(route_path).startswith("/") else f"/{route_path}"
+        subdomain_route_path = normalized_route_path
+        if subdomain_route_path.startswith("/api/"):
+            subdomain_route_path = subdomain_route_path[4:]
+        candidate_urls = []
         for host in WEAO_API_HOSTS:
-            url = f"https://{host}{WEAO_VERSIONS_CURRENT_PATH}"
+            for scheme in ("https", "http"):
+                candidate_urls.append(f"{scheme}://{host}{normalized_route_path}")
+        candidate_urls.extend((
+            f"https://api.weao.xyz{subdomain_route_path}",
+            f"https://api.whatexpsare.online{subdomain_route_path}",
+        ))
+
+        for url in candidate_urls:
             try:
                 response = session.get(url, headers=headers, timeout=10)
                 response.raise_for_status()
@@ -3825,50 +3845,49 @@ class AccountManagerUI:
             win = win.strip()
             if not re.fullmatch(r"version-[0-9a-fA-F]+", win):
                 continue
-            return win
+            return {
+                "version": win,
+                "status": status,
+                "date": data.get("WindowsDate"),
+                "download_channel": "LIVE",
+                "source": "WEAO",
+            }
 
         if last_exc is not None:
-            print(f"Failed to fetch WEAO current LIVE version: {last_exc}")
+            print(f"Failed to fetch WEAO {status} Windows version: {last_exc}")
         return None
 
-    def fetch_remote_versions(self, limit=5):
-        """Fetch Roblox version history from Roblox CDN (LIVE channel)."""
-        history_url = "https://setup.rbxcdn.com/DeployHistory.txt"
-        versions = []
-        seen_versions = set()
+    def fetch_remote_versions(self, limit=INSTALLER_VERSION_ENTRY_LIMIT):
+        """Fetch Roblox installer versions from WEAO LIVE endpoints."""
+        route_specs = (
+            (WEAO_VERSIONS_FUTURE_PATH, "FUTURE"),
+            (WEAO_VERSIONS_CURRENT_PATH, "LIVE"),
+            (WEAO_VERSIONS_PAST_PATH, "PAST"),
+        )
+        fetched_versions = []
+        for route_path, status in route_specs:
+            entry = self._fetch_weao_windows_version(route_path, status)
+            if entry:
+                fetched_versions.append(entry)
 
-        weao_live = self._fetch_weao_current_live_version()
-        if weao_live:
-            seen_versions.add(weao_live)
-            versions.append({"version": weao_live, "status": "LIVE"})
-
-        try:
-            response = self._get_http_session().get(history_url, timeout=5)
-            response.raise_for_status()
-        except Exception as exc:
-            print(f"Failed to fetch remote Roblox versions: {exc}")
-            return versions
-
-        lines = response.text.splitlines()
-        version_pattern = re.compile(r"version-[0-9a-fA-F]+")
-
-        for line in reversed(lines):
-            line = line.strip()
-            if "WindowsPlayer" not in line:
+        display_priority = {"FUTURE": 0, "LIVE": 1, "PAST": 2}
+        dedupe_priority = {"LIVE": 0, "FUTURE": 1, "PAST": 2}
+        deduped_versions = {}
+        for entry in fetched_versions:
+            version = entry.get("version")
+            if not version:
                 continue
-            match = version_pattern.search(line)
-            if not match:
-                continue
-            version = match.group(0)
-            if version in seen_versions:
-                continue
-            seen_versions.add(version)
-            status = "LIVE" if not weao_live and not versions else "PAST"
-            versions.append({"version": version, "status": status})
-            if limit and len(versions) >= limit:
-                break
+            existing = deduped_versions.get(version)
+            if existing is None or dedupe_priority.get(entry.get("status"), 99) < dedupe_priority.get(existing.get("status"), 99):
+                deduped_versions[version] = entry
 
-        return versions
+        ordered_versions = sorted(
+            deduped_versions.values(),
+            key=lambda item: display_priority.get(item.get("status"), 99)
+        )
+        if limit is not None:
+            ordered_versions = ordered_versions[:limit]
+        return ordered_versions
 
     def _get_http_session(self):
         """Lazily initialize a shared HTTP session with retry/backoff."""
@@ -3892,7 +3911,7 @@ class AccountManagerUI:
 
         return self._http_session
 
-    def get_available_roblox_versions(self, limit=None):
+    def get_available_roblox_versions(self):
         """Get Roblox versions preferring remote history, falling back to local folders."""
         cache_ttl_seconds = 60
         now = time.time()
@@ -3904,15 +3923,13 @@ class AccountManagerUI:
         ):
             remote_versions = cache["versions"]
         else:
-            remote_versions = self.fetch_remote_versions(limit=MAX_INSTALLER_PREVIOUS_VERSIONS)
+            remote_versions = self.fetch_remote_versions(limit=INSTALLER_VERSION_ENTRY_LIMIT)
             if remote_versions:
                 self._installer_versions_cache = {"ts": now, "versions": remote_versions}
 
-        if limit is not None:
-            remote_versions = remote_versions[:limit]
         if remote_versions:
             return remote_versions
-        return self.get_local_roblox_versions(limit=limit)
+        return self.get_local_roblox_versions(limit=INSTALLER_VERSION_ENTRY_LIMIT)
 
     def get_installed_clients(self):
         """Return installed client targets that have a Versions directory on disk."""
@@ -8681,7 +8698,6 @@ class AccountManagerUI:
             value=int(self.settings.get("auto_arrange_target_height", 600) or 600)
         )
         custom_roblox_player_path_var = tk.StringVar(value=self.settings.get("custom_roblox_player_path", ""))
-        installer_previous_versions_var = tk.IntVar(value=clamp_installer_previous_versions(self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS)))
         
         def auto_save_setting(setting_name, var):
             def save():
@@ -9207,34 +9223,6 @@ class AccountManagerUI:
             )
             install_themes_button.pack(fill="x", pady=(2, 0))
 
-        installer_versions_after_id = None
-
-        def _apply_installer_previous_versions_setting():
-            nonlocal installer_versions_after_id
-            installer_versions_after_id = None
-
-            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
-            if installer_previous_versions_var.get() != clamped:
-                installer_previous_versions_var.set(clamped)
-
-            if self.settings.get("installer_previous_versions", MIN_INSTALLER_PREVIOUS_VERSIONS) != clamped:
-                self.settings["installer_previous_versions"] = clamped
-                self.save_settings()
-                self.refresh_installer_menu()
-
-        def on_installer_previous_versions_update(*_):
-            nonlocal installer_versions_after_id
-            clamped = clamp_installer_previous_versions(installer_previous_versions_var.get())
-            if installer_previous_versions_var.get() != clamped:
-                installer_previous_versions_var.set(clamped)
-
-            if installer_versions_after_id is not None:
-                try:
-                    settings_window.after_cancel(installer_versions_after_id)
-                except Exception:
-                    pass
-            installer_versions_after_id = settings_window.after(250, _apply_installer_previous_versions_setting)
-
         launch_confirmation_card = create_settings_card(
             general_tab,
             "Launch Confirmation",
@@ -9284,36 +9272,6 @@ class AccountManagerUI:
             style="Dark.TCheckbutton",
             command=auto_save_setting("prefer_small_public_servers", prefer_small_servers_var)
         ).pack(anchor="w", pady=2)
-
-        version_history_card = create_settings_card(
-            general_tab,
-            "Version History",
-            "How many previous Roblox builds stay available in the version list",
-        )
-
-        installer_versions_row = ttk.Frame(version_history_card, style="Dark.TFrame")
-        installer_versions_row.pack(fill="x")
-
-        ttk.Label(
-            installer_versions_row,
-            text="Previous versions visible",
-            style="Dark.TLabel"
-        ).pack(side="left")
-
-        installer_versions_spin = ttk.Spinbox(
-            installer_versions_row,
-            from_=MIN_INSTALLER_PREVIOUS_VERSIONS,
-            to=MAX_INSTALLER_PREVIOUS_VERSIONS,
-            increment=1,
-            textvariable=installer_previous_versions_var,
-            width=8,
-            style="Dark.TSpinbox",
-            justify="center",
-            command=on_installer_previous_versions_update
-        )
-        installer_versions_spin.pack(side="right")
-        installer_versions_spin.bind("<FocusOut>", lambda _: on_installer_previous_versions_update())
-        installer_versions_spin.bind("<Return>", lambda _: on_installer_previous_versions_update())
 
         launch_delay_card = create_settings_card(
             roblox_tab,
