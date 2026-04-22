@@ -200,6 +200,17 @@ class RemoteAddonListing:
     html_url: str
 
 
+@dataclass(frozen=True)
+class InstanceManagerCardWidgets:
+    frame: tk.Frame
+    avatar_label: tk.Label
+    username_label: tk.Label
+    place_label: tk.Label
+    pid_label: tk.Label
+    status_label: tk.Label
+    actions_frame: tk.Frame
+
+
 def clamp_multi_launch_delay(value):
     """Clamp arbitrary input to the allowed multi-launch delay range."""
     try:
@@ -8267,25 +8278,48 @@ class AccountManagerUI:
 
         return pid_to_image
 
-    def _query_roblox_process_command_lines(self, executables):
+    def _query_roblox_process_command_lines(self, executables, pid_values: Optional[set[int]] = None):
         """Return pid->commandline for tracked Roblox executables via CIM."""
         pid_to_commandline = {}
         target_exes = {str(item).strip().lower() for item in (executables or set()) if item}
         if not target_exes:
             return pid_to_commandline
 
+        target_pids = None
+        if pid_values is not None:
+            target_pids = set()
+            for raw_pid in pid_values:
+                try:
+                    pid_value = int(raw_pid)
+                except Exception:
+                    continue
+                if pid_value > 0:
+                    target_pids.add(pid_value)
+            if not target_pids:
+                return pid_to_commandline
+
         process_names = sorted({name[:-4] if name.endswith(".exe") else name for name in target_exes})
         if not process_names:
             return pid_to_commandline
 
         escaped_names = ", ".join([f"'{name}'" for name in process_names])
-        ps_script = (
-            f"$names=@({escaped_names}); "
-            "Get-CimInstance Win32_Process | "
-            "Where-Object { $names -contains (($_.Name -replace '\\.exe$','').ToLower()) } | "
-            "Select-Object ProcessId,Name,CommandLine | "
-            "ConvertTo-Json -Compress"
-        )
+        if target_pids:
+            pid_filter = " OR ".join([f"ProcessId={pid_value}" for pid_value in sorted(target_pids)])
+            ps_script = (
+                f"$names=@({escaped_names}); "
+                f"Get-CimInstance Win32_Process -Filter \"{pid_filter}\" | "
+                "Where-Object { $names -contains (($_.Name -replace '\\.exe$','').ToLower()) } | "
+                "Select-Object ProcessId,Name,CommandLine | "
+                "ConvertTo-Json -Compress"
+            )
+        else:
+            ps_script = (
+                f"$names=@({escaped_names}); "
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $names -contains (($_.Name -replace '\\.exe$','').ToLower()) } | "
+                "Select-Object ProcessId,Name,CommandLine | "
+                "ConvertTo-Json -Compress"
+            )
 
         try:
             result = subprocess.run(
@@ -8389,9 +8423,22 @@ class AccountManagerUI:
         unique.reverse()
         return unique
 
-    def _query_pid_place_id_map(self, executables):
+    def _query_pid_place_id_map(self, executables, pid_values: Optional[set[int]] = None, allow_log_fallback=True):
         pid_to_place_id = {}
-        pid_to_commandline = self._query_roblox_process_command_lines(executables)
+        target_pids = None
+        if pid_values is not None:
+            target_pids = set()
+            for raw_pid in pid_values:
+                try:
+                    pid_value = int(raw_pid)
+                except Exception:
+                    continue
+                if pid_value > 0:
+                    target_pids.add(pid_value)
+            if not target_pids:
+                return pid_to_place_id
+
+        pid_to_commandline = self._query_roblox_process_command_lines(executables, pid_values=target_pids)
 
         for pid_value, command_line in pid_to_commandline.items():
             place_id = self._extract_place_id_from_command_line(command_line)
@@ -8405,15 +8452,18 @@ class AccountManagerUI:
             launch_context_map = {}
 
         for pid_value, context in launch_context_map.items():
-            if int(pid_value) in pid_to_place_id:
+            normalized_pid = int(pid_value)
+            if target_pids is not None and normalized_pid not in target_pids:
+                continue
+            if normalized_pid in pid_to_place_id:
                 continue
             normalized = self._normalize_launch_context(context)
             if normalized.get("mode") == "game":
                 game_id = str(normalized.get("game_id", "") or "").strip()
                 if game_id.isdigit():
-                    pid_to_place_id[int(pid_value)] = game_id
+                    pid_to_place_id[normalized_pid] = game_id
 
-        if not pid_to_place_id:
+        if allow_log_fallback and not pid_to_place_id and pid_to_commandline:
             recent_place_ids = self._read_recent_place_ids_from_logs(max_files=8)
             if recent_place_ids:
                 fallback_place_id = str(recent_place_ids[0] or "").strip()
@@ -12185,6 +12235,10 @@ class AccountManagerUI:
             "avatar_pending_user_id": set(),
             "user_id_by_username": {},
             "user_id_pending_username": set(),
+            "place_id_by_pid": {},
+            "place_id_retry_after_by_pid": {},
+            "cards_by_pid": {},
+            "card_columns": 0,
             "auto_refresh_after_id": None,
             "refresh_in_progress": False,
             "refresh_pending": False,
@@ -12197,6 +12251,7 @@ class AccountManagerUI:
             "robloxplayerlauncher.exe",
             "robloxstudiolauncherbeta.exe",
         })
+        metadata_retry_seconds = 15.0
 
         default_avatar = tk.PhotoImage(width=48, height=48)
         try:
@@ -12254,7 +12309,7 @@ class AccountManagerUI:
         host.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda _e: canvas.itemconfigure(host_id, width=canvas.winfo_width()))
 
-        def extract_account_from_title(title_text):
+        def extract_account_from_title(title_text: str) -> str:
             text = str(title_text or "").strip()
             if not text:
                 return ""
@@ -12264,12 +12319,12 @@ class AccountManagerUI:
                 return match.group(1)
             return ""
 
-        def fetch_avatar_async(user_id):
+        def fetch_avatar_async(user_id: str) -> None:
             if (not user_id) or user_id in state["avatar_photo_by_user_id"] or user_id in state["avatar_pending_user_id"]:
                 return
             state["avatar_pending_user_id"].add(user_id)
 
-            def worker():
+            def worker() -> None:
                 photo = None
                 try:
                     meta = RobloxAPI._get_http_session().get(
@@ -12286,7 +12341,7 @@ class AccountManagerUI:
                 except Exception:
                     photo = None
 
-                def done():
+                def done() -> None:
                     state["avatar_pending_user_id"].discard(user_id)
                     if photo is not None:
                         state["avatar_photo_by_user_id"][user_id] = photo
@@ -12296,7 +12351,7 @@ class AccountManagerUI:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def avatar_for(username):
+        def avatar_for(username: str) -> tk.PhotoImage:
             uname = str(username or "").strip()
             if not uname:
                 return default_avatar
@@ -12306,14 +12361,14 @@ class AccountManagerUI:
             if uname not in state["user_id_pending_username"]:
                 state["user_id_pending_username"].add(uname)
 
-                def worker():
+                def worker() -> None:
                     resolved = ""
                     try:
                         resolved = str(RobloxAPI.get_user_id_from_username(uname) or "").strip()
                     except Exception:
                         resolved = ""
 
-                    def done():
+                    def done() -> None:
                         state["user_id_pending_username"].discard(uname)
                         state["user_id_by_username"][uname] = resolved
                         if resolved:
@@ -12325,7 +12380,7 @@ class AccountManagerUI:
                 threading.Thread(target=worker, daemon=True).start()
             return default_avatar
 
-        def focus_pid(pid):
+        def focus_pid(pid: int) -> None:
             hwnd = state["pid_to_hwnd"].get(int(pid))
             if not hwnd:
                 return
@@ -12336,12 +12391,12 @@ class AccountManagerUI:
             except Exception:
                 pass
 
-        def kill_pids(pid_values):
+        def kill_pids(pid_values) -> None:
             pids = [int(pid) for pid in pid_values if str(pid).isdigit() and int(pid) > 0]
             if not pids:
                 return
 
-            def worker():
+            def worker() -> None:
                 for pid in pids:
                     try:
                         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, **subprocess_no_window_kwargs())
@@ -12351,7 +12406,7 @@ class AccountManagerUI:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def toggle_selected(pid, additive=False):
+        def toggle_selected(pid: int, additive=False) -> None:
             pid = int(pid)
             if additive:
                 if pid in state["selected"]:
@@ -12365,60 +12420,116 @@ class AccountManagerUI:
                     state["selected"] = {pid}
             render()
 
-        def render():
+        def filtered_rows() -> list[dict[str, Any]]:
             rows = list(state["rows"])
-            q = str(filter_var.get() or "").strip().lower()
-            sv = str(status_var.get() or "All").strip().lower()
-            if sv != "all":
-                rows = [r for r in rows if str(r.get("status", "")).strip().lower() == sv]
-            if q:
-                rows = [r for r in rows if q in f"{r.get('username','')} {r.get('place_id','')} {r.get('pid','')} {r.get('status','')}".lower()]
+            query_text = str(filter_var.get() or "").strip().lower()
+            status_text = str(status_var.get() or "All").strip().lower()
+            if status_text != "all":
+                rows = [row for row in rows if str(row.get("status", "")).strip().lower() == status_text]
+            if query_text:
+                rows = [
+                    row for row in rows
+                    if query_text in f"{row.get('username', '')} {row.get('place_id', '')} {row.get('pid', '')} {row.get('status', '')}".lower()
+                ]
+            return rows
 
-            visible = {int(r["pid"]) for r in rows}
-            state["selected"] = {pid for pid in state["selected"] if pid in visible}
-            for child in list(host.winfo_children()):
-                child.destroy()
+        def bind_card_widget(widget: tk.Widget, pid: int) -> None:
+            widget.bind("<Button-1>", lambda event, current_pid=pid: toggle_selected(current_pid, additive=bool(event.state & 0x0004)))
+            widget.bind("<Double-Button-1>", lambda _event, current_pid=pid: focus_pid(current_pid))
 
-            cols = 2 if int(canvas.winfo_width() or 1) >= 1120 else 1
-            for c in range(cols):
-                host.grid_columnconfigure(c, weight=1, uniform="cards")
+        def create_card(pid: int) -> InstanceManagerCardWidgets:
+            card = tk.Frame(host, bg="#0f192d", highlightthickness=1, highlightbackground="#203255", bd=0, padx=10, pady=10)
+            card.grid_columnconfigure(1, weight=1)
+            avatar_label = tk.Label(card, image=default_avatar, bg="#0f192d", bd=0)
+            avatar_label.image = default_avatar
+            avatar_label.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 10))
+            username_label = tk.Label(card, text="Unknown", bg="#0f192d", fg="#eef5ff", font=("Segoe UI Semibold", 12))
+            username_label.grid(row=0, column=1, sticky="w")
+            place_label = tk.Label(card, text="Place ID: Unknown", bg="#0f192d", fg="#9db2d0", font=("Consolas", 10))
+            place_label.grid(row=1, column=1, sticky="w", pady=(2, 0))
+            pid_label = tk.Label(card, text=f"PID: {pid}", bg="#0f192d", fg="#9db2d0", font=("Consolas", 10))
+            pid_label.grid(row=2, column=1, sticky="w", pady=(2, 0))
+            status_label = tk.Label(card, text="Running", bg="#1b2944", fg="#38d39f", font=("Segoe UI Semibold", 9), padx=8, pady=2)
+            status_label.grid(row=0, column=2, sticky="e")
+            actions_frame = tk.Frame(card, bg="#0f192d")
+            actions_frame.grid(row=2, column=2, sticky="e")
+            mbtn(actions_frame, "Focus", lambda current_pid=pid: focus_pid(current_pid)).pack(side="left", padx=(0, 6))
+            mbtn(actions_frame, "Kill", lambda current_pid=pid: kill_pids([current_pid]), danger=True).pack(side="left")
+            widgets = (card, avatar_label, username_label, place_label, pid_label, status_label, actions_frame)
+            for widget in widgets:
+                bind_card_widget(widget, pid)
+            return InstanceManagerCardWidgets(
+                frame=card,
+                avatar_label=avatar_label,
+                username_label=username_label,
+                place_label=place_label,
+                pid_label=pid_label,
+                status_label=status_label,
+                actions_frame=actions_frame,
+            )
 
-            for i, row in enumerate(rows):
+        def update_card(card_widgets: InstanceManagerCardWidgets, row: dict[str, Any], selected: bool) -> None:
+            pid = int(row["pid"])
+            background = "#13223a" if selected else "#0f192d"
+            avatar = avatar_for(str(row.get("username", "")))
+            status_text = str(row.get("status", "Running"))
+            status_color = "#38d39f" if status_text.lower() == "running" else "#ffc34d"
+            card_widgets.frame.configure(bg=background)
+            card_widgets.avatar_label.configure(image=avatar, bg=background)
+            card_widgets.avatar_label.image = avatar
+            card_widgets.username_label.configure(text=str(row.get("username", "Unknown")), bg=background)
+            card_widgets.place_label.configure(text=f"Place ID: {row.get('place_id', 'Unknown')}", bg=background)
+            card_widgets.pid_label.configure(text=f"PID: {pid}", bg=background)
+            card_widgets.status_label.configure(text=status_text, fg=status_color)
+            card_widgets.actions_frame.configure(bg=background)
+
+        def render() -> None:
+            rows = filtered_rows()
+            visible_pids = {int(row["pid"]) for row in rows}
+            state["selected"] = {pid for pid in state["selected"] if pid in visible_pids}
+
+            cards_by_pid = state["cards_by_pid"]
+            for pid in list(cards_by_pid.keys()):
+                if pid in visible_pids:
+                    continue
+                try:
+                    cards_by_pid[pid].frame.destroy()
+                except Exception:
+                    pass
+                cards_by_pid.pop(pid, None)
+
+            column_count = 2 if int(canvas.winfo_width() or 1) >= 1120 else 1
+            if int(state.get("card_columns", 0) or 0) != column_count:
+                for column in range(2):
+                    host.grid_columnconfigure(column, weight=1 if column < column_count else 0, uniform="cards" if column < column_count else "")
+                state["card_columns"] = column_count
+
+            for index, row in enumerate(rows):
                 pid = int(row["pid"])
-                bg = "#13223a" if pid in state["selected"] else "#0f192d"
-                card = tk.Frame(host, bg=bg, highlightthickness=1, highlightbackground="#203255", bd=0, padx=10, pady=10)
-                card.grid(row=i // cols, column=i % cols, sticky="ew", padx=8, pady=8)
-                card.grid_columnconfigure(1, weight=1)
-                avatar = avatar_for(row.get("username"))
-                avatar_label = tk.Label(card, image=avatar, bg=bg, bd=0)
-                avatar_label.image = avatar
-                avatar_label.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 10))
+                card_widgets = cards_by_pid.get(pid)
+                if card_widgets is None:
+                    card_widgets = create_card(pid)
+                    cards_by_pid[pid] = card_widgets
+                update_card(card_widgets, row, selected=pid in state["selected"])
+                card_widgets.frame.grid(row=index // column_count, column=index % column_count, sticky="ew", padx=8, pady=8)
 
-                status_text = str(row.get("status", "Running"))
-                status_color = "#38d39f" if status_text.lower() == "running" else "#ffc34d"
-                tk.Label(card, text=str(row.get("username", "Unknown")), bg=bg, fg="#eef5ff", font=("Segoe UI Semibold", 12)).grid(row=0, column=1, sticky="w")
-                tk.Label(card, text=f"Place ID: {row.get('place_id', 'Unknown')}", bg=bg, fg="#9db2d0", font=("Consolas", 10)).grid(row=1, column=1, sticky="w", pady=(2, 0))
-                tk.Label(card, text=f"PID: {pid}", bg=bg, fg="#9db2d0", font=("Consolas", 10)).grid(row=2, column=1, sticky="w", pady=(2, 0))
-                tk.Label(card, text=status_text, bg="#1b2944", fg=status_color, font=("Segoe UI Semibold", 9), padx=8, pady=2).grid(row=0, column=2, sticky="e")
-                row_actions = tk.Frame(card, bg=bg)
-                row_actions.grid(row=2, column=2, sticky="e")
-                mbtn(row_actions, "Focus", lambda p=pid: focus_pid(p)).pack(side="left", padx=(0, 6))
-                mbtn(row_actions, "Kill", lambda p=pid: kill_pids([p]), danger=True).pack(side="left")
-
-                for widget in (card, avatar_label):
-                    widget.bind("<Button-1>", lambda evt, p=pid: toggle_selected(p, additive=bool(evt.state & 0x0004)))
-                    widget.bind("<Double-Button-1>", lambda _evt, p=pid: focus_pid(p))
-
-            running_count = len(state["rows"])
-            loaded_var.set(f"{running_count} running instance(s)")
+            loaded_var.set(f"{len(state['rows'])} running instance(s)")
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-        def snapshot():
+        def snapshot(from_auto=False):
             pid_to_image = self._query_tasklist_pid_map(target_exes)
             pid_to_hwnd = {}
             pid_to_title = {}
             pid_to_hung = {}
-            pid_to_place = self._query_pid_place_id_map(target_exes)
+            place_id_by_pid = {
+                int(pid): str(place_id or "").strip()
+                for pid, place_id in dict(state.get("place_id_by_pid", {})).items()
+                if str(place_id or "").strip()
+            }
+            place_id_retry_after_by_pid = {
+                int(pid): float(retry_after or 0.0)
+                for pid, retry_after in dict(state.get("place_id_retry_after_by_pid", {})).items()
+            }
 
             def enum_handler(hwnd, _):
                 if not win32gui.IsWindowVisible(hwnd) or win32gui.GetWindow(hwnd, win32con.GW_OWNER):
@@ -12446,6 +12557,40 @@ class AccountManagerUI:
             except Exception:
                 pass
 
+            running_pids = {int(pid) for pid in pid_to_image.keys()}
+            for pid in list(place_id_by_pid.keys()):
+                if pid not in running_pids:
+                    place_id_by_pid.pop(pid, None)
+                    place_id_retry_after_by_pid.pop(pid, None)
+
+            metadata_target_pids = set()
+            if running_pids:
+                if from_auto:
+                    now = time.monotonic()
+                    for pid in running_pids:
+                        if str(place_id_by_pid.get(pid, "") or "").strip():
+                            continue
+                        retry_after = float(place_id_retry_after_by_pid.get(pid, 0.0) or 0.0)
+                        if now >= retry_after:
+                            metadata_target_pids.add(pid)
+                else:
+                    metadata_target_pids = set(running_pids)
+
+            if metadata_target_pids:
+                resolved_place_ids = self._query_pid_place_id_map(
+                    target_exes,
+                    pid_values=metadata_target_pids,
+                    allow_log_fallback=True,
+                )
+                retry_at = time.monotonic() + metadata_retry_seconds
+                for pid in metadata_target_pids:
+                    resolved_place_id = str(resolved_place_ids.get(pid, "") or "").strip()
+                    if resolved_place_id:
+                        place_id_by_pid[pid] = resolved_place_id
+                        place_id_retry_after_by_pid.pop(pid, None)
+                    else:
+                        place_id_retry_after_by_pid[pid] = retry_at
+
             rows = []
             for pid in sorted(pid_to_image.keys()):
                 mapped = ""
@@ -12458,13 +12603,13 @@ class AccountManagerUI:
                 rows.append({
                     "pid": int(pid),
                     "username": username,
-                    "place_id": str(pid_to_place.get(int(pid), "") or "").strip() or "Unknown",
+                    "place_id": str(place_id_by_pid.get(int(pid), "") or "").strip() or "Unknown",
                     "status": "Not Responding" if pid_to_hung.get(int(pid)) else "Running",
                     "hwnd": pid_to_hwnd.get(int(pid)),
                 })
-            return rows
+            return rows, place_id_by_pid, place_id_retry_after_by_pid
 
-        def refresh(from_auto=False):
+        def refresh(from_auto=False) -> None:
             if state["closing"]:
                 return
             if state["refresh_in_progress"]:
@@ -12473,18 +12618,22 @@ class AccountManagerUI:
                 return
             state["refresh_in_progress"] = True
 
-            def worker():
+            def worker() -> None:
                 try:
-                    rows = snapshot()
+                    rows, place_id_by_pid, place_id_retry_after_by_pid = snapshot(from_auto=from_auto)
                 except Exception:
                     rows = []
+                    place_id_by_pid = dict(state.get("place_id_by_pid", {}))
+                    place_id_retry_after_by_pid = dict(state.get("place_id_retry_after_by_pid", {}))
 
-                def done():
+                def done() -> None:
                     state["refresh_in_progress"] = False
                     if state["closing"]:
                         return
                     state["rows"] = rows
-                    state["pid_to_hwnd"] = {int(r["pid"]): r.get("hwnd") for r in rows}
+                    state["pid_to_hwnd"] = {int(row["pid"]): row.get("hwnd") for row in rows}
+                    state["place_id_by_pid"] = place_id_by_pid
+                    state["place_id_retry_after_by_pid"] = place_id_retry_after_by_pid
                     render()
                     if state["refresh_pending"]:
                         state["refresh_pending"] = False

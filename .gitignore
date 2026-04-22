@@ -46,6 +46,7 @@ tmp/
 htmlcov/
 debug/
 test.py
+build_exe2.bat
 
 # lang lang
 languages/
