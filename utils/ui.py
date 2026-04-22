@@ -11935,7 +11935,7 @@ class AccountManagerUI:
             state["avatar_pending_user_id"].add(user_id)
 
             def worker():
-                photo = None
+                image_data = ""
                 try:
                     api_url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=48x48&format=Png"
                     resp = RobloxAPI._get_http_session().get(api_url, timeout=8)
@@ -11945,11 +11945,17 @@ class AccountManagerUI:
                     if image_url:
                         img_resp = RobloxAPI._get_http_session().get(image_url, timeout=8)
                         if img_resp.content:
-                            photo = tk.PhotoImage(data=base64.b64encode(img_resp.content).decode("ascii"))
+                            image_data = base64.b64encode(img_resp.content).decode("ascii")
                 except Exception:
-                    photo = None
+                    image_data = ""
 
                 def apply():
+                    photo = None
+                    if image_data:
+                        try:
+                            photo = tk.PhotoImage(data=image_data)
+                        except Exception:
+                            photo = None
                     state["avatar_pending_user_id"].discard(user_id)
                     if photo is not None:
                         state["avatar_photo_by_user_id"][user_id] = photo
@@ -12325,7 +12331,7 @@ class AccountManagerUI:
             state["avatar_pending_user_id"].add(user_id)
 
             def worker() -> None:
-                photo = None
+                image_data = ""
                 try:
                     meta = RobloxAPI._get_http_session().get(
                         f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=48x48&format=Png",
@@ -12337,11 +12343,17 @@ class AccountManagerUI:
                     if image_url:
                         img = RobloxAPI._get_http_session().get(image_url, timeout=8)
                         if img.content:
-                            photo = tk.PhotoImage(data=base64.b64encode(img.content).decode("ascii"))
+                            image_data = base64.b64encode(img.content).decode("ascii")
                 except Exception:
-                    photo = None
+                    image_data = ""
 
                 def done() -> None:
+                    photo = None
+                    if image_data:
+                        try:
+                            photo = tk.PhotoImage(data=image_data)
+                        except Exception:
+                            photo = None
                     state["avatar_pending_user_id"].discard(user_id)
                     if photo is not None:
                         state["avatar_photo_by_user_id"][user_id] = photo
