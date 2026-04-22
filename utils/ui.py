@@ -962,7 +962,7 @@ class AccountManagerUI:
         "robloxplayerbeta.exe",
         "robloxplayerlauncher.exe",
     }
-    KEEP_CLIENTS_ARRANGED_INTERVAL_MS = 1500
+    KEEP_CLIENTS_ARRANGED_INTERVAL_MS = 5000
 
     def __init__(self, root, manager, icon_path=None):
         self.root = root
@@ -1037,6 +1037,10 @@ class AccountManagerUI:
         self._http_session_lock = threading.Lock()
         self._settings_save_after_ids = {}
         self._discord_button_image = None
+        self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
+        self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
+        self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
+        self._recent_place_id_log_cache = {"ts": 0.0, "values": []}
 
         self.global_settings_window = None
         self.global_settings_values = None
@@ -4506,7 +4510,7 @@ class AccountManagerUI:
         self._save_custom_themes_to_disk()
         return merged
 
-    def _load_discord_button_image(self, size=32):
+    def _load_discord_button_image(self, size=32, allow_network=True):
         """Load Discord logo PNG for the settings header button (cached under AccountManagerData/cache)."""
         if self._discord_button_image is not None:
             return self._discord_button_image
@@ -4539,8 +4543,11 @@ class AccountManagerUI:
             if image is not None:
                 return image
 
+        if not allow_network:
+            return None
+
         try:
-            response = requests.get(DISCORD_LOGO_URL, timeout=10)
+            response = self._get_http_session().get(DISCORD_LOGO_URL, timeout=5)
             if response.status_code == 200 and response.content.startswith(b"\x89PNG\r\n\x1a\n"):
                 with open(png_path, "wb") as cache_fp:
                     cache_fp.write(response.content)
@@ -7052,11 +7059,11 @@ class AccountManagerUI:
         """Automatically tile active Roblox client windows on the primary monitor."""
         if platform.system() != "Windows" or not win32gui:
             if show_feedback:
-                messagebox.showerror("Auto-Arrange Clients", "This feature is only available on Windows.") # it only supports windows :sob:
+                messagebox.showerror("Auto-Arrange Clients", "This feature is only available on Windows.")
             return False
 
         try:
-            roblox_windows = self._get_roblox_client_windows()
+            roblox_windows = self._get_roblox_client_windows(use_cache=False)
         except Exception as exc:
             if show_feedback:
                 messagebox.showerror("Auto-Arrange Clients", f"Failed to detect Roblox clients:\n{exc}")
@@ -7171,7 +7178,7 @@ class AccountManagerUI:
         def worker():
             next_signature = None
             try:
-                roblox_windows = self._get_roblox_client_windows()
+                roblox_windows = self._get_roblox_client_windows(use_cache=True)
                 next_signature = self._get_roblox_window_signature(roblox_windows)
                 if roblox_windows and next_signature != previous_signature:
                     next_signature = self._arrange_roblox_client_windows(roblox_windows)
@@ -7207,6 +7214,8 @@ class AccountManagerUI:
     def _notify_roblox_windows_changed(self, success_count, delay_ms=2000):
         if int(success_count or 0) <= 0:
             return
+        self._invalidate_tracked_process_caches()
+        self._invalidate_active_client_indicator_cache()
         if not self.settings.get("keep_roblox_clients_arranged", False):
             return
         self._schedule_keep_clients_arranged_check(
@@ -7214,44 +7223,14 @@ class AccountManagerUI:
             reset_signature=True,
         )
 
-    def _get_roblox_client_windows(self):
+    def _get_roblox_client_windows(self, use_cache=True):
         """Return a list of HWNDs for visible Roblox client windows."""
-        windows = []
-        if not win32gui or not win32process:
-            return windows
-
-        pid_to_image = self._query_tasklist_pid_map(self.ROBLOX_CLIENT_EXECUTABLES)
-        if not pid_to_image:
-            return windows
-
-        target_pids = {int(pid_value) for pid_value in pid_to_image.keys()}
-        seen = set()
-        def enum_handler(hwnd, _):
-            if hwnd in seen:
-                return True
-            if not win32gui.IsWindowVisible(hwnd):
-                return True
-
-            if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
-                return True
-
-            try:
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            except Exception:
-                return True
-
-            if int(pid) not in target_pids:
-                return True
-
-            if hwnd not in seen:
-                seen.add(hwnd)
-                windows.append(hwnd)
-            return True
-
-        try:
-            win32gui.EnumWindows(enum_handler, None)
-        except Exception:
-            return windows
+        snapshot = self._get_tracked_window_snapshot(
+            self.ROBLOX_CLIENT_EXECUTABLES,
+            use_cache=use_cache,
+        )
+        windows = list((snapshot.get("pid_to_hwnd", {}) or {}).values())
+        windows.sort(key=int)
         return windows
 
     def _get_monitor_work_areas(self):
@@ -8227,10 +8206,15 @@ class AccountManagerUI:
 
         threading.Thread(target=worker, args=(usernames, launch_delay, on_done_callback), daemon=True).start()
 
+    def _invalidate_tracked_process_caches(self):
+        self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
+        self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
+        self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
+
     def _get_running_tracked_roblox_pid_set(self):
         return set(self._query_tasklist_pid_map(getattr(self, "_tracked_roblox_exes", set())).keys())
 
-    def _query_tasklist_pid_map(self, executables):
+    def _query_tasklist_pid_map(self, executables, use_cache=True):
         """Return pid->image_name for the provided executable names via tasklist."""
         pid_to_image = {}
         if not executables:
@@ -8240,6 +8224,22 @@ class AccountManagerUI:
         if not target_exes:
             return pid_to_image
 
+        cache_ttl_seconds = 1.0
+        cache = getattr(self, "_tasklist_pid_cache", None)
+        now = time.monotonic()
+        if (
+            use_cache
+            and isinstance(cache, dict)
+            and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
+        ):
+            cached_pid_to_image = cache.get("pid_to_image", {})
+            if isinstance(cached_pid_to_image, dict):
+                return {
+                    int(pid_value): image_name
+                    for pid_value, image_name in cached_pid_to_image.items()
+                    if str(image_name or "").strip().lower() in target_exes
+                }
+
         try:
             result = subprocess.run(
                 ["tasklist", "/FO", "CSV", "/NH"],
@@ -8247,7 +8247,7 @@ class AccountManagerUI:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=8,
+                timeout=4,
                 **subprocess_no_window_kwargs(),
             )
         except Exception:
@@ -8262,23 +8262,111 @@ class AccountManagerUI:
         except Exception:
             return pid_to_image
 
+        all_pid_to_image = {}
         for row in rows:
             if not row or len(row) < 2:
                 continue
             image_name = (row[0] or "").strip().strip('"')
-            if not image_name or image_name.lower() not in target_exes:
-                continue
             pid_text = (row[1] or "").strip().strip('"')
             try:
                 pid_value = int(pid_text)
             except Exception:
                 continue
-            if pid_value > 0:
+            if pid_value <= 0 or not image_name:
+                continue
+            all_pid_to_image[pid_value] = image_name
+            if image_name.lower() in target_exes:
                 pid_to_image[pid_value] = image_name
+
+        if all_pid_to_image:
+            self._tasklist_pid_cache = {
+                "ts": now,
+                "pid_to_image": all_pid_to_image,
+            }
 
         return pid_to_image
 
-    def _query_roblox_process_command_lines(self, executables, pid_values: Optional[set[int]] = None):
+    def _get_tracked_window_snapshot(self, executables, use_cache=True):
+        target_exes = tuple(sorted({
+            str(item).strip().lower()
+            for item in (executables or set())
+            if item
+        }))
+        if not target_exes:
+            return {
+                "pid_to_image": {},
+                "pid_to_hwnd": {},
+                "pid_to_title": {},
+                "pid_to_hung": {},
+            }
+
+        cache_ttl_seconds = 0.75
+        cache = getattr(self, "_tracked_window_snapshot_cache", None)
+        now = time.monotonic()
+        if (
+            use_cache
+            and isinstance(cache, dict)
+            and tuple(cache.get("key", ())) == target_exes
+            and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
+        ):
+            snapshot = dict(cache.get("snapshot", {}) or {})
+            return {
+                "pid_to_image": dict(snapshot.get("pid_to_image", {}) or {}),
+                "pid_to_hwnd": dict(snapshot.get("pid_to_hwnd", {}) or {}),
+                "pid_to_title": dict(snapshot.get("pid_to_title", {}) or {}),
+                "pid_to_hung": dict(snapshot.get("pid_to_hung", {}) or {}),
+            }
+
+        pid_to_image = self._query_tasklist_pid_map(target_exes, use_cache=use_cache)
+        pid_to_hwnd = {}
+        pid_to_title = {}
+        pid_to_hung = {}
+        target_pids = {int(pid_value) for pid_value in pid_to_image.keys()}
+
+        if target_pids and win32gui and win32process:
+            def enum_handler(hwnd, _):
+                if not win32gui.IsWindowVisible(hwnd) or win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                    return True
+                try:
+                    _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
+                except Exception:
+                    return True
+                normalized_pid = int(pid_value)
+                if normalized_pid not in target_pids:
+                    return True
+                pid_to_hwnd.setdefault(normalized_pid, hwnd)
+                try:
+                    title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
+                except Exception:
+                    title_text = ""
+                if title_text:
+                    pid_to_title.setdefault(normalized_pid, title_text)
+                try:
+                    if bool(ctypes.windll.user32.IsHungAppWindow(int(hwnd))):
+                        pid_to_hung[normalized_pid] = True
+                except Exception:
+                    pass
+                return True
+
+            try:
+                win32gui.EnumWindows(enum_handler, None)
+            except Exception:
+                pass
+
+        snapshot = {
+            "pid_to_image": dict(pid_to_image),
+            "pid_to_hwnd": dict(pid_to_hwnd),
+            "pid_to_title": dict(pid_to_title),
+            "pid_to_hung": dict(pid_to_hung),
+        }
+        self._tracked_window_snapshot_cache = {
+            "ts": now,
+            "key": target_exes,
+            "snapshot": snapshot,
+        }
+        return snapshot
+
+    def _query_roblox_process_command_lines(self, executables, pid_values: Optional[set[int]] = None, use_cache=True):
         """Return pid->commandline for tracked Roblox executables via CIM."""
         pid_to_commandline = {}
         target_exes = {str(item).strip().lower() for item in (executables or set()) if item}
@@ -8297,6 +8385,25 @@ class AccountManagerUI:
                     target_pids.add(pid_value)
             if not target_pids:
                 return pid_to_commandline
+
+        cache_ttl_seconds = 10.0
+        cache = getattr(self, "_roblox_command_line_cache", None)
+        cache_key = tuple(sorted(target_exes))
+        now = time.monotonic()
+        if (
+            use_cache
+            and isinstance(cache, dict)
+            and tuple(cache.get("key", ())) == cache_key
+            and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
+        ):
+            cached_pid_to_commandline = dict(cache.get("pid_to_commandline", {}) or {})
+            if target_pids is None:
+                return cached_pid_to_commandline
+            return {
+                pid_value: command_line
+                for pid_value, command_line in cached_pid_to_commandline.items()
+                if int(pid_value) in target_pids
+            }
 
         process_names = sorted({name[:-4] if name.endswith(".exe") else name for name in target_exes})
         if not process_names:
@@ -8328,7 +8435,7 @@ class AccountManagerUI:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=10,
+                timeout=6,
                 **subprocess_no_window_kwargs(),
             )
         except Exception:
@@ -8356,6 +8463,22 @@ class AccountManagerUI:
             command_line = str(row.get("CommandLine", "") or "").strip()
             pid_to_commandline[pid_value] = command_line
 
+        if pid_to_commandline:
+            cached_pid_to_commandline = {}
+            if (
+                use_cache
+                and isinstance(cache, dict)
+                and tuple(cache.get("key", ())) == cache_key
+                and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
+            ):
+                cached_pid_to_commandline = dict(cache.get("pid_to_commandline", {}) or {})
+            cached_pid_to_commandline.update(pid_to_commandline)
+            self._roblox_command_line_cache = {
+                "ts": now,
+                "key": cache_key,
+                "pid_to_commandline": cached_pid_to_commandline,
+            }
+
         return pid_to_commandline
 
     def _extract_place_id_from_command_line(self, command_line):
@@ -8377,6 +8500,14 @@ class AccountManagerUI:
         return ""
 
     def _read_recent_place_ids_from_logs(self, max_files=12):
+        cache = getattr(self, "_recent_place_id_log_cache", None)
+        now = time.monotonic()
+        if (
+            isinstance(cache, dict)
+            and (now - float(cache.get("ts", 0.0) or 0.0)) < 15.0
+        ):
+            return list(cache.get("values", []) or [])
+
         place_ids = []
         logs_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Roblox", "logs")
         if not os.path.isdir(logs_dir):
@@ -8421,9 +8552,10 @@ class AccountManagerUI:
             seen.add(place_id)
             unique.append(place_id)
         unique.reverse()
+        self._recent_place_id_log_cache = {"ts": now, "values": list(unique)}
         return unique
 
-    def _query_pid_place_id_map(self, executables, pid_values: Optional[set[int]] = None, allow_log_fallback=True):
+    def _query_pid_place_id_map(self, executables, pid_values: Optional[set[int]] = None, allow_log_fallback=True, use_cache=True):
         pid_to_place_id = {}
         target_pids = None
         if pid_values is not None:
@@ -8438,7 +8570,11 @@ class AccountManagerUI:
             if not target_pids:
                 return pid_to_place_id
 
-        pid_to_commandline = self._query_roblox_process_command_lines(executables, pid_values=target_pids)
+        pid_to_commandline = self._query_roblox_process_command_lines(
+            executables,
+            pid_values=target_pids,
+            use_cache=use_cache,
+        )
 
         for pid_value, command_line in pid_to_commandline.items():
             place_id = self._extract_place_id_from_command_line(command_line)
@@ -9044,7 +9180,7 @@ class AccountManagerUI:
         try:
             result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq RobloxPlayerBeta.exe'], 
                                   capture_output=True, text=True, encoding='utf-8', errors='replace',
-                                  timeout=10,
+                                  timeout=4,
                                   **subprocess_no_window_kwargs()) 
             
             if result.stdout and 'RobloxPlayerBeta.exe' in result.stdout:
@@ -9059,7 +9195,7 @@ class AccountManagerUI:
                 if response == 'yes':
                     subprocess.run(['taskkill', '/F', '/IM', 'RobloxPlayerBeta.exe'], 
                                  capture_output=True, text=True, encoding='utf-8', errors='replace',
-                                 timeout=10,
+                                 timeout=4,
                                  **subprocess_no_window_kwargs()) 
                     self.show_success_message("All Roblox instances have been closed.")
                 else:
@@ -9180,7 +9316,7 @@ class AccountManagerUI:
                 parent=settings_window,
             )
 
-        discord_image = self._load_discord_button_image(size=32)
+        discord_image = self._load_discord_button_image(size=32, allow_network=False)
         if discord_image is not None:
             self._settings_discord_icon = discord_image
             discord_click_target = tk.Label(
@@ -9206,6 +9342,28 @@ class AccountManagerUI:
 
         discord_click_target.bind("<Button-1>", lambda _e: open_discord_server())
         discord_click_target.pack(side="right", padx=(8, 0), pady=(0, 8))
+        if discord_image is None:
+            def load_discord_image():
+                fetched_image = self._load_discord_button_image(size=32, allow_network=True)
+                if fetched_image is None:
+                    return
+
+                def apply_discord_image():
+                    try:
+                        if not settings_window.winfo_exists() or not discord_click_target.winfo_exists():
+                            return
+                    except Exception:
+                        return
+                    self._settings_discord_icon = fetched_image
+                    discord_click_target.configure(image=fetched_image, text="")
+                    discord_click_target.image = fetched_image
+
+                try:
+                    self.root.after(0, apply_discord_image)
+                except Exception:
+                    pass
+
+            threading.Thread(target=load_discord_image, daemon=True, name="load-discord-icon").start()
         
         topmost_var = tk.BooleanVar(value=self.settings.get("enable_topmost", False))
         multi_roblox_var = tk.BooleanVar(value=self.settings.get("enable_multi_roblox", False))
@@ -12257,7 +12415,7 @@ class AccountManagerUI:
             "robloxplayerlauncher.exe",
             "robloxstudiolauncherbeta.exe",
         })
-        metadata_retry_seconds = 15.0
+        metadata_retry_seconds = 60.0
 
         default_avatar = tk.PhotoImage(width=48, height=48)
         try:
@@ -12277,7 +12435,7 @@ class AccountManagerUI:
         filter_var = tk.StringVar()
         status_var = tk.StringVar(value="All")
         auto_refresh_var = tk.BooleanVar(value=True)
-        interval_var = tk.IntVar(value=2)
+        interval_var = tk.IntVar(value=5)
         tk.Label(controls, text="Search", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
         search_entry = ttk.Entry(controls, textvariable=filter_var, style="Dark.TEntry")
         search_entry.grid(row=0, column=1, sticky="ew")
@@ -12414,6 +12572,8 @@ class AccountManagerUI:
                         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, **subprocess_no_window_kwargs())
                     except Exception:
                         pass
+                self._invalidate_tracked_process_caches()
+                self._invalidate_active_client_indicator_cache()
                 self.root.after(0, lambda: refresh(False))
 
             threading.Thread(target=worker, daemon=True).start()
@@ -12529,10 +12689,14 @@ class AccountManagerUI:
             canvas.configure(scrollregion=canvas.bbox("all"))
 
         def snapshot(from_auto=False):
-            pid_to_image = self._query_tasklist_pid_map(target_exes)
-            pid_to_hwnd = {}
-            pid_to_title = {}
-            pid_to_hung = {}
+            tracked_snapshot = self._get_tracked_window_snapshot(
+                target_exes,
+                use_cache=from_auto,
+            )
+            pid_to_image = dict(tracked_snapshot.get("pid_to_image", {}) or {})
+            pid_to_hwnd = dict(tracked_snapshot.get("pid_to_hwnd", {}) or {})
+            pid_to_title = dict(tracked_snapshot.get("pid_to_title", {}) or {})
+            pid_to_hung = dict(tracked_snapshot.get("pid_to_hung", {}) or {})
             place_id_by_pid = {
                 int(pid): str(place_id or "").strip()
                 for pid, place_id in dict(state.get("place_id_by_pid", {})).items()
@@ -12542,32 +12706,6 @@ class AccountManagerUI:
                 int(pid): float(retry_after or 0.0)
                 for pid, retry_after in dict(state.get("place_id_retry_after_by_pid", {})).items()
             }
-
-            def enum_handler(hwnd, _):
-                if not win32gui.IsWindowVisible(hwnd) or win32gui.GetWindow(hwnd, win32con.GW_OWNER):
-                    return True
-                try:
-                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                except Exception:
-                    return True
-                if int(pid) not in pid_to_image:
-                    return True
-                pid_to_hwnd[int(pid)] = hwnd
-                try:
-                    pid_to_title[int(pid)] = str(win32gui.GetWindowText(hwnd) or "").strip()
-                except Exception:
-                    pid_to_title[int(pid)] = ""
-                try:
-                    if bool(ctypes.windll.user32.IsHungAppWindow(int(hwnd))):
-                        pid_to_hung[int(pid)] = True
-                except Exception:
-                    pass
-                return True
-
-            try:
-                win32gui.EnumWindows(enum_handler, None)
-            except Exception:
-                pass
 
             running_pids = {int(pid) for pid in pid_to_image.keys()}
             for pid in list(place_id_by_pid.keys()):
@@ -12592,7 +12730,8 @@ class AccountManagerUI:
                 resolved_place_ids = self._query_pid_place_id_map(
                     target_exes,
                     pid_values=metadata_target_pids,
-                    allow_log_fallback=True,
+                    allow_log_fallback=not from_auto,
+                    use_cache=from_auto,
                 )
                 retry_at = time.monotonic() + metadata_retry_seconds
                 for pid in metadata_target_pids:
@@ -12670,9 +12809,24 @@ class AccountManagerUI:
             try:
                 interval = int(interval_var.get())
             except Exception:
-                interval = 2
+                interval = 5
             interval = max(1, min(30, interval))
-            state["auto_refresh_after_id"] = window.after(interval * 1000, lambda: refresh(True))
+            state["auto_refresh_after_id"] = window.after(interval * 1000, auto_refresh_tick)
+
+        def auto_refresh_tick() -> None:
+            state["auto_refresh_after_id"] = None
+            if state["closing"] or not auto_refresh_var.get():
+                return
+            try:
+                if str(window.state()) == "iconic":
+                    schedule_auto_refresh()
+                    return
+            except Exception:
+                pass
+            if state["refresh_in_progress"]:
+                schedule_auto_refresh()
+                return
+            refresh(True)
 
         def focus_selected():
             selected = sorted(int(pid) for pid in state["selected"] if int(pid) > 0)
@@ -12727,6 +12881,53 @@ class AccountManagerUI:
                 monitor.stop()
             except Exception:
                 pass
+
+        try:
+            self._auto_relaunch_stop()
+        except Exception:
+            pass
+
+        try:
+            self._auto_memory_trim_stop()
+        except Exception:
+            pass
+
+        try:
+            self._cancel_keep_clients_arranged_check()
+        except Exception:
+            pass
+
+        for after_id_name in (
+            "_game_name_after_id",
+            "_game_name_label_after_id",
+        ):
+            after_id = getattr(self, after_id_name, None)
+            if after_id is None:
+                continue
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+            setattr(self, after_id_name, None)
+
+        for pending_after_id in list(getattr(self, "_settings_save_after_ids", {}).values()):
+            try:
+                self.root.after_cancel(pending_after_id)
+            except Exception:
+                pass
+        self._settings_save_after_ids = {}
+
+        try:
+            if self._http_session is not None:
+                self._http_session.close()
+        except Exception:
+            pass
+        self._http_session = None
+
+        try:
+            RobloxAPI.close_http_session()
+        except Exception:
+            pass
 
         try:
             self.root.destroy()

@@ -130,7 +130,7 @@ def _apply_update_mode(argv):
         return 1
 
 
-def setup_icon(data_folder):
+def setup_icon(data_folder, allow_network=True):
     icon_path = os.path.join(data_folder, "icon.ico")
 
     if not os.path.isfile(icon_path):
@@ -141,7 +141,7 @@ def setup_icon(data_folder):
             except Exception:
                 pass
 
-    if not os.path.isfile(icon_path):
+    if allow_network and not os.path.isfile(icon_path):
         try:
             response = requests.get(
                 "https://raw.githubusercontent.com/hackyue/ForkedRobloxAccountManager/Windows/icon.ico",
@@ -244,7 +244,7 @@ def main():
         messagebox.showerror("Error", f"Failed to initialize: {e}")
         return
 
-    icon_path = setup_icon(data_folder)
+    icon_path = setup_icon(data_folder, allow_network=False)
 
     set_windows_app_user_model_id()
     root = tk.Tk()
@@ -256,6 +256,25 @@ def main():
 
     app = AccountManagerUI(root, manager, icon_path=icon_path)
     install_bug_issue_hooks(root, app)
+
+    if not icon_path:
+        def _load_icon_async():
+            downloaded_icon_path = setup_icon(data_folder, allow_network=True)
+            if not downloaded_icon_path:
+                return
+
+            def _apply_icon():
+                try:
+                    root.iconbitmap(default=downloaded_icon_path)
+                except Exception:
+                    pass
+
+            try:
+                root.after(0, _apply_icon)
+            except Exception:
+                pass
+
+        threading.Thread(target=_load_icon_async, daemon=True, name="load-app-icon").start()
 
     auto_rejoin_monitor = AutoRejoinMonitor(
         launch_callback=app.launch_auto_rejoin_session,

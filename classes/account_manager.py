@@ -12,6 +12,7 @@ import hashlib
 import shutil
 import subprocess
 import re
+import threading
 from urllib.parse import urlparse, parse_qs
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -33,7 +34,7 @@ from .roblox_api import RobloxAPI
 
 
 class RobloxAccountManager:
-    LOGIN_DETECTION_INTERVAL_SECONDS = 0.1
+    LOGIN_DETECTION_INTERVAL_SECONDS = 0.25
     _SELENIUM_POPEN_KW = {
         "creation_flags": getattr(subprocess, "CREATE_NO_WINDOW", 0)
     } if os.name == "nt" else {}
@@ -66,6 +67,8 @@ class RobloxAccountManager:
         
         self.accounts = self.load_accounts()
         self.temp_profile_dir = None
+        self.temp_profile_dirs = set()
+        self._temp_profile_lock = threading.Lock()
         self.auto_rejoin_monitor = None
         
     def load_accounts(self):
@@ -188,16 +191,36 @@ class RobloxAccountManager:
 
     def create_temp_profile(self):
         """Create a temporary browser profile directory"""
-        self.temp_profile_dir = tempfile.mkdtemp(prefix="roblox_login_")
-        return self.temp_profile_dir
+        profile_dir = tempfile.mkdtemp(prefix="roblox_login_")
+        with self._temp_profile_lock:
+            self.temp_profile_dir = profile_dir
+            self.temp_profile_dirs.add(profile_dir)
+        return profile_dir
     
-    def cleanup_temp_profile(self):
+    def cleanup_temp_profile(self, profile_dir=None):
         """Clean up temporary profile directory"""
-        if self.temp_profile_dir and os.path.exists(self.temp_profile_dir):
+        with self._temp_profile_lock:
+            if profile_dir:
+                targets = [str(profile_dir)]
+            elif self.temp_profile_dirs:
+                targets = list(self.temp_profile_dirs)
+            elif self.temp_profile_dir:
+                targets = [self.temp_profile_dir]
+            else:
+                targets = []
+        for target in targets:
+            if not target:
+                continue
             try:
-                shutil.rmtree(self.temp_profile_dir)
-            except:
+                if os.path.exists(target):
+                    shutil.rmtree(target)
+            except Exception:
                 pass
+            finally:
+                with self._temp_profile_lock:
+                    self.temp_profile_dirs.discard(target)
+                    if self.temp_profile_dir == target:
+                        self.temp_profile_dir = None
 
     def _is_browser_installed(self, browser_name):
         """Best-effort check for local browser executable presence."""
@@ -260,59 +283,63 @@ class RobloxAccountManager:
     def _setup_chrome_driver(self, headless=False):
         """Setup Chrome driver with speed-oriented options."""
         profile_dir = self.create_temp_profile()
-
-        chrome_options = Options()
-        chrome_options.add_argument(f"--user-data-dir={profile_dir}")
-        chrome_options.add_argument("--no-first-run")
-        chrome_options.add_argument("--no-default-browser-check")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-        chrome_options.add_argument("--log-level=3")
-        chrome_options.add_argument("--silent")
-        chrome_options.add_argument("--disable-logging")
-        chrome_options.add_argument("--disable-gpu-logging")
-        chrome_options.add_argument("--disable-dev-tools")
-        chrome_options.add_argument("--no-default-browser-check")
-        chrome_options.add_argument("--disable-default-apps")
-        chrome_options.add_argument("--disable-web-security")
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-
-        exclude_switches = {"enable-automation", "enable-logging"}
-        chrome_options.add_experimental_option("excludeSwitches", sorted(exclude_switches))
-
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-plugins")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees")
-        chrome_options.add_argument("--disable-background-timer-throttling")
-        chrome_options.add_argument("--disable-renderer-backgrounding")
-        chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-        chrome_options.add_argument("--disable-component-extensions-with-background-pages")
-        chrome_options.add_argument("--disable-ipc-flooding-protection")
-        chrome_options.add_argument("--disable-hang-monitor")
-        chrome_options.add_argument("--disable-prompt-on-repost")
-        chrome_options.add_argument("--disable-domain-reliability")
-        chrome_options.add_argument("--disable-component-update")
-        chrome_options.add_argument("--disable-background-networking")
-        chrome_options.add_argument("--aggressive-cache-discard")
-        if headless:
-            chrome_options.add_argument("--headless=new")
-            chrome_options.add_argument("--window-size=520,700")
-
-        service = Service(
-            ChromeDriverManager().install(),
-            log_path=os.devnull,
-            popen_kw=self._SELENIUM_POPEN_KW.copy(),
-        )
-        driver = webdriver.Chrome(service=service, options=chrome_options)
         try:
-            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            chrome_options = Options()
+            chrome_options.add_argument(f"--user-data-dir={profile_dir}")
+            chrome_options.add_argument("--no-first-run")
+            chrome_options.add_argument("--no-default-browser-check")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+
+            chrome_options.add_argument("--log-level=3")
+            chrome_options.add_argument("--silent")
+            chrome_options.add_argument("--disable-logging")
+            chrome_options.add_argument("--disable-gpu-logging")
+            chrome_options.add_argument("--disable-dev-tools")
+            chrome_options.add_argument("--no-default-browser-check")
+            chrome_options.add_argument("--disable-default-apps")
+            chrome_options.add_argument("--disable-web-security")
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+
+            exclude_switches = {"enable-automation", "enable-logging"}
+            chrome_options.add_experimental_option("excludeSwitches", sorted(exclude_switches))
+
+            chrome_options.add_argument("--disable-extensions")
+            chrome_options.add_argument("--disable-plugins")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees")
+            chrome_options.add_argument("--disable-background-timer-throttling")
+            chrome_options.add_argument("--disable-renderer-backgrounding")
+            chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+            chrome_options.add_argument("--disable-component-extensions-with-background-pages")
+            chrome_options.add_argument("--disable-ipc-flooding-protection")
+            chrome_options.add_argument("--disable-hang-monitor")
+            chrome_options.add_argument("--disable-prompt-on-repost")
+            chrome_options.add_argument("--disable-domain-reliability")
+            chrome_options.add_argument("--disable-component-update")
+            chrome_options.add_argument("--disable-background-networking")
+            chrome_options.add_argument("--aggressive-cache-discard")
+            if headless:
+                chrome_options.add_argument("--headless=new")
+                chrome_options.add_argument("--window-size=520,700")
+
+            service = Service(
+                ChromeDriverManager().install(),
+                log_path=os.devnull,
+                popen_kw=self._SELENIUM_POPEN_KW.copy(),
+            )
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            setattr(driver, "_ram_temp_profile_dir", profile_dir)
+            try:
+                driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            except Exception:
+                pass
+            return driver
         except Exception:
-            pass
-        return driver
+            self.cleanup_temp_profile(profile_dir)
+            raise
 
     def _setup_firefox_driver(self, headless=False):
         """Setup Firefox driver with compatible performance options."""
@@ -320,27 +347,32 @@ class RobloxAccountManager:
             raise RuntimeError("Firefox Selenium support is unavailable in this environment.")
 
         profile_dir = self.create_temp_profile()
+        try:
+            firefox_options = FirefoxOptions()
+            firefox_options.add_argument("-profile")
+            firefox_options.add_argument(profile_dir)
+            firefox_options.set_preference("dom.webdriver.enabled", False)
+            firefox_options.set_preference("useAutomationExtension", False)
+            firefox_options.set_preference("toolkit.telemetry.reportingpolicy.firstRun", False)
+            firefox_options.set_preference("datareporting.healthreport.uploadEnabled", False)
+            firefox_options.set_preference("browser.startup.homepage_override.mstone", "ignore")
+            firefox_options.set_preference("browser.shell.checkDefaultBrowser", False)
+            firefox_options.set_preference("app.update.auto", False)
+            firefox_options.set_preference("app.update.enabled", False)
+            if headless:
+                firefox_options.add_argument("-headless")
 
-        firefox_options = FirefoxOptions()
-        firefox_options.add_argument("-profile")
-        firefox_options.add_argument(profile_dir)
-        firefox_options.set_preference("dom.webdriver.enabled", False)
-        firefox_options.set_preference("useAutomationExtension", False)
-        firefox_options.set_preference("toolkit.telemetry.reportingpolicy.firstRun", False)
-        firefox_options.set_preference("datareporting.healthreport.uploadEnabled", False)
-        firefox_options.set_preference("browser.startup.homepage_override.mstone", "ignore")
-        firefox_options.set_preference("browser.shell.checkDefaultBrowser", False)
-        firefox_options.set_preference("app.update.auto", False)
-        firefox_options.set_preference("app.update.enabled", False)
-        if headless:
-            firefox_options.add_argument("-headless")
-
-        service = FirefoxService(
-            GeckoDriverManager().install(),
-            log_output=os.devnull,
-            popen_kw=self._SELENIUM_POPEN_KW.copy(),
-        )
-        return webdriver.Firefox(service=service, options=firefox_options)
+            service = FirefoxService(
+                GeckoDriverManager().install(),
+                log_output=os.devnull,
+                popen_kw=self._SELENIUM_POPEN_KW.copy(),
+            )
+            driver = webdriver.Firefox(service=service, options=firefox_options)
+            setattr(driver, "_ram_temp_profile_dir", profile_dir)
+            return driver
+        except Exception:
+            self.cleanup_temp_profile(profile_dir)
+            raise
 
     def setup_browser_driver(self, preferred_browser=None, headless=False):
         """
@@ -365,7 +397,6 @@ class RobloxAccountManager:
                     return driver, browser_name
                 except Exception as exc:
                     attempted.append((browser_name, str(exc)))
-                    self.cleanup_temp_profile()
 
             for browser_name in self._get_browser_preference_order(preferred_browser):
                 try:
@@ -376,7 +407,6 @@ class RobloxAccountManager:
                     return driver, browser_name
                 except Exception as exc:
                     attempted.append((browser_name, str(exc)))
-                    self.cleanup_temp_profile()
         finally:
             sys.stderr = original_stderr
             if stderr_devnull is not None:
@@ -518,6 +548,7 @@ class RobloxAccountManager:
         
         start_time = time.time()
         last_debug_time = 0
+        last_password_probe_time = 0.0
 
         def cleanup_detection():
             try:
@@ -537,29 +568,31 @@ class RobloxAccountManager:
                     if isinstance(js_password, str) and js_password:
                         captured_password = js_password
 
-                try:
-                    password_fields = driver.find_elements(
-                        By.CSS_SELECTOR,
-                        "input#login-password, input[name='password'], input[type='password']"
-                    )
-                    for password_field in password_fields:
-                        try:
-                            field_value = password_field.get_attribute("value")
-                        except Exception:
-                            field_value = ""
-                        if isinstance(field_value, str) and field_value:
-                            captured_password = field_value
-                            break
-                except Exception:
-                    pass
+                current_time = time.time()
+                if (current_time - last_password_probe_time) >= 0.75:
+                    last_password_probe_time = current_time
+                    try:
+                        password_fields = driver.find_elements(
+                            By.CSS_SELECTOR,
+                            "input#login-password, input[name='password'], input[type='password']"
+                        )
+                        for password_field in password_fields:
+                            try:
+                                field_value = password_field.get_attribute("value")
+                            except Exception:
+                                field_value = ""
+                            if isinstance(field_value, str) and field_value:
+                                captured_password = field_value
+                                break
+                    except Exception:
+                        pass
 
                 if result and result.get('detected'):
                     method = result.get('method', 'url_only')
                     print(f"[SUCCESS] LOGIN DETECTED! Method: {method} - Closing browser instantly...")
                     cleanup_detection()
                     return True, captured_password
-                
-                current_time = time.time()
+
                 if current_time - last_debug_time > 5:
                     last_debug_time = current_time
                     try:
@@ -890,7 +923,7 @@ class RobloxAccountManager:
                     driver.quit()
                 except Exception:
                     pass
-            self.cleanup_temp_profile()
+                self.cleanup_temp_profile(getattr(driver, "_ram_temp_profile_dir", None))
     
     def add_account(self, amount=1, website="https://www.roblox.com/login", javascript="", preferred_browser="auto"):
         """
@@ -993,8 +1026,9 @@ class RobloxAccountManager:
                     completed[driver_index] = True
                     try:
                         driver.quit()
-                    except:
+                    except Exception:
                         pass
+                    self.cleanup_temp_profile(getattr(driver, "_ram_temp_profile_dir", None))
             
             threads = []
             for i in range(len(drivers)):
@@ -1005,9 +1039,6 @@ class RobloxAccountManager:
             for thread in threads:
                 thread.join()
             
-            for driver in drivers:
-                self.cleanup_temp_profile()
-            
             return success_count > 0
                 
         except Exception as e:
@@ -1015,8 +1046,9 @@ class RobloxAccountManager:
             for driver in drivers:
                 try:
                     driver.quit()
-                except:
+                except Exception:
                     pass
+                self.cleanup_temp_profile(getattr(driver, "_ram_temp_profile_dir", None))
             return False
 
     def add_accounts_from_credentials(self, credentials, timeout_per_account=120, preferred_browser="auto"):
@@ -1131,7 +1163,7 @@ class RobloxAccountManager:
                         driver.quit()
                     except Exception:
                         pass
-                self.cleanup_temp_profile()
+                    self.cleanup_temp_profile(getattr(driver, "_ram_temp_profile_dir", None))
 
         return success_count
     

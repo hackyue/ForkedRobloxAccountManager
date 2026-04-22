@@ -71,6 +71,17 @@ class RobloxAPI:
         return RobloxAPI._http_session
 
     @staticmethod
+    def close_http_session():
+        session = RobloxAPI._http_session
+        RobloxAPI._http_session = None
+        if session is None:
+            return
+        try:
+            session.close()
+        except Exception:
+            pass
+
+    @staticmethod
     def _log_debug(enabled, message):
         if enabled:
             print(f"[DEBUG] {message}")

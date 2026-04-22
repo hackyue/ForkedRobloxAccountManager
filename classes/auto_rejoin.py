@@ -272,12 +272,16 @@ class AutoRejoinMonitor:
     def _run(self):
         while not self._stop_event.is_set():
             self._expire_manual_stop_grace()
-            usernames = self._get_usernames()
+            usernames, process_states, visible_window_pids = self._build_monitor_snapshot()
             for username in usernames:
                 if self._stop_event.is_set():
                     return
                 try:
-                    self._monitor_session(username)
+                    self._monitor_session(
+                        username,
+                        process_states=process_states,
+                        visible_window_pids=visible_window_pids,
+                    )
                 except Exception as exc:
                     self._log(f"[AUTO REJOIN] Monitor error for {username}: {exc}")
             self._stop_event.wait(self.LOOP_INTERVAL_SECONDS)
@@ -285,6 +289,22 @@ class AutoRejoinMonitor:
     def _get_usernames(self):
         with self._lock:
             return list(self.active_sessions.keys())
+
+    def _build_monitor_snapshot(self):
+        with self._lock:
+            usernames = list(self.active_sessions.keys())
+            pid_values = {
+                self._normalize_int(session.pid, default=0, minimum=0)
+                for session in self.active_sessions.values()
+            }
+
+        tracked_pids = {pid_value for pid_value in pid_values if pid_value > 0}
+        process_states = {
+            pid_value: self._is_process_running(pid_value)
+            for pid_value in tracked_pids
+        }
+        visible_window_pids = self._get_visible_window_pids(tracked_pids)
+        return usernames, process_states, visible_window_pids
 
     def _expire_manual_stop_grace(self):
         now = time.monotonic()
@@ -297,7 +317,7 @@ class AutoRejoinMonitor:
             for username in expired:
                 self._manual_stop_grace.pop(username, None)
 
-    def _monitor_session(self, username):
+    def _monitor_session(self, username, process_states=None, visible_window_pids=None):
         with self._lock:
             session = self.active_sessions.get(username)
             if session is None:
@@ -311,8 +331,20 @@ class AutoRejoinMonitor:
             user_id = str(session.user_id or "").strip()
             cookie = str(session.cookie or "").strip()
 
-        process_running = bool(pid_value and self._is_process_running(pid_value))
-        window_exists = bool(pid_value and self._window_exists_for_pid(pid_value))
+        process_running = bool(
+            pid_value and (
+                process_states.get(pid_value)
+                if isinstance(process_states, dict)
+                else self._is_process_running(pid_value)
+            )
+        )
+        window_exists = bool(
+            pid_value and (
+                pid_value in visible_window_pids
+                if isinstance(visible_window_pids, set)
+                else self._window_exists_for_pid(pid_value)
+            )
+        )
 
         with self._lock:
             session = self.active_sessions.get(username)
@@ -762,3 +794,51 @@ class AutoRejoinMonitor:
         except Exception:
             return False
         return found["value"]
+
+    @staticmethod
+    def _get_visible_window_pids(pid_values):
+        normalized_pid_values = {
+            AutoRejoinMonitor._normalize_int(pid_value, default=0, minimum=0)
+            for pid_value in (pid_values or set())
+        }
+        normalized_pid_values.discard(0)
+        if (
+            not normalized_pid_values
+            or platform.system() != "Windows"
+            or win32gui is None
+            or win32process is None
+        ):
+            return set()
+
+        visible_pids = set()
+
+        def _enum_handler(hwnd, _):
+            if not win32gui.IsWindowVisible(hwnd):
+                return True
+            try:
+                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            except Exception:
+                return True
+            normalized_window_pid = AutoRejoinMonitor._normalize_int(
+                window_pid,
+                default=0,
+                minimum=0,
+            )
+            if normalized_window_pid not in normalized_pid_values:
+                return True
+            title = ""
+            try:
+                title = str(win32gui.GetWindowText(hwnd) or "").strip()
+            except Exception:
+                title = ""
+            if title or win32gui.GetClassName(hwnd) == "WINDOWSCLIENT":
+                visible_pids.add(normalized_window_pid)
+                if len(visible_pids) >= len(normalized_pid_values):
+                    return False
+            return True
+
+        try:
+            win32gui.EnumWindows(_enum_handler, None)
+        except Exception:
+            return set()
+        return visible_pids
