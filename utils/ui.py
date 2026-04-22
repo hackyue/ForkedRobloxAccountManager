@@ -22,6 +22,7 @@ import atexit
 import platform
 import time
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 from requests.adapters import HTTPAdapter
@@ -66,6 +67,8 @@ DISCORD_LOGO_URL = (
 ADDITIONAL_THEMES_URL = (
     "https://raw.githubusercontent.com/hackyue/FRAMAssets/refs/heads/main/Themes/themes.json"
 )
+FRAM_ASSETS_ADDONS_WEB_URL = "https://github.com/hackyue/FRAMAssets/tree/main/Addons"
+FRAM_ASSETS_ADDONS_API_URL = "https://api.github.com/repos/hackyue/FRAMAssets/contents/Addons"
 
 
 
@@ -188,6 +191,13 @@ WS_MINIMIZEBOX = 0x00020000
 INVALID_ACCOUNT_SYMBOL = "\u26A0"
 AUTO_REJOIN_SYMBOL = "\u21BB"
 ACTIVE_CLIENT_SYMBOL = "\u2B24"
+
+
+@dataclass(frozen=True)
+class RemoteAddonListing:
+    file_name: str
+    download_url: str
+    html_url: str
 
 
 def clamp_multi_launch_delay(value):
@@ -855,7 +865,7 @@ def get_console_output_buffer():
 
 
 class FRAMAddonAPI:
-    def __init__(self, ui, addon_name, addon_path):
+    def __init__(self, ui, addon_name, addon_path, addon_fram_version=""):
         self.ui = ui
         self.root = ui.root
         self.manager = ui.manager
@@ -864,6 +874,8 @@ class FRAMAddonAPI:
         self.addons_folder = ui.addons_folder
         self.addon_name = str(addon_name or "Addon").strip() or "Addon"
         self.addon_path = str(addon_path or "").strip()
+        self.fram_version = str(getattr(ui, "APP_VERSION", "unknown") or "unknown").strip() or "unknown"
+        self.addon_fram_version = str(addon_fram_version or "").strip()
         self.tk = tk
         self.ttk = ttk
 
@@ -2461,12 +2473,14 @@ class AccountManagerUI:
 
         template_path = os.path.join(addons_dir, "_template_addon.py")
         if not os.path.exists(template_path):
+            current_fram_version = str(getattr(self, "APP_VERSION", "unknown") or "unknown").strip() or "unknown"
             template_text = (
                 "\"\"\"FRAM addon template.\n"
                 "Rename this file so it no longer starts with an underscore to load it.\n"
                 "\"\"\"\n\n"
                 "ADDON_NAME = \"Example Addon\"\n"
-                "ADDON_DESCRIPTION = \"Opened from Settings > Tools > Utilities.\"\n\n"
+                "ADDON_DESCRIPTION = \"Opened from Settings > Tools > Utilities.\"\n"
+                f"ADDON_FRAM_VERSION = \"{current_fram_version}\"\n\n"
                 "def build_tab(parent, api):\n"
                 "    from tkinter import ttk\n\n"
                 "    ttk.Label(\n"
@@ -2512,6 +2526,67 @@ class AccountManagerUI:
                 parent=owner_window or getattr(self, "addons_window", None) or self.root,
             )
             return False
+
+    def _get_remote_addon_target_path(self, file_name: str) -> Path:
+        normalized_name = Path(str(file_name or "")).name
+        if not normalized_name or normalized_name != str(file_name or ""):
+            raise RuntimeError("Remote addon filename is invalid.")
+        if not normalized_name.lower().endswith(".py"):
+            raise RuntimeError("Remote addon is not a Python file.")
+        return Path(self._ensure_addons_folder()) / normalized_name
+
+    def _fetch_remote_addon_listings(self) -> list[RemoteAddonListing]:
+        headers = {"Accept": "application/vnd.github+json"}
+        response = self._get_http_session().get(FRAM_ASSETS_ADDONS_API_URL, headers=headers, timeout=12)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("FRAMAssets returned an unexpected addons payload.")
+
+        listings: list[RemoteAddonListing] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+
+            item_type = str(item.get("type") or "").strip().lower()
+            file_name = str(item.get("name") or "").strip()
+            download_url = str(item.get("download_url") or "").strip()
+            html_url = str(item.get("html_url") or "").strip() or FRAM_ASSETS_ADDONS_WEB_URL
+
+            if item_type != "file":
+                continue
+            if not file_name.lower().endswith(".py"):
+                continue
+            if file_name.startswith("_"):
+                continue
+            if not download_url:
+                continue
+
+            listings.append(
+                RemoteAddonListing(
+                    file_name=file_name,
+                    download_url=download_url,
+                    html_url=html_url,
+                )
+            )
+
+        listings.sort(key=lambda listing: listing.file_name.lower())
+        return listings
+
+    def _download_remote_addon_listing(self, listing: RemoteAddonListing) -> Path:
+        target_path = self._get_remote_addon_target_path(listing.file_name)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        response = self._get_http_session().get(listing.download_url, timeout=30)
+        response.raise_for_status()
+        content = bytes(response.content or b"")
+        if not content:
+            raise RuntimeError("The selected addon download was empty.")
+
+        temp_path = target_path.with_name(f"{target_path.name}.tmp")
+        temp_path.write_bytes(content)
+        temp_path.replace(target_path)
+        return target_path
 
     def _get_addon_file_paths(self):
         addons_dir = self._ensure_addons_folder()
@@ -2583,6 +2658,7 @@ class AccountManagerUI:
                 "file_label": file_label,
                 "name": os.path.splitext(file_label)[0],
                 "description": "",
+                "fram_version": "",
                 "module": None,
                 "builder": None,
                 "traceback": "",
@@ -2595,6 +2671,7 @@ class AccountManagerUI:
                 entry["builder"] = builder
                 entry["name"] = str(getattr(module, "ADDON_NAME", entry["name"]) or "").strip() or entry["name"]
                 entry["description"] = str(getattr(module, "ADDON_DESCRIPTION", "") or "").strip()
+                entry["fram_version"] = str(getattr(module, "ADDON_FRAM_VERSION", "") or "").strip()
                 loaded_count += 1
             except Exception:
                 entry["kind"] = "error"
@@ -2973,6 +3050,7 @@ class AccountManagerUI:
             frame = tk.Frame(content_host, bg=self.BG_MID, highlightthickness=0, bd=0)
             frame.grid_columnconfigure(0, weight=1)
             frame.grid_columnconfigure(1, weight=1)
+            frame.grid_rowconfigure(1, weight=1)
 
             intro_card, intro_body = create_section_card(
                 frame,
@@ -2984,7 +3062,7 @@ class AccountManagerUI:
                 "1. Put a .py script in AccountManagerData/addons",
                 "2. Keep the filename from starting with '_'",
                 "3. Define build_tab(parent, api)",
-                "4. Optionally set ADDON_NAME and ADDON_DESCRIPTION",
+                "4. Optionally set ADDON_NAME, ADDON_DESCRIPTION, and ADDON_FRAM_VERSION",
             ]
             tk.Label(
                 intro_body,
@@ -3007,7 +3085,7 @@ class AccountManagerUI:
                 "launch_game / launch_home / launch_home_app",
                 "refresh_accounts / refresh_game_list",
                 "show_info / show_error / show_success",
-                "data_folder / addons_folder / open_addons_folder",
+                "data_folder / addons_folder / fram_version / open_addons_folder",
             ]
             tk.Label(
                 api_body,
@@ -3019,18 +3097,269 @@ class AccountManagerUI:
                 justify="left",
             ).pack(anchor="w")
 
-            files_card, files_body = create_section_card(
+            remote_card = tk.Frame(
                 frame,
-                "Detected Scripts",
-                "Anything listed here is eligible to load unless the import or UI build fails.",
+                bg=self.BG_LIGHT,
+                highlightbackground=self.BORDER_COLOR,
+                highlightthickness=1,
+                bd=0,
+                padx=12,
+                pady=12,
             )
-            files_card.grid(row=1, column=0, columnspan=2, sticky="nsew")
+            remote_card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 12))
+            remote_card.grid_columnconfigure(0, weight=1)
+            remote_card.grid_rowconfigure(1, weight=1)
 
-            addon_files = [entry["file_label"] for entry in state.get("entries", [])]
-            files_text = "\n".join(f"- {file_name}" for file_name in addon_files)
-            if not files_text:
-                files_text = "No addon scripts found yet."
-            create_text_area(files_body, files_text, height=10)
+            remote_header = tk.Frame(remote_card, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
+            remote_header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+            remote_header.grid_columnconfigure(0, weight=1)
+
+            remote_text = tk.Frame(remote_header, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
+            remote_text.grid(row=0, column=0, sticky="ew")
+
+            tk.Label(
+                remote_text,
+                text="Download Addons",
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                font=section_title_font,
+                anchor="w",
+                justify="left",
+            ).pack(anchor="w")
+
+            tk.Label(
+                remote_text,
+                text="Browse public FRAM addons and install them.",
+                bg=self.BG_LIGHT,
+                fg=self.FG_MUTED,
+                font=small_font,
+                anchor="w",
+                justify="left",
+                wraplength=420,
+            ).pack(anchor="w", pady=(4, 0))
+
+            remote_actions = tk.Frame(remote_header, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
+            remote_actions.grid(row=0, column=1, sticky="ne", padx=(12, 0))
+
+            remote_body = tk.Frame(remote_card, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
+            remote_body.grid(row=1, column=0, sticky="nsew")
+            remote_body.grid_columnconfigure(0, weight=1)
+            remote_body.grid_rowconfigure(0, weight=1)
+
+            remote_download_button = ttk.Button(
+                remote_actions,
+                text="Download Selected",
+                style="Dark.TButton",
+                state="disabled",
+            )
+            remote_download_button.pack(side="left")
+
+            remote_view_button = ttk.Button(
+                remote_actions,
+                text="View On GitHub",
+                style="Dark.TButton",
+            )
+            remote_view_button.pack(side="left", padx=(6, 0))
+
+            remote_list_frame = tk.Frame(remote_body, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
+            remote_list_frame.grid(row=0, column=0, sticky="nsew")
+            remote_list_frame.grid_rowconfigure(0, weight=1)
+            remote_list_frame.grid_columnconfigure(0, weight=1)
+
+            remote_list = tk.Listbox(
+                remote_list_frame,
+                bg=self.LIST_BG,
+                fg=self.FG_TEXT,
+                selectbackground=self.FG_ACCENT,
+                selectforeground=self.FG_TEXT,
+                highlightbackground=self.BORDER_COLOR,
+                highlightcolor=self.BORDER_COLOR,
+                relief="flat",
+                borderwidth=0,
+                activestyle="none",
+                exportselection=False,
+                font=("Segoe UI", 10),
+                height=7,
+            )
+            remote_list.grid(row=0, column=0, sticky="nsew")
+            remote_list_scroll = ttk.Scrollbar(remote_list_frame, orient="vertical", command=remote_list.yview)
+            remote_list_scroll.grid(row=0, column=1, sticky="ns")
+            remote_list.configure(yscrollcommand=remote_list_scroll.set)
+
+            remote_state = {
+                "entries": [],
+                "load_generation": 0,
+                "download_generation": 0,
+                "loading": False,
+                "downloading": False,
+            }
+
+            def is_overview_alive():
+                try:
+                    return bool(frame.winfo_exists())
+                except Exception:
+                    return False
+
+            def get_remote_parent():
+                return owner_window or getattr(self, "addons_window", None) or self.root
+
+            def get_selected_remote_listing():
+                selection = remote_list.curselection()
+                if not selection:
+                    return None
+                index = int(selection[0])
+                entries = list(remote_state.get("entries", []))
+                if index < 0 or index >= len(entries):
+                    return None
+                return entries[index]
+
+            def format_remote_listing_label(listing):
+                try:
+                    target_path = self._get_remote_addon_target_path(listing.file_name)
+                except RuntimeError:
+                    return listing.file_name
+                if target_path.is_file():
+                    return f"{listing.file_name} (Installed)"
+                return listing.file_name
+
+            def open_selected_remote_listing():
+                listing = get_selected_remote_listing()
+                target_url = listing.html_url if listing is not None else FRAM_ASSETS_ADDONS_WEB_URL
+                try:
+                    import webbrowser as std_webbrowser
+                    std_webbrowser.open(target_url, new=2)
+                except Exception:
+                    pass
+
+            def update_remote_selection_details(_event=None):
+                listing = get_selected_remote_listing()
+                can_download = (
+                    listing is not None
+                    and not bool(remote_state.get("loading"))
+                    and not bool(remote_state.get("downloading"))
+                )
+                remote_download_button.configure(state="normal" if can_download else "disabled")
+
+            def render_remote_catalog():
+                remote_list.delete(0, tk.END)
+                entries = list(remote_state.get("entries", []))
+                if not entries:
+                    remote_list.insert(tk.END, "No downloadable addons found.")
+                    remote_list.selection_clear(0, tk.END)
+                    remote_download_button.configure(state="disabled")
+                    return
+                for listing in entries:
+                    remote_list.insert(tk.END, format_remote_listing_label(listing))
+                remote_list.selection_clear(0, tk.END)
+                remote_list.selection_set(0)
+                remote_list.activate(0)
+                update_remote_selection_details()
+
+            def refresh_remote_catalog():
+                if not is_overview_alive():
+                    return
+                remote_state["load_generation"] = int(remote_state.get("load_generation", 0)) + 1
+                generation = int(remote_state["load_generation"])
+                remote_state["loading"] = True
+                remote_state["entries"] = []
+                remote_list.delete(0, tk.END)
+                remote_list.insert(tk.END, "Loading remote addons...")
+                remote_download_button.configure(state="disabled")
+
+                def worker():
+                    try:
+                        listings = self._fetch_remote_addon_listings()
+                    except Exception as exc:
+                        def apply_error(error_message=str(exc)):
+                            if not is_overview_alive() or generation != int(remote_state.get("load_generation", 0)):
+                                return
+                            remote_state["loading"] = False
+                            remote_list.delete(0, tk.END)
+                            remote_list.insert(tk.END, "Unable to load remote addons.")
+                            remote_download_button.configure(state="disabled")
+                            schedule_owner_window_fit()
+
+                        self.root.after(0, apply_error)
+                        return
+
+                    def apply_success(remote_listings=listings):
+                        if not is_overview_alive() or generation != int(remote_state.get("load_generation", 0)):
+                            return
+                        remote_state["loading"] = False
+                        remote_state["entries"] = list(remote_listings)
+                        render_remote_catalog()
+                        schedule_owner_window_fit()
+
+                    self.root.after(0, apply_success)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            def download_selected_remote_listing():
+                if bool(remote_state.get("loading")) or bool(remote_state.get("downloading")):
+                    return
+
+                listing = get_selected_remote_listing()
+                if listing is None:
+                    return
+
+                try:
+                    target_path = self._get_remote_addon_target_path(listing.file_name)
+                except RuntimeError as exc:
+                    messagebox.showerror("Addons", str(exc), parent=get_remote_parent())
+                    return
+
+                if target_path.is_file():
+                    overwrite = messagebox.askyesno(
+                        "Addons",
+                        (
+                            f"{listing.file_name} already exists in your addons folder.\n\n"
+                            "Do you want to replace it with the FRAMAssets version?"
+                        ),
+                        parent=get_remote_parent(),
+                    )
+                    if not overwrite:
+                        return
+
+                remote_state["download_generation"] = int(remote_state.get("download_generation", 0)) + 1
+                generation = int(remote_state["download_generation"])
+                remote_state["downloading"] = True
+                remote_download_button.configure(state="disabled")
+
+                def worker():
+                    try:
+                        self._download_remote_addon_listing(listing)
+                    except Exception as exc:
+                        def apply_error(error_message=str(exc), listing_name=listing.file_name):
+                            if not is_overview_alive() or generation != int(remote_state.get("download_generation", 0)):
+                                return
+                            remote_state["downloading"] = False
+                            update_remote_selection_details()
+                            messagebox.showerror(
+                                "Addons",
+                                f"Failed to download {listing_name}:\n{error_message}",
+                                parent=get_remote_parent(),
+                            )
+
+                        self.root.after(0, apply_error)
+                        return
+
+                    def apply_success(listing_name=listing.file_name):
+                        if not is_overview_alive() or generation != int(remote_state.get("download_generation", 0)):
+                            return
+                        remote_state["downloading"] = False
+                        self.show_success_message(f"Downloaded addon: {listing_name}")
+                        reload_addons()
+
+                    self.root.after(0, apply_success)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            remote_download_button.configure(command=download_selected_remote_listing)
+            remote_view_button.configure(command=open_selected_remote_listing)
+            remote_list.bind("<<ListboxSelect>>", update_remote_selection_details)
+            remote_list.bind("<Double-Button-1>", lambda _event: download_selected_remote_listing())
+
+            refresh_remote_catalog()
             return frame
 
         def build_error_frame(entry):
@@ -3074,7 +3403,12 @@ class AccountManagerUI:
             addon_host.pack(fill="both", expand=True)
 
             try:
-                api = FRAMAddonAPI(self, entry.get("name", "Addon"), entry.get("file_path", ""))
+                api = FRAMAddonAPI(
+                    self,
+                    entry.get("name", "Addon"),
+                    entry.get("file_path", ""),
+                    addon_fram_version=entry.get("fram_version", ""),
+                )
                 build_result = entry["builder"](addon_host, api)
                 if isinstance(build_result, tk.Widget) and not build_result.winfo_manager():
                     build_result.pack(fill="both", expand=True)
@@ -3104,7 +3438,7 @@ class AccountManagerUI:
             if state.get("overview_frame") is None:
                 state["overview_frame"] = build_overview_frame()
             detail_title_var.set("FRAM Addons")
-            detail_subtitle_var.set("Review the library, loader contract, and discovered scripts before opening an addon.")
+            detail_subtitle_var.set("Review the library, loader contract, and available downloads before opening an addon.")
             detail_path_var.set(f"Folder: {self.addons_folder}")
             set_badge("overview")
             show_frame(state["overview_frame"])
@@ -3123,7 +3457,12 @@ class AccountManagerUI:
             if entry.get("kind") == "error":
                 detail_subtitle_var.set("This script was detected but failed to load cleanly.")
             else:
-                detail_subtitle_var.set(entry.get("description", "") or "This addon loaded successfully and exposed a FRAM addon view.")
+                description = entry.get("description", "") or "This addon loaded successfully and exposed a FRAM addon view."
+                fram_version = str(entry.get("fram_version", "") or "").strip()
+                if fram_version:
+                    detail_subtitle_var.set(f"{description} Built for FRAM {fram_version}.")
+                else:
+                    detail_subtitle_var.set(description)
             detail_path_var.set(entry.get("file_path", ""))
             set_badge(entry.get("kind"))
             show_frame(frame)
