@@ -980,6 +980,9 @@ class AccountManagerUI:
         self._auto_memory_trim_in_progress = False
         self._keep_clients_arranged_after_id = None
         self._keep_clients_arranged_last_signature = None
+        self._keep_clients_arranged_check_in_progress = False
+        self._keep_clients_arranged_check_pending = False
+        self._keep_clients_arranged_generation = 0
         self._auto_update_check_started = False
         self._auto_update_prompt_shown = False
 
@@ -7065,19 +7068,14 @@ class AccountManagerUI:
             return False
 
         try:
-            self._arrange_windows_on_primary_monitor(roblox_windows)
+            arranged_signature = self._arrange_roblox_client_windows(roblox_windows)
         except Exception as exc:
             if show_feedback:
                 messagebox.showerror("Auto-Arrange Clients", f"Failed to arrange Roblox clients:\n{exc}")
             return False
 
         if self.settings.get("keep_roblox_clients_arranged", False):
-            try:
-                self._keep_clients_arranged_last_signature = self._get_roblox_window_signature(
-                    self._get_roblox_client_windows()
-                )
-            except Exception:
-                self._keep_clients_arranged_last_signature = None
+            self._keep_clients_arranged_last_signature = arranged_signature
 
         if show_feedback:
             self.show_success_message(
@@ -7085,6 +7083,10 @@ class AccountManagerUI:
                 title="Auto-Arrange Clients"
             )
         return True
+
+    def _arrange_roblox_client_windows(self, roblox_windows):
+        self._arrange_windows_on_primary_monitor(roblox_windows)
+        return self._get_roblox_window_signature(roblox_windows)
 
     def _cancel_keep_clients_arranged_check(self):
         after_id = getattr(self, "_keep_clients_arranged_after_id", None)
@@ -7104,6 +7106,8 @@ class AccountManagerUI:
         if not enabled:
             self._cancel_keep_clients_arranged_check()
             self._keep_clients_arranged_last_signature = None
+            self._keep_clients_arranged_check_pending = False
+            self._keep_clients_arranged_generation = int(getattr(self, "_keep_clients_arranged_generation", 0)) + 1
             return
         delay_ms = 250 if arrange_now else self.KEEP_CLIENTS_ARRANGED_INTERVAL_MS
         self._schedule_keep_clients_arranged_check(delay_ms=delay_ms, reset_signature=True)
@@ -7129,6 +7133,7 @@ class AccountManagerUI:
     def _schedule_keep_clients_arranged_check(self, delay_ms=None, reset_signature=False):
         if reset_signature:
             self._keep_clients_arranged_last_signature = None
+            self._keep_clients_arranged_generation = int(getattr(self, "_keep_clients_arranged_generation", 0)) + 1
 
         self._cancel_keep_clients_arranged_check()
 
@@ -7155,29 +7160,49 @@ class AccountManagerUI:
         if platform.system() != "Windows" or not win32gui:
             return
 
-        try:
-            roblox_windows = self._get_roblox_client_windows()
-        except Exception:
-            self._keep_clients_arranged_last_signature = None
-            self._schedule_keep_clients_arranged_check()
+        if self._keep_clients_arranged_check_in_progress:
+            self._keep_clients_arranged_check_pending = True
             return
 
-        current_signature = self._get_roblox_window_signature(roblox_windows)
+        self._keep_clients_arranged_check_in_progress = True
+        run_generation = int(getattr(self, "_keep_clients_arranged_generation", 0))
         previous_signature = self._keep_clients_arranged_last_signature
 
-        if roblox_windows and current_signature != previous_signature:
-            if self.auto_arrange_clients(show_feedback=False):
-                try:
-                    current_signature = self._get_roblox_window_signature(self._get_roblox_client_windows())
-                except Exception:
-                    pass
-                self._keep_clients_arranged_last_signature = current_signature
-            else:
-                self._keep_clients_arranged_last_signature = None
-        else:
-            self._keep_clients_arranged_last_signature = current_signature
+        def worker():
+            next_signature = None
+            try:
+                roblox_windows = self._get_roblox_client_windows()
+                next_signature = self._get_roblox_window_signature(roblox_windows)
+                if roblox_windows and next_signature != previous_signature:
+                    next_signature = self._arrange_roblox_client_windows(roblox_windows)
+            except Exception:
+                next_signature = None
 
-        self._schedule_keep_clients_arranged_check()
+            def apply():
+                self._keep_clients_arranged_check_in_progress = False
+                should_run_pending = bool(self._keep_clients_arranged_check_pending)
+                self._keep_clients_arranged_check_pending = False
+
+                if int(getattr(self, "_keep_clients_arranged_generation", 0)) != run_generation:
+                    if should_run_pending and self.settings.get("keep_roblox_clients_arranged", False):
+                        self._schedule_keep_clients_arranged_check(delay_ms=250)
+                    return
+
+                if not self.settings.get("keep_roblox_clients_arranged", False):
+                    return
+
+                if platform.system() != "Windows" or not win32gui:
+                    return
+
+                self._keep_clients_arranged_last_signature = next_signature
+                if should_run_pending:
+                    self._schedule_keep_clients_arranged_check(delay_ms=250)
+                else:
+                    self._schedule_keep_clients_arranged_check()
+
+            self.root.after(0, apply)
+
+        threading.Thread(target=worker, daemon=True, name="keep-clients-arranged").start()
 
     def _notify_roblox_windows_changed(self, success_count, delay_ms=2000):
         if int(success_count or 0) <= 0:
@@ -7192,9 +7217,14 @@ class AccountManagerUI:
     def _get_roblox_client_windows(self):
         """Return a list of HWNDs for visible Roblox client windows."""
         windows = []
-        if not win32gui:
+        if not win32gui or not win32process:
             return windows
 
+        pid_to_image = self._query_tasklist_pid_map(self.ROBLOX_CLIENT_EXECUTABLES)
+        if not pid_to_image:
+            return windows
+
+        target_pids = {int(pid_value) for pid_value in pid_to_image.keys()}
         seen = set()
         def enum_handler(hwnd, _):
             if hwnd in seen:
@@ -7210,49 +7240,19 @@ class AccountManagerUI:
             except Exception:
                 return True
 
-            exe_path = self._get_process_executable(pid)
-            exe_name = os.path.basename(exe_path).lower() if exe_path else ""
-
-            if not exe_name:
+            if int(pid) not in target_pids:
                 return True
 
-            if exe_name in self.ROBLOX_CLIENT_EXECUTABLES:
-                if hwnd not in seen:
-                    seen.add(hwnd)
-                    windows.append(hwnd)
+            if hwnd not in seen:
+                seen.add(hwnd)
+                windows.append(hwnd)
             return True
 
-        win32gui.EnumWindows(enum_handler, None)
-        return windows
-
-    def _get_process_executable(self, pid):
-        """Best-effort attempt to resolve the executable path for a process ID."""
-        if not win32api or not win32process:
-            return None
-
-        PROCESS_QUERY_INFORMATION = 0x0400
-        PROCESS_VM_READ = 0x0010
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        access_flags = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
-        handle = None
-
         try:
-            try:
-                handle = win32api.OpenProcess(access_flags, False, pid)
-            except Exception:
-                handle = win32api.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-
-            if not handle:
-                return None
-            return win32process.GetModuleFileNameEx(handle, 0)
+            win32gui.EnumWindows(enum_handler, None)
         except Exception:
-            return None
-        finally:
-            if handle:
-                try:
-                    win32api.CloseHandle(handle)
-                except Exception:
-                    pass
+            return windows
+        return windows
 
     def _get_monitor_work_areas(self):
         """Return a list of monitor work areas (primary first)."""
