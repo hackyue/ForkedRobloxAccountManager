@@ -22,6 +22,8 @@ import atexit
 import platform
 import time
 import subprocess
+from pathlib import Path
+from typing import Any, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -2546,7 +2548,11 @@ class AccountManagerUI:
             added_to_path = True
 
         try:
+            sys.modules[module_name] = module
             spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
         finally:
             if added_to_path:
                 try:
@@ -2618,6 +2624,45 @@ class AccountManagerUI:
             "overview_frame": None,
             "active_frame": None,
         }
+        fit_state = {"after_id": None}
+
+        def apply_owner_window_fit(recenter=False):
+            if owner_window is None or not owner_window.winfo_exists():
+                return
+            try:
+                owner_window.update_idletasks()
+                screen_width = owner_window.winfo_screenwidth()
+                screen_height = owner_window.winfo_screenheight()
+                max_width = max(screen_width - 80, 320)
+                max_height = max(screen_height - 80, 240)
+                final_width = min(owner_window.winfo_reqwidth() + 20, max_width)
+                final_height = min(owner_window.winfo_reqheight() + 20, max_height)
+                if recenter or not owner_window.winfo_viewable():
+                    self._center_window(owner_window, final_width, final_height)
+                    return
+                current_x = max(owner_window.winfo_x(), 0)
+                current_y = max(owner_window.winfo_y(), 0)
+                final_x = min(current_x, max(screen_width - final_width, 0))
+                final_y = min(current_y, max(screen_height - final_height, 0))
+                owner_window.geometry(f"{final_width}x{final_height}+{final_x}+{final_y}")
+            except Exception:
+                return
+
+        def schedule_owner_window_fit(recenter=False):
+            if owner_window is None or not owner_window.winfo_exists():
+                return
+            after_id = fit_state.get("after_id")
+            if after_id is not None:
+                try:
+                    owner_window.after_cancel(after_id)
+                except Exception:
+                    pass
+
+            def run_fit():
+                fit_state["after_id"] = None
+                apply_owner_window_fit(recenter=recenter)
+
+            fit_state["after_id"] = owner_window.after_idle(run_fit)
 
         def create_text_area(parent_widget, text_value, height=10):
             container = tk.Frame(parent_widget, bg=self.BG_LIGHT, highlightthickness=0, bd=0)
@@ -2679,36 +2724,36 @@ class AccountManagerUI:
             body.pack(fill="both", expand=True)
             return outer, body
 
-        def create_stat_card(parent_widget, label_text, accent_color):
-            card = tk.Frame(
+        def create_stat_chip(parent_widget, label_text, accent_color):
+            chip = tk.Frame(
                 parent_widget,
                 bg=self.BG_LIGHT,
                 highlightbackground=self.BORDER_COLOR,
                 highlightthickness=1,
                 bd=0,
-                padx=12,
-                pady=12,
+                padx=10,
+                pady=6,
             )
-            accent = tk.Frame(card, bg=accent_color, width=36, height=4, highlightthickness=0, bd=0)
-            accent.pack(anchor="w", pady=(0, 10))
+            accent = tk.Frame(chip, bg=accent_color, width=8, height=8, highlightthickness=0, bd=0)
+            accent.pack(side="left", padx=(0, 8))
             value_var = tk.StringVar(value="0")
             tk.Label(
-                card,
+                chip,
                 textvariable=value_var,
                 bg=self.BG_LIGHT,
                 fg=self.FG_TEXT,
-                font=("Segoe UI", 18, "bold"),
+                font=("Segoe UI", 10, "bold"),
                 anchor="w",
-            ).pack(anchor="w")
+            ).pack(side="left")
             tk.Label(
-                card,
+                chip,
                 text=label_text,
                 bg=self.BG_LIGHT,
                 fg=self.FG_MUTED,
                 font=small_font,
                 anchor="w",
-            ).pack(anchor="w", pady=(2, 0))
-            return card, value_var
+            ).pack(side="left", padx=(6, 0))
+            return chip, value_var
 
         header_card = tk.Frame(
             panel,
@@ -2727,24 +2772,15 @@ class AccountManagerUI:
         hero_text = tk.Frame(hero_row, bg=self.BG_MID, highlightthickness=0, bd=0)
         hero_text.pack(side="left", fill="x", expand=True)
 
-        tk.Label(
-            hero_text,
-            text="FRAM Addons",
-            bg=self.BG_MID,
-            fg=self.FG_TEXT,
-            font=title_font,
-            anchor="w",
-        ).pack(anchor="w")
-        tk.Label(
-            hero_text,
-            text="Manage your addon library, inspect load errors, and launch addon tools from one place.",
-            bg=self.BG_MID,
-            fg=self.FG_MUTED,
-            font=body_font,
-            anchor="w",
-            justify="left",
-            wraplength=520,
-        ).pack(anchor="w", pady=(4, 0))
+        summary_row = tk.Frame(hero_text, bg=self.BG_MID, highlightthickness=0, bd=0)
+        summary_row.pack(anchor="w")
+
+        scripts_card, scripts_value_var = create_stat_chip(summary_row, "Detected Scripts", self.FG_ACCENT)
+        scripts_card.pack(side="left")
+        loaded_card, loaded_value_var = create_stat_chip(summary_row, "Loaded Cleanly", "#5fbf88")
+        loaded_card.pack(side="left", padx=(8, 0))
+        failed_card, failed_value_var = create_stat_chip(summary_row, "Load Errors", "#d96c6c")
+        failed_card.pack(side="left", padx=(8, 0))
 
         action_row = tk.Frame(hero_row, bg=self.BG_MID, highlightthickness=0, bd=0)
         action_row.pack(side="right", anchor="ne")
@@ -2752,19 +2788,6 @@ class AccountManagerUI:
         def close_panel():
             if callable(close_callback):
                 close_callback()
-
-        summary_row = tk.Frame(header_card, bg=self.BG_MID, highlightthickness=0, bd=0)
-        summary_row.pack(fill="x", pady=(14, 0))
-        summary_row.grid_columnconfigure(0, weight=1)
-        summary_row.grid_columnconfigure(1, weight=1)
-        summary_row.grid_columnconfigure(2, weight=1)
-
-        scripts_card, scripts_value_var = create_stat_card(summary_row, "Detected Scripts", self.FG_ACCENT)
-        scripts_card.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        loaded_card, loaded_value_var = create_stat_card(summary_row, "Loaded Cleanly", "#5fbf88")
-        loaded_card.grid(row=0, column=1, sticky="ew", padx=4)
-        failed_card, failed_value_var = create_stat_card(summary_row, "Load Errors", "#d96c6c")
-        failed_card.grid(row=0, column=2, sticky="ew", padx=(8, 0))
 
         body_frame = tk.Frame(panel, bg=self.BG_DARK, highlightthickness=0, bd=0)
         body_frame.pack(fill="both", expand=True)
@@ -2944,6 +2967,7 @@ class AccountManagerUI:
             state["active_frame"] = frame
             if frame is not None:
                 frame.pack(fill="both", expand=True)
+                schedule_owner_window_fit()
 
         def build_overview_frame():
             frame = tk.Frame(content_host, bg=self.BG_MID, highlightthickness=0, bd=0)
@@ -3043,7 +3067,6 @@ class AccountManagerUI:
             surface_card, surface_body = create_section_card(
                 frame,
                 "Addon UI",
-                "This area is rendered by the addon script.",
             )
             surface_card.pack(fill="both", expand=True)
 
@@ -3186,10 +3209,9 @@ class AccountManagerUI:
             return
 
         window = tk.Toplevel(self.root)
-        window.title("FRAM Addons")
-        window.geometry("920x620")
-        window.minsize(760, 500)
+        window.title("FRAM Addons - Manage your addon library, inspect load errors, and launch addon tools from one place.")
         window.configure(bg=self.BG_DARK)
+        window.withdraw()
         window.transient(self.root)
         self.register_toplevel(window)
         if self.settings.get("enable_topmost", False):
@@ -3210,7 +3232,9 @@ class AccountManagerUI:
 
         window.protocol("WM_DELETE_WINDOW", on_close)
         window.update_idletasks()
-        self._center_window(window, max(920, window.winfo_reqwidth() + 20), max(620, window.winfo_reqheight() + 20))
+        final_width = min(window.winfo_reqwidth() + 20, max(window.winfo_screenwidth() - 80, 320))
+        final_height = min(window.winfo_reqheight() + 20, max(window.winfo_screenheight() - 80, 240))
+        self._center_window(window, final_width, final_height)
         window.deiconify()
 
     def refresh_installer_menu(self):
@@ -4244,6 +4268,62 @@ class AccountManagerUI:
         )
         return redacted
 
+    def _get_addons_folder_path(self) -> Optional[Path]:
+        addons_folder = str(getattr(self, "addons_folder", "") or "").strip()
+        if not addons_folder:
+            return None
+        try:
+            return Path(addons_folder).resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+    def _is_addon_traceback_path(self, file_path: Any, addons_folder: Path) -> bool:
+        path_text = str(file_path or "").strip()
+        if not path_text:
+            return False
+        try:
+            candidate_path = Path(path_text).resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        try:
+            candidate_path.relative_to(addons_folder)
+            return True
+        except ValueError:
+            return False
+
+    def _traceback_contains_addon_frame(self, exc_traceback: Any, addons_folder: Path) -> bool:
+        if exc_traceback is None:
+            return False
+        try:
+            extracted_frames = traceback.extract_tb(exc_traceback)
+        except Exception:
+            return False
+        for frame in extracted_frames:
+            if self._is_addon_traceback_path(getattr(frame, "filename", ""), addons_folder):
+                return True
+        return False
+
+    def _is_addon_exception(self, exc_value: Any, exc_traceback: Any) -> bool:
+        addons_folder = self._get_addons_folder_path()
+        if addons_folder is None:
+            return False
+
+        current_value = exc_value
+        current_traceback = exc_traceback
+        seen_ids = set()
+
+        while True:
+            if self._traceback_contains_addon_frame(current_traceback, addons_folder):
+                return True
+            if current_value is None:
+                return False
+            current_id = id(current_value)
+            if current_id in seen_ids:
+                return False
+            seen_ids.add(current_id)
+            current_value = getattr(current_value, "__cause__", None) or getattr(current_value, "__context__", None)
+            current_traceback = getattr(current_value, "__traceback__", None) if current_value is not None else None
+
     def _build_bug_issue_draft(self, exc_type, exc_value, exc_traceback, source="unknown"):
         exception_name = getattr(exc_type, "__name__", str(exc_type) or "Exception")
         exception_message = str(exc_value or "").strip() or "(no message)"
@@ -4398,6 +4478,8 @@ class AccountManagerUI:
         if exc_type in (KeyboardInterrupt, SystemExit):
             return
         if not self.settings.get("bug_issue_prompt_enabled", True):
+            return
+        if self._is_addon_exception(exc_value, exc_traceback):
             return
 
         try:
