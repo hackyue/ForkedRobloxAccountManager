@@ -1357,6 +1357,7 @@ class AccountManagerUI:
             "multi_launch_delay": MIN_LAUNCH_DELAY_SECONDS,
             "custom_roblox_player_path": "",
             "show_active_client_indicator": True,
+            "rename_client_titles_to_account_name": True,
             "selected_group": "All",
             "auto_rejoin_enable_all_accounts": False,
             "auto_rejoin_delay_seconds": 5,
@@ -1557,6 +1558,9 @@ class AccountManagerUI:
 
     def _get_active_client_indicator_enabled(self):
         return bool(self.settings.get("show_active_client_indicator", True))
+
+    def _get_rename_client_titles_enabled(self):
+        return bool(self.settings.get("rename_client_titles_to_account_name", True))
 
     def _invalidate_active_client_indicator_cache(self):
         self._active_client_indicator_cache = {"ts": 0.0, "usernames": set()}
@@ -8098,6 +8102,8 @@ class AccountManagerUI:
             return
         if not pid_value or not username:
             return
+        if not self._get_rename_client_titles_enabled():
+            return
 
         def _rename_worker(target_pid, target_name):
             max_attempts = 15
@@ -8737,6 +8743,7 @@ class AccountManagerUI:
         prefer_small_servers_var = tk.BooleanVar(value=self.settings.get("prefer_small_public_servers", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         active_client_indicator_var = tk.BooleanVar(value=self.settings.get("show_active_client_indicator", True))
+        rename_client_titles_var = tk.BooleanVar(value=self.settings.get("rename_client_titles_to_account_name", True))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         hide_sensitive_var = tk.BooleanVar(value=self.settings.get("hide_sensitive_info", False))
         bug_prompt_var = tk.BooleanVar(value=self.settings.get("bug_issue_prompt_enabled", True))
@@ -8805,6 +8812,26 @@ class AccountManagerUI:
             self.save_settings()
             self._invalidate_active_client_indicator_cache()
             self.refresh_accounts(selected_usernames=self._get_selected_usernames_silent())
+
+        def on_rename_client_titles_toggle():
+            self.settings["rename_client_titles_to_account_name"] = rename_client_titles_var.get()
+            self.save_settings()
+            if not rename_client_titles_var.get():
+                return
+            running_pids = self._get_running_tracked_roblox_pid_set()
+            try:
+                with self._pid_account_lock:
+                    pid_account_map = dict(self._pid_account_map)
+            except Exception:
+                pid_account_map = {}
+            for pid_value, username in pid_account_map.items():
+                try:
+                    normalized_pid = int(pid_value)
+                except Exception:
+                    continue
+                normalized_username = str(username or "").strip()
+                if normalized_pid in running_pids and normalized_username:
+                    self._rename_roblox_client_window_title(normalized_pid, normalized_username)
 
         tab_var = tk.StringVar(value="general")
         tab_buttons = {}
@@ -9401,7 +9428,7 @@ class AccountManagerUI:
         custom_player_card = create_settings_card(
             roblox_tab,
             "Roblox Executable",
-            "Override the Roblox player used when launching accounts",
+            "Add a custom Roblox player to launch with",
         )
 
         ttk.Label(
@@ -9468,6 +9495,20 @@ class AccountManagerUI:
 
         custom_player_entry.bind("<FocusOut>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
         custom_player_entry.bind("<Return>", lambda _evt: save_custom_player_path(custom_roblox_player_path_var.get()))
+
+        client_windows_card = create_settings_card(
+            roblox_tab,
+            "PlaceHolder",
+            "PlaceHolderDescription",
+        )
+
+        ttk.Checkbutton(
+            client_windows_card,
+            text="Rename title to Account Name",
+            variable=rename_client_titles_var,
+            style="Dark.TCheckbutton",
+            command=on_rename_client_titles_toggle
+        ).pack(anchor="w", pady=2)
 
         def open_global_settings_and_close_settings():
             """Open Roblox Settings and close settings window"""
@@ -9642,7 +9683,7 @@ class AccountManagerUI:
         ).pack(anchor="w", pady=(8, 0))
 
         automation_browser_card = create_settings_card(
-            roblox_tab,
+            general_tab,
             "Browser Automation",
             "Choose which browser Roblox web launches should use",
         )
