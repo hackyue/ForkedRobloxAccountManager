@@ -9,10 +9,12 @@ import time
 import random
 import subprocess
 import threading
+import uuid
+import re
 import requests
 from pathlib import Path
 
-from urllib.parse import quote
+from urllib.parse import quote, parse_qs, urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -93,6 +95,184 @@ class RobloxAPI:
         if len(cookie) > 60:
             return f"{cookie[:50]}...{cookie[-10:]}"
         return cookie
+
+    @staticmethod
+    def build_private_server_share_url(code):
+        share_code = str(code or "").strip()
+        if not share_code:
+            return ""
+        return f"https://www.roblox.com/share?code={share_code}&type=Server"
+
+    @staticmethod
+    def extract_private_server_share_details(value, max_depth=3):
+        text = str(value or "").strip()
+        if not text or max_depth < 0:
+            return None
+
+        def build_result(code_value):
+            share_code = str(code_value or "").strip()
+            if not share_code:
+                return None
+            return {
+                "code": share_code,
+                "type": "Server",
+                "url": RobloxAPI.build_private_server_share_url(share_code),
+            }
+
+        try:
+            candidate = text
+            lowered = candidate.lower()
+            if "://" not in candidate and ("roblox.com" in lowered or lowered.startswith("roblox://")):
+                candidate = f"https://{candidate}"
+
+            if "://" in candidate:
+                parsed = urlparse(candidate)
+                scheme = str(parsed.scheme or "").strip().lower()
+                host = str(parsed.netloc or "").strip().lower()
+                path = str(parsed.path or "").strip("/").lower()
+                query_values = parse_qs(parsed.query or "")
+
+                share_type_values = query_values.get("type") or query_values.get("pid") or []
+                share_type = str(share_type_values[0] or "").strip().lower() if share_type_values else ""
+                share_code_values = query_values.get("code") or []
+                share_code = str(share_code_values[0] or "").strip() if share_code_values else ""
+
+                if scheme == "roblox" and host == "navigation" and path == "share_links" and share_type == "server":
+                    result = build_result(share_code)
+                    if result:
+                        return result
+
+                if host.endswith("roblox.com") and path in ("share", "share-links") and share_type == "server":
+                    result = build_result(share_code)
+                    if result:
+                        return result
+
+                for nested_key in ("af_dp", "af_web_dp", "deep_link_value"):
+                    nested_values = query_values.get(nested_key) or []
+                    for nested_value in nested_values:
+                        nested_result = RobloxAPI.extract_private_server_share_details(
+                            nested_value,
+                            max_depth=max_depth - 1,
+                        )
+                        if nested_result:
+                            return nested_result
+        except Exception:
+            pass
+
+        match = re.search(
+            r"(?i)(?:roblox://navigation/share_links|https?://(?:www\.)?roblox\.com/(?:share|share-links))[^\s]*\bcode=([A-Za-z0-9_-]+)[^\s]*\b(?:type|pid)=Server\b",
+            text,
+        )
+        if match:
+            return build_result(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_nested_string_value(value, key_names):
+        ordered_key_names = [str(name).strip().lower() for name in (key_names or []) if str(name or "").strip()]
+
+        def to_text(node):
+            if isinstance(node, (dict, list, tuple, set)) or node is None:
+                return ""
+            return str(node).strip()
+
+        def walk(node, target_key_name):
+            if isinstance(node, dict):
+                for key, item in node.items():
+                    if str(key or "").strip().lower() == target_key_name:
+                        text = to_text(item)
+                        if text:
+                            return text
+                    nested = walk(item, target_key_name)
+                    if nested:
+                        return nested
+            elif isinstance(node, (list, tuple, set)):
+                for item in node:
+                    nested = walk(item, target_key_name)
+                    if nested:
+                        return nested
+            return ""
+
+        for key_name in ordered_key_names:
+            text = walk(value, key_name)
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def resolve_private_server_share_link(value, roblosecurity_cookie, enable_debug=False):
+        share_details = RobloxAPI.extract_private_server_share_details(value)
+        if not share_details:
+            return None
+
+        result = {
+            "share_code": str(share_details.get("code") or "").strip(),
+            "access_code": str(share_details.get("code") or "").strip(),
+            "link_code": "",
+            "place_id": "",
+            "url": str(share_details.get("url") or "").strip(),
+        }
+
+        session = RobloxAPI._create_authenticated_session(roblosecurity_cookie)
+        if session is None:
+            RobloxAPI._log_debug(enable_debug, "Private server share link resolution skipped: authenticated session unavailable.")
+            return result
+
+        try:
+            response = session.post(
+                "https://apis.roblox.com/sharelinks/v1/resolve-link",
+                json={
+                    "linkId": result["share_code"],
+                    "linkType": "Server",
+                },
+                timeout=10,
+            )
+            if response.status_code == 401:
+                RobloxAPI._log_debug(enable_debug, "Private server share link resolution requires web authentication; using the share code as access code.")
+                return result
+
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            invite_data = payload.get("privateServerInviteData") or payload
+
+            result["place_id"] = RobloxAPI._extract_nested_string_value(
+                invite_data,
+                ("placeId", "rootPlaceId", "experienceId"),
+            )
+            result["link_code"] = RobloxAPI._extract_nested_string_value(
+                invite_data,
+                ("linkCode", "privateServerLinkCode", "privateServerId", "vipServerId"),
+            )
+
+            resolved_access_code = RobloxAPI._extract_nested_string_value(
+                invite_data,
+                ("accessCode", "privateServerAccessCode"),
+            )
+            if resolved_access_code:
+                result["access_code"] = resolved_access_code
+
+            RobloxAPI._log_debug(
+                enable_debug,
+                (
+                    "Resolved private server share link: "
+                    f"place_id={'set' if result['place_id'] else 'none'}, "
+                    f"link_code={'set' if result['link_code'] else 'none'}, "
+                    f"access_code={'set' if result['access_code'] else 'none'}."
+                ),
+            )
+        except requests.exceptions.RequestException as exc:
+            print(f"[WARNING] Failed to resolve private server share link: {exc}")
+        except ValueError as exc:
+            print(f"[WARNING] Failed to parse private server share link response: {exc}")
+        except Exception as exc:
+            print(f"[WARNING] Unexpected error resolving private server share link: {exc}")
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
+
+        return result
     
     @staticmethod
     def _normalize_roblosecurity_cookie(cookie):
@@ -124,6 +304,7 @@ class RobloxAPI:
             return None
 
         session = requests.Session()
+        session.trust_env = False
         session.cookies.set(".ROBLOSECURITY", roblosecurity_cookie, domain=".roblox.com")
         session.headers.update({
             "User-Agent": "Roblox/WinInet",
@@ -1054,6 +1235,30 @@ class RobloxAPI:
 
         auth_ticket_encoded = quote(auth_ticket, safe="")
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        private_server_text = str(private_server_id or "").strip()
+        private_server_share_details = RobloxAPI.extract_private_server_share_details(private_server_text)
+        resolved_private_server_link_code = private_server_text
+        resolved_private_server_access_code = ""
+
+        if private_server_share_details:
+            share_resolution = RobloxAPI.resolve_private_server_share_link(
+                private_server_text,
+                cookie,
+                enable_debug=enable_debug,
+            ) or {}
+            resolved_private_server_link_code = str(share_resolution.get("link_code") or "").strip()
+            resolved_private_server_access_code = str(
+                share_resolution.get("access_code")
+                or private_server_share_details.get("code")
+                or ""
+            ).strip()
+            _log_debug(
+                (
+                    "Private server share link detected; "
+                    f"access_code={'set' if resolved_private_server_access_code else 'none'}, "
+                    f"link_code={'set' if resolved_private_server_link_code else 'none'}."
+                )
+            )
         
 
         launcher_exe = None
@@ -1299,7 +1504,14 @@ class RobloxAPI:
             place_launch_request = "RequestGame"
             place_launch_extra = ""
             if private_server_id:
-                place_launch_extra = "&linkCode=" + private_server_id
+                if resolved_private_server_access_code:
+                    place_launch_request = "RequestPrivateGame"
+                    place_launch_extra = "&accessCode=" + resolved_private_server_access_code
+                    if resolved_private_server_link_code:
+                        place_launch_extra += "&linkCode=" + resolved_private_server_link_code
+                    place_launch_extra += "&joinAttemptId=" + str(uuid.uuid4())
+                else:
+                    place_launch_extra = "&linkCode=" + resolved_private_server_link_code
             elif server_job_id:
                 place_launch_request = "RequestGameJob"
                 place_launch_extra = "&gameId=" + str(server_job_id)
@@ -1329,7 +1541,14 @@ class RobloxAPI:
         else:
             print(f"Game ID: {game_id}")
             if private_server_id:
-                print(f"Private Server: {private_server_id}")
+                print(
+                    "Private Server: "
+                    + (
+                        resolved_private_server_link_code
+                        or resolved_private_server_access_code
+                        or private_server_text
+                    )
+                )
             elif server_job_id:
                 print(f"Server Job ID: {server_job_id}")
 

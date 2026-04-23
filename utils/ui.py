@@ -824,6 +824,16 @@ class ConsoleOutputWindow:
             return text
         redacted = str(text)
         redacted = re.sub(
+            r"(?i)(roblox://navigation/share_links\?[^\s]*?\bcode=)([^&\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
+            r"(?i)(https?://(?:www\.)?roblox\.com/(?:share|share-links)\?[^\s]*?\bcode=)([^&\s]+)",
+            r"\1[REDACTED]",
+            redacted,
+        )
+        redacted = re.sub(
             r"(?i)([?&](?:linkCode|privateServerLinkCode)=)([^&\s]+)",
             r"\1[REDACTED]",
             redacted,
@@ -5236,13 +5246,31 @@ class AccountManagerUI:
         """Called when private server ID changes"""
         self._apply_private_server_entry_normalization(save=True)
 
+    def _get_private_server_normalization_cookie(self):
+        for username in self._get_selected_usernames_silent():
+            cookie = str(self.manager.get_account_cookie(username) or "").strip()
+            if cookie:
+                return cookie
+
+        for account_data in self.manager.accounts.values():
+            if not isinstance(account_data, dict):
+                continue
+            cookie = str(account_data.get("cookie") or "").strip()
+            if cookie:
+                return cookie
+
+        return ""
+
     def _normalize_private_server_entry_value(self, value):
         text = str(value or "").strip()
         if not text:
             return ""
         if self._normalize_place_target_mode(getattr(self, "place_join_target_mode", "private_server")) != "private_server":
             return text
-        return self.manager.normalize_private_server(text)
+        return self.manager.normalize_private_server(
+            text,
+            roblosecurity_cookie=self._get_private_server_normalization_cookie(),
+        )
 
     def _apply_private_server_entry_normalization(self, save=True):
         entry = getattr(self, "private_server_entry", None)

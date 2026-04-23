@@ -115,11 +115,20 @@ class RobloxAccountManager:
                 if 'user_id' not in account_data:
                     account_data['user_id'] = ''
 
-    def normalize_private_server(self, value):
-        """Normalize private server input to a Roblox link code when possible."""
+    def normalize_private_server(self, value, roblosecurity_cookie=None):
+        """Normalize private server input to a resolved link code or canonical share link when possible."""
         text = str(value or "").strip()
         if not text:
             return ""
+
+        share_details = RobloxAPI.extract_private_server_share_details(text)
+        if share_details:
+            resolved_share_link = RobloxAPI.resolve_private_server_share_link(text, roblosecurity_cookie)
+            if resolved_share_link:
+                resolved_link_code = str(resolved_share_link.get("link_code") or "").strip()
+                if resolved_link_code:
+                    return resolved_link_code
+            return str(share_details.get("url") or text).strip()
 
         parsed_code = ""
         lowered = text.lower()
@@ -127,7 +136,7 @@ class RobloxAccountManager:
             try:
                 parsed = urlparse(text if "://" in text else f"https://{text}")
                 query_values = parse_qs(parsed.query or "")
-                for key in ("privateServerLinkCode", "linkCode", "privateServerId", "vipServerId", "code"):
+                for key in ("privateServerLinkCode", "linkCode", "privateServerId", "vipServerId"):
                     values = query_values.get(key) or []
                     if values:
                         parsed_code = str(values[0] or "").strip()
@@ -138,7 +147,7 @@ class RobloxAccountManager:
 
         if not parsed_code:
             match = re.search(
-                r"(?i)(?:privateServerLinkCode|linkCode|privateServerId|vipServerId|code)\s*=\s*([A-Za-z0-9_-]+)",
+                r"(?i)(?:privateServerLinkCode|linkCode|privateServerId|vipServerId)\s*=\s*([A-Za-z0-9_-]+)",
                 text,
             )
             if match:
@@ -1502,7 +1511,10 @@ class RobloxAccountManager:
             print(f"[ERROR] Account '{username}' not found")
             return False
 
-        normalized = self.normalize_private_server(vip_server)
+        normalized = self.normalize_private_server(
+            vip_server,
+            roblosecurity_cookie=self.get_account_cookie(username),
+        )
         self.accounts[username]['vip_server'] = normalized
         self.save_accounts()
         return True
@@ -1510,7 +1522,10 @@ class RobloxAccountManager:
     def get_account_vip_server(self, username):
         if username in self.accounts and isinstance(self.accounts[username], dict):
             stored = self.accounts[username].get('vip_server', '')
-            return self.normalize_private_server(stored)
+            return self.normalize_private_server(
+                stored,
+                roblosecurity_cookie=self.get_account_cookie(username),
+            )
         return ''
 
     def bulk_set_account_vip_servers(self, username_to_vip_server):
@@ -1532,7 +1547,10 @@ class RobloxAccountManager:
                 continue
 
             matched += 1
-            normalized_value = self.normalize_private_server(raw_value)
+            normalized_value = self.normalize_private_server(
+                raw_value,
+                roblosecurity_cookie=self.get_account_cookie(username),
+            )
             current_value = str(account_data.get('vip_server', '') or '').strip()
             if current_value != normalized_value:
                 account_data['vip_server'] = normalized_value
