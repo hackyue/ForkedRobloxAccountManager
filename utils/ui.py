@@ -1186,8 +1186,7 @@ class AccountManagerUI:
         self.account_list.bind("<B1-Motion>", self.on_account_drag_motion)
         self.account_list.bind("<ButtonRelease-1>", self.on_account_drag_stop)
         self.account_list.bind("<Button-3>", self.show_account_context_menu)
-        if self.settings.get("enable_multi_select", False):
-            self.account_list.bind("<Control-ButtonPress-1>", self.on_account_ctrl_click)
+        self.account_list.bind("<Control-ButtonPress-1>", self.on_account_ctrl_click)
 
         self.account_context_menu = tk.Menu(self.root, tearoff=False)
         self.account_context_menu.add_command(label="Copy Username", command=self.copy_selected_account_usernames)
@@ -6107,7 +6106,7 @@ class AccountManagerUI:
 
     def on_account_ctrl_click(self, event):
         if not self.settings.get("enable_multi_select", False):
-            return "break"
+            return
         if self.account_list.size() <= 0:
             return "break"
         index = self.account_list.nearest(event.y)
@@ -9462,6 +9461,13 @@ class AccountManagerUI:
                 self.account_list.config(selectmode=tk.EXTENDED)
             else:
                 self.account_list.config(selectmode=tk.SINGLE)
+                selections = self.account_list.curselection()
+                if len(selections) > 1:
+                    active_index = self.account_list.index(tk.ACTIVE)
+                    target_index = active_index if active_index in selections else selections[0]
+                    self.account_list.selection_clear(0, tk.END)
+                    self.account_list.selection_set(target_index)
+                    self.account_list.activate(target_index)
             self.save_settings()
 
         def on_active_client_indicator_toggle():
