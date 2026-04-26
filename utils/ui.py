@@ -978,7 +978,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.5.1"
+        self.APP_VERSION = "2.5.2"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -1072,7 +1072,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.5.1 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.5.2 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -2043,6 +2043,7 @@ class AccountManagerUI:
 
         self.theme_name = theme_name
         self.BG_ROOT = theme["root_bg"]
+        self.BG_FRAME = theme["frame_bg"]
         self.BG_DARK = theme["panel_bg"]
         self.BG_LIGHT = theme["panel_alt"]
         self.BG_MID = theme["panel_alt"]
@@ -2067,36 +2068,56 @@ class AccountManagerUI:
             background=self.BG_LIGHT,
             foreground=self.FG_TEXT,
             font=self.FONT,
-            padding=6
+            padding=6,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.BORDER_COLOR,
+            darkcolor=self.BORDER_COLOR,
         )
-        self.style.map("Dark.TButton", background=[("active", self.HOVER_BG)])
+        self.style.map(
+            "Dark.TButton",
+            background=[("active", self.HOVER_BG)],
+            foreground=[("disabled", self.FG_MUTED)],
+        )
         self.style.configure(
             "Dark.TEntry",
             fieldbackground=self.ENTRY_BG,
             background=self.ENTRY_BG,
-            foreground=self.ENTRY_FG
+            foreground=self.ENTRY_FG,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.BORDER_COLOR,
+            darkcolor=self.BORDER_COLOR,
         )
         self.style.configure(
             "Dark.TCombobox",
             fieldbackground=self.ENTRY_BG,
             background=self.ENTRY_BG,
-            foreground=self.ENTRY_FG
+            foreground=self.ENTRY_FG,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.BORDER_COLOR,
+            darkcolor=self.BORDER_COLOR,
+            arrowcolor=self.FG_TEXT,
         )
         self.style.map(
             "Dark.TCombobox",
             fieldbackground=[("readonly", self.ENTRY_BG)],
-            foreground=[("readonly", self.ENTRY_FG)]
+            foreground=[("readonly", self.ENTRY_FG)],
+            arrowcolor=[("active", self.FG_ACCENT_ALT), ("readonly", self.FG_TEXT)],
         )
         self.style.configure(
             "Dark.TSpinbox",
             fieldbackground=self.ENTRY_BG,
             background=self.ENTRY_BG,
-            foreground=self.ENTRY_FG
+            foreground=self.ENTRY_FG,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.BORDER_COLOR,
+            darkcolor=self.BORDER_COLOR,
+            arrowcolor=self.FG_TEXT,
         )
         self.style.map(
             "Dark.TSpinbox",
             fieldbackground=[("readonly", self.ENTRY_BG)],
-            foreground=[("readonly", self.ENTRY_FG)]
+            foreground=[("readonly", self.ENTRY_FG)],
+            arrowcolor=[("active", self.FG_ACCENT_ALT), ("readonly", self.FG_TEXT)],
         )
 
         self.style.configure(
@@ -2131,11 +2152,113 @@ class AccountManagerUI:
             background=self.BG_DARK,
             foreground=self.FG_TEXT,
             font=("Segoe UI", 10),
+            indicatorbackground=self.ENTRY_BG,
+            indicatorforeground=self.FG_ACCENT,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.BORDER_COLOR,
+            darkcolor=self.BORDER_COLOR,
         )
         self.style.map(
             "Dark.TCheckbutton",
             background=[("active", self.BG_MID)],
             foreground=[("disabled", self.FG_MUTED)],
+        )
+        for notebook_style in ("TNotebook", "Dark.TNotebook"):
+            self.style.configure(
+                notebook_style,
+                background=self.BG_FRAME,
+                bordercolor=self.BORDER_COLOR,
+                lightcolor=self.BORDER_COLOR,
+                darkcolor=self.BORDER_COLOR,
+            )
+        for notebook_tab_style in ("TNotebook.Tab", "Dark.TNotebook.Tab"):
+            self.style.configure(
+                notebook_tab_style,
+                background=self.BG_MID,
+                foreground=self.FG_MUTED,
+                bordercolor=self.BORDER_COLOR,
+                lightcolor=self.BORDER_COLOR,
+                darkcolor=self.BORDER_COLOR,
+                padding=(12, 6),
+                font=self.FONT,
+            )
+            self.style.map(
+                notebook_tab_style,
+                background=[("selected", self.BG_LIGHT), ("active", self.HOVER_BG)],
+                foreground=[("selected", self.FG_TEXT), ("active", self.FG_TEXT)],
+            )
+        for scrollbar_style in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            self.style.configure(
+                scrollbar_style,
+                background=self.BG_LIGHT,
+                troughcolor=self.BG_FRAME,
+                arrowcolor=self.FG_TEXT,
+                bordercolor=self.BORDER_COLOR,
+                lightcolor=self.BORDER_COLOR,
+                darkcolor=self.BORDER_COLOR,
+            )
+            self.style.map(
+                scrollbar_style,
+                background=[("active", self.HOVER_BG)],
+                arrowcolor=[("active", self.FG_ACCENT_ALT)],
+            )
+        for progressbar_style in (
+            "Horizontal.TProgressbar",
+            "Vertical.TProgressbar",
+            "Dark.Horizontal.TProgressbar",
+            "Dark.Vertical.TProgressbar",
+        ):
+            self.style.configure(
+                progressbar_style,
+                background=self.FG_ACCENT,
+                troughcolor=self.BG_FRAME,
+                bordercolor=self.BORDER_COLOR,
+                lightcolor=self.FG_ACCENT_ALT,
+                darkcolor=self.FG_ACCENT,
+            )
+        for scale_style in ("Horizontal.TScale", "Vertical.TScale", "Dark.Horizontal.TScale", "Dark.Vertical.TScale"):
+            self.style.configure(
+                scale_style,
+                background=self.FG_ACCENT,
+                troughcolor=self.BG_FRAME,
+                bordercolor=self.BORDER_COLOR,
+                lightcolor=self.FG_ACCENT_ALT,
+                darkcolor=self.FG_ACCENT,
+            )
+            self.style.map(scale_style, background=[("active", self.FG_ACCENT_ALT)])
+        for radiobutton_style in ("TRadiobutton", "Dark.TRadiobutton"):
+            self.style.configure(
+                radiobutton_style,
+                background=self.BG_DARK,
+                foreground=self.FG_TEXT,
+                font=self.FONT,
+                indicatorbackground=self.ENTRY_BG,
+                indicatorforeground=self.FG_ACCENT,
+                bordercolor=self.BORDER_COLOR,
+                lightcolor=self.BORDER_COLOR,
+                darkcolor=self.BORDER_COLOR,
+            )
+            self.style.map(
+                radiobutton_style,
+                background=[("active", self.BG_MID)],
+                foreground=[("disabled", self.FG_MUTED)],
+            )
+        for panedwindow_style in ("TPanedwindow", "Dark.TPanedwindow"):
+            self.style.configure(
+                panedwindow_style,
+                background=self.BG_FRAME,
+                bordercolor=self.BORDER_COLOR,
+                lightcolor=self.BORDER_COLOR,
+                darkcolor=self.BORDER_COLOR,
+            )
+        self.style.configure(
+            "Sash",
+            background=self.BG_LIGHT,
+            troughcolor=self.BG_FRAME,
+            bordercolor=self.BORDER_COLOR,
+            lightcolor=self.BORDER_COLOR,
+            darkcolor=self.BORDER_COLOR,
+            sashthickness=8,
         )
 
         if getattr(self, "status_label", None):
