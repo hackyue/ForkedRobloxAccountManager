@@ -990,7 +990,14 @@ class AccountManagerUI:
         "robloxplayerbeta.exe",
         "robloxplayerlauncher.exe",
     }
+    ROBLOX_HEADLESS_TARGET_EXECUTABLES = {"robloxplayerbeta.exe"}
     KEEP_CLIENTS_ARRANGED_INTERVAL_MS = 5000
+    ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS = 2
+    ROBLOX_HEADLESS_MEMORY_TRIM_INTERVAL_SECONDS = 30
+    _PROCESS_SET_INFORMATION = 0x0200
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _IDLE_PRIORITY_CLASS = 0x00000040
+    _NORMAL_PRIORITY_CLASS = 0x00000020
 
     def __init__(self, root, manager, icon_path=None):
         self.root = root
@@ -1011,6 +1018,12 @@ class AccountManagerUI:
         self._keep_clients_arranged_check_in_progress = False
         self._keep_clients_arranged_check_pending = False
         self._keep_clients_arranged_generation = 0
+        self._roblox_headless_after_id = None
+        self._roblox_headless_in_progress = False
+        self._roblox_headless_generation = 0
+        self._roblox_headless_last_trim_ts = 0.0
+        self._roblox_headless_seen_pids = set()
+        self._roblox_headless_last_empty_log_ts = 0.0
         self._auto_update_check_started = False
         self._auto_update_prompt_shown = False
 
@@ -1385,6 +1398,7 @@ class AccountManagerUI:
 
         self.root.after(500, self._auto_relaunch_maybe_start)
         self.root.after(500, self._auto_memory_trim_maybe_start)
+        self.root.after(700, self._roblox_headless_maybe_start)
         self.root.after(1500, self._auto_update_maybe_start)
 
     def load_settings(self):
@@ -1426,6 +1440,9 @@ class AccountManagerUI:
             "auto_relaunch_group": "",
             "auto_memory_trim_enabled": False,
             "auto_memory_trim_interval_minutes": 5,
+            "roblox_headless_mode_enabled": False,
+            "roblox_headless_idle_priority": True,
+            "roblox_headless_trim_memory": True,
             "auto_update_enabled": True,
             "browser_preference": "auto",
         }
@@ -1482,6 +1499,17 @@ class AccountManagerUI:
         except (TypeError, ValueError):
             mm = 5
         self.settings["auto_memory_trim_interval_minutes"] = max(1, min(120, mm))
+        if platform.system() != "Windows":
+            self.settings["roblox_headless_mode_enabled"] = False
+        self.settings["roblox_headless_mode_enabled"] = bool(
+            self.settings.get("roblox_headless_mode_enabled", False)
+        )
+        self.settings["roblox_headless_idle_priority"] = bool(
+            self.settings.get("roblox_headless_idle_priority", True)
+        )
+        self.settings["roblox_headless_trim_memory"] = bool(
+            self.settings.get("roblox_headless_trim_memory", True)
+        )
 
         try:
             auto_rejoin_delay = int(self.settings.get("auto_rejoin_delay_seconds", 5) or 5)
@@ -1986,6 +2014,477 @@ class AccountManagerUI:
                     self._auto_memory_trim_in_progress = False
 
         threading.Thread(target=worker, daemon=True, name="auto-memory-trim").start()
+
+    def _roblox_headless_maybe_start(self):
+        if self.settings.get("roblox_headless_mode_enabled", False):
+            self._log_roblox_headless("NoClient mode is enabled.")
+            self._set_roblox_headless_mode_enabled(
+                True,
+                save=False,
+                run_now=True,
+                restore_when_disabled=False,
+            )
+
+    def _log_roblox_headless(self, message, debug=False):
+        if debug and not self.settings.get("enable_debug_logging", False):
+            return
+        level = "DEBUG" if debug else "INFO"
+        print(f"[{level}] {message}")
+
+    def _roblox_headless_config_valid(self):
+        if platform.system() != "Windows":
+            return False
+        if win32gui is None or win32process is None:
+            return False
+        return bool(self.settings.get("roblox_headless_mode_enabled", False))
+
+    def _cancel_roblox_headless_pass(self):
+        after_id = getattr(self, "_roblox_headless_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        self._roblox_headless_after_id = None
+
+    def _set_roblox_headless_mode_enabled(
+        self,
+        enabled,
+        save=False,
+        run_now=False,
+        restore_when_disabled=True,
+    ):
+        enabled = bool(enabled)
+        if enabled and platform.system() != "Windows":
+            enabled = False
+
+        self.settings["roblox_headless_mode_enabled"] = enabled
+        if save:
+            self.save_settings()
+
+        self._roblox_headless_generation = int(getattr(self, "_roblox_headless_generation", 0)) + 1
+        self._cancel_roblox_headless_pass()
+
+        if not enabled:
+            self._log_roblox_headless("NoClient mode disabled.")
+            self._roblox_headless_seen_pids = set()
+            if restore_when_disabled:
+                self.restore_roblox_headless_windows(show_feedback=False)
+            return enabled
+
+        self._log_roblox_headless("Client monitor enabled.")
+        self._log_roblox_headless(
+            (
+                f"idle_priority={bool(self.settings.get('roblox_headless_idle_priority', True))}, "
+                f"trim_memory={bool(self.settings.get('roblox_headless_trim_memory', True))}, "
+                f"scan_interval={self.ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS}s."
+            ),
+            debug=True,
+        )
+        self._schedule_roblox_headless_pass(
+            delay_ms=50 if run_now else self.ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS * 1000,
+        )
+        return enabled
+
+    def _schedule_roblox_headless_pass(self, delay_ms=None):
+        self._cancel_roblox_headless_pass()
+        if not self._roblox_headless_config_valid():
+            return
+
+        if delay_ms is None:
+            delay_ms = self.ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS * 1000
+        self._roblox_headless_after_id = self.root.after(
+            max(100, int(delay_ms)),
+            self._run_roblox_headless_pass,
+        )
+
+    def _run_roblox_headless_pass(self):
+        self._roblox_headless_after_id = None
+        if not self._roblox_headless_config_valid():
+            return
+
+        if self._roblox_headless_in_progress:
+            self._schedule_roblox_headless_pass()
+            return
+
+        self._roblox_headless_in_progress = True
+        run_generation = int(getattr(self, "_roblox_headless_generation", 0))
+
+        def worker():
+            try:
+                self._apply_roblox_headless_pass(force_trim=False)
+            finally:
+                def finish():
+                    self._roblox_headless_in_progress = False
+                    if (
+                        int(getattr(self, "_roblox_headless_generation", 0)) == run_generation
+                        and self._roblox_headless_config_valid()
+                    ):
+                        self._schedule_roblox_headless_pass()
+
+                try:
+                    self.root.after(0, finish)
+                except Exception:
+                    self._roblox_headless_in_progress = False
+
+        threading.Thread(target=worker, daemon=True, name="roblox-headless-mode").start()
+
+    @classmethod
+    def _set_process_priority_class(cls, pid, priority_class):
+        if not pid or platform.system() != "Windows":
+            return False, "invalid pid"
+
+        handle = None
+        try:
+            kernel32 = ctypes.windll.kernel32
+            access = cls._PROCESS_SET_INFORMATION | cls._PROCESS_QUERY_LIMITED_INFORMATION
+            handle = kernel32.OpenProcess(access, False, int(pid))
+            if not handle:
+                err = kernel32.GetLastError()
+                return False, f"OpenProcess failed (err={err})"
+            ok = kernel32.SetPriorityClass(handle, int(priority_class))
+            if ok:
+                return True, "ok"
+            err = kernel32.GetLastError()
+            return False, f"SetPriorityClass failed (err={err})"
+        except Exception as exc:
+            return False, str(exc)
+        finally:
+            if handle:
+                try:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
+
+    def _get_roblox_headless_pid_map(self):
+        return self._query_tracked_process_pid_map(
+            self.ROBLOX_HEADLESS_TARGET_EXECUTABLES,
+            use_cache=False,
+        )
+
+    def _get_roblox_headless_windows(self, target_pids=None, include_hidden=False):
+        if platform.system() != "Windows" or win32gui is None or win32process is None:
+            return []
+
+        if target_pids is None:
+            target_pids = set(self._get_roblox_headless_pid_map().keys())
+        else:
+            normalized_pids = set()
+            for raw_pid in target_pids:
+                try:
+                    pid_value = int(raw_pid)
+                except Exception:
+                    continue
+                if pid_value > 0:
+                    normalized_pids.add(pid_value)
+            target_pids = normalized_pids
+        if not target_pids:
+            return []
+
+        windows = []
+
+        def enum_handler(hwnd, _):
+            try:
+                if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                    return True
+                if not include_hidden and not win32gui.IsWindowVisible(hwnd):
+                    return True
+                _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
+                title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
+                class_name = str(win32gui.GetClassName(hwnd) or "").strip()
+            except Exception:
+                return True
+
+            if int(pid_value) in target_pids and (title_text or class_name == "WINDOWSCLIENT"):
+                windows.append(hwnd)
+            return True
+
+        try:
+            win32gui.EnumWindows(enum_handler, None)
+        except Exception:
+            return []
+
+        return windows
+
+    def _hide_roblox_headless_window(self, hwnd):
+        if not hwnd or win32gui is None:
+            return False
+
+        changed = False
+        try:
+            if win32gui.IsWindowVisible(hwnd):
+                win32gui.ShowWindow(hwnd, getattr(win32con, "SW_HIDE", 0))
+                changed = True
+        except Exception:
+            pass
+
+        try:
+            win32gui.PostMessage(
+                hwnd,
+                getattr(win32con, "WM_SYSCOMMAND", 0x0112),
+                getattr(win32con, "SC_MINIMIZE", 0xF020),
+                0,
+            )
+        except Exception:
+            pass
+
+        return changed
+
+    def _get_window_pid_title(self, hwnd):
+        pid_value = 0
+        title_text = ""
+        if not hwnd or win32process is None or win32gui is None:
+            return pid_value, title_text
+
+        try:
+            _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:
+            pid_value = 0
+
+        try:
+            title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
+        except Exception:
+            title_text = ""
+
+        return int(pid_value or 0), title_text
+
+    def _restore_roblox_headless_window(self, hwnd):
+        if not hwnd or win32gui is None:
+            return False
+
+        try:
+            win32gui.ShowWindow(hwnd, getattr(win32con, "SW_SHOW", 5))
+            win32gui.ShowWindow(hwnd, getattr(win32con, "SW_RESTORE", 9))
+            return True
+        except Exception:
+            return False
+
+    def _apply_roblox_headless_pass(self, force_trim=False):
+        pid_map = self._get_roblox_headless_pid_map()
+        pids = set(pid_map.keys())
+        if not pids:
+            now = time.monotonic()
+            if force_trim or (now - float(getattr(self, "_roblox_headless_last_empty_log_ts", 0.0) or 0.0)) >= 30.0:
+                self._log_roblox_headless("No Roblox clients detected.")
+                self._roblox_headless_last_empty_log_ts = now
+            self._roblox_headless_seen_pids = set()
+            return {
+                "pids": 0,
+                "hidden": 0,
+                "priority": 0,
+                "trimmed": 0,
+                "new_pids": [],
+                "priority_failures": [],
+                "trim_failures": [],
+            }
+
+        hidden_count = 0
+        priority_count = 0
+        trimmed_count = 0
+        priority_failures = []
+        trim_failures = []
+        previous_pids = set(getattr(self, "_roblox_headless_seen_pids", set()) or set())
+        new_pids = sorted(pids - previous_pids)
+        self._roblox_headless_seen_pids = set(pids)
+
+        visible_windows = self._get_roblox_headless_windows(target_pids=pids, include_hidden=False)
+        for hwnd in visible_windows:
+            if self._hide_roblox_headless_window(hwnd):
+                hidden_count += 1
+                pid_value, title_text = self._get_window_pid_title(hwnd)
+                self._log_roblox_headless(
+                    f"Hidden Roblox window hwnd={int(hwnd)} pid={pid_value} title={title_text or '(untitled)'}.",
+                    debug=True,
+                )
+
+        if self.settings.get("roblox_headless_idle_priority", True):
+            for pid in pids:
+                ok, msg = self._set_process_priority_class(pid, self._IDLE_PRIORITY_CLASS)
+                if ok:
+                    priority_count += 1
+                else:
+                    priority_failures.append((pid, msg))
+        else:
+            for pid in pids:
+                self._set_process_priority_class(pid, self._NORMAL_PRIORITY_CLASS)
+
+        if self.settings.get("roblox_headless_trim_memory", True):
+            now = time.monotonic()
+            should_trim = force_trim or (
+                now - float(getattr(self, "_roblox_headless_last_trim_ts", 0.0) or 0.0)
+            ) >= self.ROBLOX_HEADLESS_MEMORY_TRIM_INTERVAL_SECONDS
+            if should_trim:
+                for pid in pids:
+                    ok, msg = self._memtrim_pid(pid)
+                    if ok:
+                        trimmed_count += 1
+                    else:
+                        trim_failures.append((pid, msg))
+                self._roblox_headless_last_trim_ts = now
+
+        should_log_info_summary = bool(new_pids or hidden_count or force_trim)
+        should_log_debug_summary = bool(
+            should_log_info_summary or trimmed_count or priority_failures or trim_failures
+        )
+        if should_log_info_summary:
+            self._log_roblox_headless(
+                (
+                    f"Processed {len(pids)} Roblox client(s): "
+                    f"hidden {hidden_count} window(s), "
+                    f"trimmed {trimmed_count} process(es)."
+                )
+            )
+        if should_log_debug_summary:
+            self._log_roblox_headless(
+                (
+                    f"Pass details: new_pids={new_pids or 'none'}, "
+                    f"idle_priority_ok={priority_count}, "
+                    f"priority_failures={len(priority_failures)}, "
+                    f"trim_failures={len(trim_failures)}."
+                ),
+                debug=True,
+            )
+            for pid, msg in priority_failures[:5]:
+                self._log_roblox_headless(f"Priority failed for pid={pid}: {msg}", debug=True)
+            if len(priority_failures) > 5:
+                self._log_roblox_headless(
+                    f"Priority failed for {len(priority_failures) - 5} more process(es).",
+                    debug=True,
+                )
+            for pid, msg in trim_failures[:5]:
+                self._log_roblox_headless(f"Memory trim failed for pid={pid}: {msg}", debug=True)
+            if len(trim_failures) > 5:
+                self._log_roblox_headless(
+                    f"Memory trim failed for {len(trim_failures) - 5} more process(es).",
+                    debug=True,
+                )
+
+        return {
+            "pids": len(pids),
+            "hidden": hidden_count,
+            "priority": priority_count,
+            "trimmed": trimmed_count,
+            "new_pids": new_pids,
+            "priority_failures": priority_failures,
+            "trim_failures": trim_failures,
+        }
+
+    def apply_roblox_headless_once(self, show_feedback=True):
+        if platform.system() != "Windows":
+            if show_feedback:
+                messagebox.showerror("Headless Mode", "This feature is only available on Windows.")
+            return
+
+        def worker():
+            self._log_roblox_headless("Manual Apply Now requested.")
+            summary = self._apply_roblox_headless_pass(force_trim=True)
+
+            def finish():
+                if not show_feedback:
+                    return
+                if int(summary.get("pids", 0) or 0) <= 0:
+                    messagebox.showinfo("Headless Mode", "No Roblox clients were detected.")
+                    return
+                self.show_success_message(
+                    (
+                        f"Applied headless mode to {summary['pids']} Roblox process(es).\n"
+                        f"Hidden windows: {summary['hidden']}\n"
+                        f"Idle priority set: {summary['priority']}\n"
+                        f"Memory trimmed: {summary['trimmed']}"
+                    ),
+                    title="Headless Mode",
+                )
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True, name="roblox-headless-once").start()
+
+    def _restore_roblox_headless_pass(self):
+        pid_map = self._get_roblox_headless_pid_map()
+        pids = set(pid_map.keys())
+        restored_count = 0
+        priority_count = 0
+        restore_failures = []
+        priority_failures = []
+
+        windows = self._get_roblox_headless_windows(target_pids=pids, include_hidden=True)
+        for hwnd in windows:
+            pid_value, title_text = self._get_window_pid_title(hwnd)
+            if self._restore_roblox_headless_window(hwnd):
+                restored_count += 1
+                self._log_roblox_headless(
+                    f"Restored Roblox window hwnd={int(hwnd)} pid={pid_value} title={title_text or '(untitled)'}.",
+                    debug=True,
+                )
+            else:
+                restore_failures.append((int(hwnd), pid_value))
+
+        for pid in pids:
+            ok, msg = self._set_process_priority_class(pid, self._NORMAL_PRIORITY_CLASS)
+            if ok:
+                priority_count += 1
+            else:
+                priority_failures.append((pid, msg))
+
+        self._roblox_headless_seen_pids = set()
+        self._log_roblox_headless(
+            (
+                f"Restore complete: clients={len(pids)}, "
+                f"restored_windows={restored_count}, "
+                f"normal_priority_ok={priority_count}."
+            )
+        )
+        for hwnd, pid in restore_failures[:5]:
+            self._log_roblox_headless(f"Restore failed for hwnd={hwnd} pid={pid}.", debug=True)
+        if len(restore_failures) > 5:
+            self._log_roblox_headless(
+                f"Restore failed for {len(restore_failures) - 5} more window(s).",
+                debug=True,
+            )
+        for pid, msg in priority_failures[:5]:
+            self._log_roblox_headless(f"Normal priority failed for pid={pid}: {msg}", debug=True)
+        if len(priority_failures) > 5:
+            self._log_roblox_headless(
+                f"Normal priority failed for {len(priority_failures) - 5} more process(es).",
+                debug=True,
+            )
+
+        return {
+            "pids": len(pids),
+            "restored": restored_count,
+            "priority": priority_count,
+            "restore_failures": restore_failures,
+            "priority_failures": priority_failures,
+        }
+
+    def restore_roblox_headless_windows(self, show_feedback=True):
+        if platform.system() != "Windows":
+            if show_feedback:
+                messagebox.showerror("Headless Mode", "This feature is only available on Windows.")
+            return
+
+        def worker():
+            self._log_roblox_headless("Restore Windows requested.")
+            summary = self._restore_roblox_headless_pass()
+
+            def finish():
+                if not show_feedback:
+                    return
+                if int(summary.get("pids", 0) or 0) <= 0:
+                    messagebox.showinfo("Headless Mode", "No Roblox clients were detected.")
+                    return
+                self.show_success_message(
+                    (
+                        f"Restored {summary['restored']} Roblox window(s).\n"
+                        f"Normal priority set: {summary['priority']} process(es)."
+                    ),
+                    title="Headless Mode",
+                )
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True, name="roblox-headless-restore").start()
 
     def _close_all_roblox_clients_silent(self):
         exes = set(self.ROBLOX_CLIENT_EXECUTABLES)
@@ -7384,6 +7883,12 @@ class AccountManagerUI:
             return
         self._invalidate_tracked_process_caches()
         self._invalidate_active_client_indicator_cache()
+        if self.settings.get("roblox_headless_mode_enabled", False):
+            self._log_roblox_headless(
+                f"Roblox launch detected; scheduling NoClient pass in {int(delay_ms)} ms.",
+                debug=True,
+            )
+            self._schedule_roblox_headless_pass(delay_ms=delay_ms)
         if not self.settings.get("keep_roblox_clients_arranged", False):
             return
         self._schedule_keep_clients_arranged_check(
@@ -9570,6 +10075,15 @@ class AccountManagerUI:
         keep_clients_arranged_var = tk.BooleanVar(
             value=self.settings.get("keep_roblox_clients_arranged", False)
         )
+        roblox_headless_mode_var = tk.BooleanVar(
+            value=self.settings.get("roblox_headless_mode_enabled", False)
+        )
+        roblox_headless_idle_priority_var = tk.BooleanVar(
+            value=self.settings.get("roblox_headless_idle_priority", True)
+        )
+        roblox_headless_trim_memory_var = tk.BooleanVar(
+            value=self.settings.get("roblox_headless_trim_memory", True)
+        )
         auto_arrange_target_width_var = tk.IntVar(
             value=int(self.settings.get("auto_arrange_target_width", 800) or 800)
         )
@@ -9594,6 +10108,34 @@ class AccountManagerUI:
                 save=True,
                 arrange_now=keep_clients_arranged_var.get(),
             )
+
+        def on_roblox_headless_toggle():
+            if platform.system() != "Windows":
+                roblox_headless_mode_var.set(False)
+                self.settings["roblox_headless_mode_enabled"] = False
+                self.save_settings()
+                messagebox.showerror("Headless Mode", "This feature is only available on Windows.")
+                return
+            self._set_roblox_headless_mode_enabled(
+                roblox_headless_mode_var.get(),
+                save=True,
+                run_now=roblox_headless_mode_var.get(),
+                restore_when_disabled=True,
+            )
+
+        def on_roblox_headless_option_change():
+            self.settings["roblox_headless_idle_priority"] = bool(roblox_headless_idle_priority_var.get())
+            self.settings["roblox_headless_trim_memory"] = bool(roblox_headless_trim_memory_var.get())
+            self.save_settings()
+            self._log_roblox_headless(
+                (
+                    "Options updated: "
+                    f"idle_priority={self.settings['roblox_headless_idle_priority']}, "
+                    f"trim_memory={self.settings['roblox_headless_trim_memory']}."
+                )
+            )
+            if self.settings.get("roblox_headless_mode_enabled", False):
+                self._schedule_roblox_headless_pass(delay_ms=50)
         
         def on_multi_roblox_toggle():
             if multi_roblox_var.get():
@@ -10314,8 +10856,8 @@ class AccountManagerUI:
 
         client_windows_card = create_settings_card(
             roblox_tab,
-            "PlaceHolder",
-            "PlaceHolderDescription",
+            "Client Windows",
+            "Window title behavior for active Roblox clients",
         )
 
         ttk.Checkbutton(
@@ -10325,6 +10867,69 @@ class AccountManagerUI:
             style="Dark.TCheckbutton",
             command=on_rename_client_titles_toggle
         ).pack(anchor="w", pady=2)
+
+        headless_mode_card = create_settings_card(
+            roblox_tab,
+            "NoClient Mode",
+            "Hide/minimize Roblox clients for complete performance",
+        )
+
+        headless_control_state = "normal" if platform.system() == "Windows" else "disabled"
+        ttk.Checkbutton(
+            headless_mode_card,
+            text="Enable Headless Mode",
+            variable=roblox_headless_mode_var,
+            style="Dark.TCheckbutton",
+            command=on_roblox_headless_toggle,
+            state=headless_control_state,
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            headless_mode_card,
+            text="Set Roblox Priority to Idle",
+            variable=roblox_headless_idle_priority_var,
+            style="Dark.TCheckbutton",
+            command=on_roblox_headless_option_change,
+            state=headless_control_state,
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            headless_mode_card,
+            text="Trim Roblox Memory While Headless",
+            variable=roblox_headless_trim_memory_var,
+            style="Dark.TCheckbutton",
+            command=on_roblox_headless_option_change,
+            state=headless_control_state,
+        ).pack(anchor="w", pady=2)
+
+        headless_button_frame = ttk.Frame(headless_mode_card, style="Dark.TFrame")
+        headless_button_frame.pack(fill="x", pady=(8, 0))
+        headless_button_frame.columnconfigure(0, weight=1)
+        headless_button_frame.columnconfigure(1, weight=1)
+
+        ttk.Button(
+            headless_button_frame,
+            text="Apply Now",
+            style="Dark.TButton",
+            command=lambda: self.apply_roblox_headless_once(show_feedback=True),
+            state=headless_control_state,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+
+        ttk.Button(
+            headless_button_frame,
+            text="Restore Windows",
+            style="Dark.TButton",
+            command=lambda: self.restore_roblox_headless_windows(show_feedback=True),
+            state=headless_control_state,
+        ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
+
+        if platform.system() != "Windows":
+            ttk.Label(
+                headless_mode_card,
+                text="Windows only.",
+                style="Dark.TLabel",
+                foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+            ).pack(anchor="w", pady=(6, 0))
 
         def open_global_settings_and_close_settings():
             """Open Roblox Settings and close settings window"""
@@ -13076,6 +13681,11 @@ class AccountManagerUI:
 
         try:
             self._auto_memory_trim_stop()
+        except Exception:
+            pass
+
+        try:
+            self._cancel_roblox_headless_pass()
         except Exception:
             pass
 
