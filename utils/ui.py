@@ -179,7 +179,10 @@ MIN_LAUNCH_DELAY_SECONDS = 0.0
 MAX_LAUNCH_DELAY_SECONDS = 60.0
 INSTALLER_VERSION_ENTRY_LIMIT = 3
 
-# Win32 flags used for force-resizing Roblox windows (test.py approach).
+# Win32 flags used for native process/window detection and force-resizing Roblox windows.
+TH32CS_SNAPPROCESS = 0x00000002
+MAX_PATH_CHARS = 260
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
@@ -191,6 +194,21 @@ WS_MINIMIZEBOX = 0x00020000
 INVALID_ACCOUNT_SYMBOL = "\u26A0"
 AUTO_REJOIN_SYMBOL = "\u21BB"
 ACTIVE_CLIENT_SYMBOL = "\u2B24"
+
+
+class ProcessEntry32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * MAX_PATH_CHARS),
+    ]
 
 
 @dataclass(frozen=True)
@@ -8362,10 +8380,14 @@ class AccountManagerUI:
         self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
 
     def _get_running_tracked_roblox_pid_set(self):
-        return set(self._query_tasklist_pid_map(getattr(self, "_tracked_roblox_exes", set())).keys())
+        return set(self._query_tracked_process_pid_map(getattr(self, "_tracked_roblox_exes", set())).keys())
 
     def _query_tasklist_pid_map(self, executables, use_cache=True):
-        """Return pid->image_name for the provided executable names via tasklist."""
+        """Return pid->image_name for the provided executable names."""
+        return self._query_tracked_process_pid_map(executables, use_cache=use_cache)
+
+    def _query_tracked_process_pid_map(self, executables, use_cache=True):
+        """Return pid->image_name from a native Windows process snapshot."""
         pid_to_image = {}
         if not executables:
             return pid_to_image
@@ -8390,43 +8412,51 @@ class AccountManagerUI:
                     if str(image_name or "").strip().lower() in target_exes
                 }
 
-        try:
-            result = subprocess.run(
-                ["tasklist", "/FO", "CSV", "/NH"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=4,
-                **subprocess_no_window_kwargs(),
-            )
-        except Exception:
+        if platform.system() != "Windows":
             return pid_to_image
 
-        stdout = (result.stdout or "").strip()
-        if not stdout or stdout.lower().startswith("info:"):
-            return pid_to_image
-
-        try:
-            rows = csv.reader(io.StringIO(stdout))
-        except Exception:
-            return pid_to_image
-
+        snapshot_handle = None
         all_pid_to_image = {}
-        for row in rows:
-            if not row or len(row) < 2:
-                continue
-            image_name = (row[0] or "").strip().strip('"')
-            pid_text = (row[1] or "").strip().strip('"')
-            try:
-                pid_value = int(pid_text)
-            except Exception:
-                continue
-            if pid_value <= 0 or not image_name:
-                continue
-            all_pid_to_image[pid_value] = image_name
-            if image_name.lower() in target_exes:
-                pid_to_image[pid_value] = image_name
+        try:
+            kernel32 = ctypes.windll.kernel32
+            create_snapshot = kernel32.CreateToolhelp32Snapshot
+            create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+            create_snapshot.restype = wintypes.HANDLE
+
+            process_first = kernel32.Process32FirstW
+            process_first.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+            process_first.restype = wintypes.BOOL
+
+            process_next = kernel32.Process32NextW
+            process_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+            process_next.restype = wintypes.BOOL
+
+            snapshot_handle = create_snapshot(TH32CS_SNAPPROCESS, 0)
+            if not snapshot_handle or snapshot_handle == INVALID_HANDLE_VALUE:
+                return pid_to_image
+
+            entry = ProcessEntry32W()
+            entry.dwSize = ctypes.sizeof(ProcessEntry32W)
+            has_entry = bool(process_first(snapshot_handle, ctypes.byref(entry)))
+            while has_entry:
+                pid_value = int(entry.th32ProcessID)
+                image_name = str(entry.szExeFile or "").strip()
+                if pid_value > 0 and image_name:
+                    all_pid_to_image[pid_value] = image_name
+                    if image_name.lower() in target_exes:
+                        pid_to_image[pid_value] = image_name
+
+                entry = ProcessEntry32W()
+                entry.dwSize = ctypes.sizeof(ProcessEntry32W)
+                has_entry = bool(process_next(snapshot_handle, ctypes.byref(entry)))
+        except Exception:
+            return pid_to_image
+        finally:
+            if snapshot_handle and snapshot_handle != INVALID_HANDLE_VALUE:
+                try:
+                    ctypes.windll.kernel32.CloseHandle(snapshot_handle)
+                except Exception:
+                    pass
 
         if all_pid_to_image:
             self._tasklist_pid_cache = {
@@ -8467,7 +8497,7 @@ class AccountManagerUI:
                 "pid_to_hung": dict(snapshot.get("pid_to_hung", {}) or {}),
             }
 
-        pid_to_image = self._query_tasklist_pid_map(target_exes, use_cache=use_cache)
+        pid_to_image = self._query_tracked_process_pid_map(target_exes, use_cache=use_cache)
         pid_to_hwnd = {}
         pid_to_title = {}
         pid_to_hung = {}
