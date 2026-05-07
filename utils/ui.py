@@ -4907,7 +4907,7 @@ class AccountManagerUI:
 
         return versions
 
-    def _fetch_weao_windows_version(self, route_path, status):
+    def _fetch_weao_windows_version(self, route_path: str, status: str) -> Optional[dict[str, Any]]:
         """Fetch a Windows Roblox version hash from a WEAO route."""
         session = requests.Session()
         session.trust_env = False
@@ -4953,7 +4953,9 @@ class AccountManagerUI:
                 "source": "WEAO",
             }
 
-        if last_exc is not None:
+        status_label = str(status or "").strip().replace("_", " ").title() or "Unknown"
+        print(f"[INFO] WEAO returned no {status_label} Version")
+        if last_exc is not None and bool(self.settings.get("enable_debug_logging", False)):
             print(f"Failed to fetch WEAO {status} Windows version: {last_exc}")
         return None
 
