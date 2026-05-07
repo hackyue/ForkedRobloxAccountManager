@@ -194,7 +194,7 @@ WS_MINIMIZEBOX = 0x00020000
 INVALID_ACCOUNT_SYMBOL = "\u26A0"
 AUTO_REJOIN_SYMBOL = "\u21BB"
 ACTIVE_CLIENT_SYMBOL = "\u2B24"
-
+SETTINGS_SYMBOL = "\u2699"
 
 class ProcessEntry32W(ctypes.Structure):
     _fields_ = [
@@ -302,6 +302,58 @@ def normalize_multi_select_event_key(event: tk.Event) -> Optional[str]:
     if not keysym:
         return None
     return normalize_multi_select_keybind(keysym)
+
+
+class ThemedToolTip:
+    def __init__(self, widget: tk.Widget, text: str, ui: Any):
+        self.widget = widget
+        self.text = text
+        self.ui = ui
+        self.window: Optional[tk.Toplevel] = None
+        self.widget.bind("<Enter>", self.show, add="+")
+        self.widget.bind("<Leave>", self.hide, add="+")
+        self.widget.bind("<ButtonPress>", self.hide, add="+")
+
+    def show(self, event: Optional[tk.Event] = None) -> None:
+        if self.window is not None or not self.text:
+            return
+
+        x_root = int(getattr(event, "x_root", 0) or 0)
+        y_root = int(getattr(event, "y_root", 0) or 0)
+        if not x_root or not y_root:
+            x_root = self.widget.winfo_rootx() + 20
+            y_root = self.widget.winfo_rooty() + self.widget.winfo_height()
+
+        window = tk.Toplevel(self.widget)
+        window.wm_overrideredirect(True)
+        window.wm_geometry(f"+{x_root + 12}+{y_root + 14}")
+        try:
+            window.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+
+        label = tk.Label(
+            window,
+            text=self.text,
+            justify="left",
+            bg=self.ui.BG_MID,
+            fg=self.ui.FG_TEXT,
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 9),
+            padx=9,
+            pady=5,
+        )
+        label.pack()
+        self.window = window
+
+    def hide(self, event: Optional[tk.Event] = None) -> None:
+        if self.window is None:
+            return
+        try:
+            self.window.destroy()
+        finally:
+            self.window = None
 
 
 def clamp_multi_launch_delay(value):
@@ -1335,6 +1387,8 @@ class AccountManagerUI:
         self.place_entry.bind("<KeyRelease>", self.on_place_id_change)
         self.place_label.bind("<Button-3>", self.show_launch_input_context_menu)
         self.place_entry.bind("<Button-3>", self.show_launch_input_context_menu)
+        ThemedToolTip(self.place_label, "Right click to change to Join user", self)
+        ThemedToolTip(self.place_entry, "Right click to change to Join user", self)
 
         self.private_server_field_frame = ttk.Frame(right_frame, style="Dark.TFrame")
         self.private_server_field_frame.pack(fill="x", pady=(0, 5))
@@ -1353,6 +1407,8 @@ class AccountManagerUI:
         self.private_server_entry.bind("<Button-1>", self.on_place_target_field_click)
         self.private_server_label.bind("<Button-3>", self.show_place_target_context_menu)
         self.private_server_entry.bind("<Button-3>", self.show_place_target_context_menu)
+        ThemedToolTip(self.private_server_label, "Right click to change modes", self)
+        ThemedToolTip(self.private_server_entry, "Right click to change modes", self)
 
         self.version_label = ttk.Label(right_frame, text="Roblox Version (Optional)", style="Dark.TLabel", font=("Segoe UI", 9, "bold"))
         self.version_label.pack(anchor="w", pady=(5, 0))
@@ -10828,6 +10884,7 @@ class AccountManagerUI:
 
         for widget in (multi_select_row, multi_select_checkbutton):
             widget.bind("<Button-3>", show_multi_select_keybind_menu)
+        ThemedToolTip(multi_select_checkbutton, "Change Key by right clicking", self)
 
         ttk.Checkbutton(
             window_behavior_card,
