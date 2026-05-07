@@ -24,7 +24,7 @@ import time
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -195,6 +195,96 @@ INVALID_ACCOUNT_SYMBOL = "\u26A0"
 AUTO_REJOIN_SYMBOL = "\u21BB"
 ACTIVE_CLIENT_SYMBOL = "\u2B24"
 SETTINGS_SYMBOL = "\u2699"
+GDI_PLUS_OK = 0
+DISCORD_LOG_MIRROR_SEND_DEBOUNCE_MS = 250
+
+
+class Guid(ctypes.Structure):
+    _fields_: list[tuple[str, Any]] = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class GdiplusStartupInput(ctypes.Structure):
+    _fields_: list[tuple[str, Any]] = [
+        ("GdiplusVersion", wintypes.UINT),
+        ("DebugEventCallback", ctypes.c_void_p),
+        ("SuppressBackgroundThread", wintypes.BOOL),
+        ("SuppressExternalCodecs", wintypes.BOOL),
+    ]
+
+
+def create_png_encoder_guid() -> Guid:
+    return Guid(
+        0x557CF406,
+        0x1A04,
+        0x11D3,
+        (ctypes.c_ubyte * 8)(0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E),
+    )
+
+
+def save_hbitmap_as_png(hbitmap: int, screenshot_path: Path) -> bool:
+    if platform.system() != "Windows" or not hbitmap:
+        return False
+    try:
+        gdiplus = ctypes.windll.gdiplus
+    except (AttributeError, OSError):
+        return False
+
+    token = ctypes.c_void_p()
+    image = ctypes.c_void_p()
+    startup_input = GdiplusStartupInput(1, None, False, False)
+    png_encoder_guid = create_png_encoder_guid()
+
+    try:
+        gdiplus.GdiplusStartup.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(GdiplusStartupInput),
+            ctypes.c_void_p,
+        ]
+        gdiplus.GdiplusStartup.restype = ctypes.c_ulong
+        gdiplus.GdipCreateBitmapFromHBITMAP.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        gdiplus.GdipCreateBitmapFromHBITMAP.restype = ctypes.c_ulong
+        gdiplus.GdipSaveImageToFile.argtypes = [
+            ctypes.c_void_p,
+            wintypes.LPCWSTR,
+            ctypes.POINTER(Guid),
+            ctypes.c_void_p,
+        ]
+        gdiplus.GdipSaveImageToFile.restype = ctypes.c_ulong
+        gdiplus.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+        gdiplus.GdipDisposeImage.restype = ctypes.c_ulong
+        gdiplus.GdiplusShutdown.argtypes = [ctypes.c_void_p]
+        gdiplus.GdiplusShutdown.restype = None
+
+        startup_status = gdiplus.GdiplusStartup(ctypes.byref(token), ctypes.byref(startup_input), None)
+        if startup_status != GDI_PLUS_OK:
+            return False
+        bitmap_status = gdiplus.GdipCreateBitmapFromHBITMAP(ctypes.c_void_p(hbitmap), None, ctypes.byref(image))
+        if bitmap_status != GDI_PLUS_OK or not image.value:
+            return False
+        save_status = gdiplus.GdipSaveImageToFile(
+            image,
+            str(screenshot_path),
+            ctypes.byref(png_encoder_guid),
+            None,
+        )
+        return save_status == GDI_PLUS_OK
+    except (AttributeError, OSError, ctypes.ArgumentError, ValueError):
+        return False
+    finally:
+        if image.value:
+            gdiplus.GdipDisposeImage(image)
+        if token.value:
+            gdiplus.GdiplusShutdown(token)
+
 
 class ProcessEntry32W(ctypes.Structure):
     _fields_ = [
@@ -227,6 +317,68 @@ class InstanceManagerCardWidgets:
     pid_label: tk.Label
     status_label: tk.Label
     actions_frame: tk.Frame
+
+
+@dataclass(frozen=True)
+class DiscordLogFilterPreset:
+    key: str
+    label: str
+    include_filter: str
+    exclude_filter: str
+
+
+DISCORD_LOG_FILTER_PRESET_CUSTOM: str = "custom"
+DISCORD_LOG_FILTER_PRESETS: tuple[DiscordLogFilterPreset, ...] = (
+    DiscordLogFilterPreset("all", "Everything", "", ""),
+    DiscordLogFilterPreset(
+        "errors",
+        "Errors & Warnings",
+        "error, warning, failed, fail, exception, traceback, invalid, expired",
+        "",
+    ),
+    DiscordLogFilterPreset(
+        "launches",
+        "Launch Activity",
+        "launch, launched, roblox, instance, process, pid, place, server",
+        "",
+    ),
+    DiscordLogFilterPreset(
+        "accounts",
+        "Accounts & Validation",
+        "account, validation, valid, invalid, cookie, group, note, rejoin",
+        "",
+    ),
+    DiscordLogFilterPreset(
+        "updates",
+        "Updates & Downloads",
+        "update, install, download, version, fastflags, addon",
+        "",
+    ),
+    DiscordLogFilterPreset(
+        "quiet",
+        "Quiet Mode",
+        "",
+        "debug, heartbeat, polling, refresh, showing",
+    ),
+    DiscordLogFilterPreset(DISCORD_LOG_FILTER_PRESET_CUSTOM, "Custom", "", ""),
+)
+DISCORD_LOG_FILTER_PRESET_BY_KEY: dict[str, DiscordLogFilterPreset] = {
+    preset.key: preset for preset in DISCORD_LOG_FILTER_PRESETS
+}
+DISCORD_LOG_FILTER_PRESET_BY_LABEL: dict[str, DiscordLogFilterPreset] = {
+    preset.label: preset for preset in DISCORD_LOG_FILTER_PRESETS
+}
+
+
+def normalize_discord_log_filter_preset(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    if key in DISCORD_LOG_FILTER_PRESET_BY_KEY:
+        return key
+    return "all"
+
+
+def get_discord_log_filter_preset(value: Any) -> DiscordLogFilterPreset:
+    return DISCORD_LOG_FILTER_PRESET_BY_KEY[normalize_discord_log_filter_preset(value)]
 
 
 MULTI_SELECT_KEYBIND_DEFAULT: str = "Control"
@@ -302,6 +454,61 @@ def normalize_multi_select_event_key(event: tk.Event) -> Optional[str]:
     if not keysym:
         return None
     return normalize_multi_select_keybind(keysym)
+
+
+def redact_sensitive_console_text(text: str) -> str:
+    redacted = text
+    redacted = re.sub(
+        r'(?i)(\"(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\"\s*:\s*\")([^\"]*)(\")',
+        r"\1[REDACTED]\3",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)('(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)'\s*:\s*')([^']*)(')",
+        r"\1[REDACTED]\3",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)\b(password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1\2[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)([?&](?:password|pass|token|cookie|auth|authorization)=)([^&\s]+)",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(\.ROBLOSECURITY\s*=\s*)([^;\s]+)",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)(\.ROBLOSECURITY\s*[:=]\s*)([^;\s]+)",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[^\s\"'<>)]*",
+        "[DISCORD_WEBHOOK_REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
+        r"\1<user>",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)([\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
+        r"\1<user>",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)([\\/]+home[\\/]+)([^\\/\r\n\"']+)",
+        r"\1<user>",
+        redacted,
+    )
+    return redacted
 
 
 class ThemedToolTip:
@@ -636,10 +843,27 @@ class ConsoleOutputBuffer:
         self.stdout_proxy = None
         self.stderr_proxy = None
         self._redaction_enabled_getter = None
+        self._entry_listeners: list[Callable[[], None]] = []
         atexit.register(self._cleanup)
 
     def set_redaction_enabled_getter(self, getter):
         self._redaction_enabled_getter = getter
+
+    def add_entry_listener(self, listener: Callable[[], None]) -> None:
+        if not callable(listener):
+            return
+        with self.lock:
+            if listener not in self._entry_listeners:
+                self._entry_listeners.append(listener)
+
+    def _notify_entry_listeners(self) -> None:
+        with self.lock:
+            listeners = list(self._entry_listeners)
+        for listener in listeners:
+            try:
+                listener()
+            except (RuntimeError, tk.TclError):
+                pass
 
     def _is_redaction_enabled(self):
         if not callable(self._redaction_enabled_getter):
@@ -653,64 +877,7 @@ class ConsoleOutputBuffer:
         if not text or not self._is_redaction_enabled():
             return text
 
-        redacted = text
-
-        # JSON-like fields: "password": "...", "cookie": "...", etc.
-        redacted = re.sub(
-            r'(?i)(\"(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\"\s*:\s*\")([^\"]*)(\")',
-            r"\1[REDACTED]\3",
-            redacted,
-        )
-        redacted = re.sub(
-            r"(?i)('(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)'\s*:\s*')([^']*)(')",
-            r"\1[REDACTED]\3",
-            redacted,
-        )
-
-        # Key/value pairs in plain logs.
-        redacted = re.sub(
-            r"(?i)\b(password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
-            r"\1\2[REDACTED]",
-            redacted,
-        )
-
-        # Query-string params.
-        redacted = re.sub(
-            r"(?i)([?&](?:password|pass|token|cookie|auth|authorization)=)([^&\s]+)",
-            r"\1[REDACTED]",
-            redacted,
-        )
-
-        # Roblox security cookie in headers or cookie strings.
-        redacted = re.sub(
-            r"(?i)(\.ROBLOSECURITY\s*=\s*)([^;\s]+)",
-            r"\1[REDACTED]",
-            redacted,
-        )
-        redacted = re.sub(
-            r"(?i)(\.ROBLOSECURITY\s*[:=]\s*)([^;\s]+)",
-            r"\1[REDACTED]",
-            redacted,
-        )
-
-        # Redact username segment in local filesystem paths.
-        redacted = re.sub(
-            r"(?i)([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
-            r"\1<user>",
-            redacted,
-        )
-        redacted = re.sub(
-            r"(?i)([\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
-            r"\1<user>",
-            redacted,
-        )
-        redacted = re.sub(
-            r"(?i)([\\/]+home[\\/]+)([^\\/\r\n\"']+)",
-            r"\1<user>",
-            redacted,
-        )
-
-        return redacted
+        return redact_sensitive_console_text(text)
 
     def start_capture(self):
         if self.stdout_proxy and self.stderr_proxy:
@@ -736,6 +903,7 @@ class ConsoleOutputBuffer:
         if not data:
             return
         key = "STDOUT" if label == "OUT" else "STDERR"
+        has_new_entries = False
         with self.lock:
             buffer = self.partials[key] + data
             lines = buffer.split("\n")
@@ -744,6 +912,9 @@ class ConsoleOutputBuffer:
                 cleaned = line.rstrip("\r")
                 if cleaned:
                     self._append_entry(key, cleaned)
+                    has_new_entries = True
+        if has_new_entries:
+            self._notify_entry_listeners()
 
     def _append_entry(self, label, line):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1140,6 +1311,13 @@ class AccountManagerUI:
         self._auto_relaunch_in_progress = False
         self._auto_memory_trim_after_id = None
         self._auto_memory_trim_in_progress = False
+        self._discord_log_mirror_after_id = None
+        self._discord_log_mirror_in_progress = False
+        self._discord_log_mirror_screenshot_after_id = None
+        self._discord_log_mirror_screenshot_in_progress = False
+        self._discord_log_mirror_last_index = 0
+        self._discord_log_mirror_last_error = ""
+        self._discord_log_mirror_sent_startup_notice = False
         self._keep_clients_arranged_after_id = None
         self._keep_clients_arranged_last_signature = None
         self._keep_clients_arranged_check_in_progress = False
@@ -1218,6 +1396,7 @@ class AccountManagerUI:
         self.fastflags_window = None
         self.instance_manager_window = None
         self.addons_window = None
+        self.discord_log_mirror_window = None
 
         self.style = ttk.Style()
         self.style.theme_use("clam")
@@ -1251,6 +1430,7 @@ class AccountManagerUI:
         self.console_output.set_redaction_enabled_getter(
             lambda: bool(self.settings.get("hide_sensitive_info", False))
         )
+        self.console_output.add_entry_listener(self._on_console_output_entry_added)
         try:
             self.root.attributes("-topmost", bool(self.settings.get("enable_topmost", False)))
         except Exception:
@@ -1533,6 +1713,7 @@ class AccountManagerUI:
         self.root.after(500, self._auto_relaunch_maybe_start)
         self.root.after(500, self._auto_memory_trim_maybe_start)
         self.root.after(700, self._roblox_headless_maybe_start)
+        self.root.after(900, self._discord_log_mirror_maybe_start)
         self.root.after(1500, self._auto_update_maybe_start)
 
     def load_settings(self):
@@ -1576,6 +1757,20 @@ class AccountManagerUI:
             "auto_relaunch_group": "",
             "auto_memory_trim_enabled": False,
             "auto_memory_trim_interval_minutes": 5,
+            "discord_log_mirror_enabled": False,
+            "discord_log_mirror_webhook_url": "",
+            "discord_log_mirror_include_stdout": True,
+            "discord_log_mirror_include_stderr": True,
+            "discord_log_mirror_redact_sensitive": True,
+            "discord_log_mirror_send_startup_notice": False,
+            "discord_log_mirror_filter_preset": "all",
+            "discord_log_mirror_include_filter": "",
+            "discord_log_mirror_exclude_filter": "",
+            "discord_log_mirror_ping_user_id": "",
+            "discord_log_mirror_ping_only_errors": True,
+            "discord_log_mirror_screenshot_interval_minutes": 0,
+            "discord_log_mirror_screenshot_all_monitors": False,
+            "discord_log_mirror_max_lines_per_message": 20,
             "roblox_headless_mode_enabled": False,
             "roblox_headless_idle_priority": True,
             "roblox_headless_trim_memory": True,
@@ -1592,6 +1787,7 @@ class AccountManagerUI:
         legacy_auto_arrange_after_group_launch = self.settings.pop("auto_arrange_after_group_launch", False)
         legacy_auto_arrange_after_launch = self.settings.pop("auto_arrange_after_launch", None)
         self.settings.pop("installer_previous_versions", None)
+        self.settings.pop("discord_log_mirror_batch_interval_seconds", None)
         if "keep_roblox_clients_arranged" not in self.settings:
             migrated_keep_clients_arranged = legacy_auto_arrange_after_launch
             if migrated_keep_clients_arranged is None:
@@ -1638,6 +1834,45 @@ class AccountManagerUI:
         except (TypeError, ValueError):
             mm = 5
         self.settings["auto_memory_trim_interval_minutes"] = max(1, min(120, mm))
+        try:
+            discord_max_lines = int(self.settings.get("discord_log_mirror_max_lines_per_message", 20) or 20)
+        except (TypeError, ValueError):
+            discord_max_lines = 20
+        self.settings["discord_log_mirror_max_lines_per_message"] = max(1, min(50, discord_max_lines))
+        self.settings["discord_log_mirror_webhook_url"] = str(
+            self.settings.get("discord_log_mirror_webhook_url", "") or ""
+        ).strip()
+        self.settings["discord_log_mirror_include_stdout"] = bool(
+            self.settings.get("discord_log_mirror_include_stdout", True)
+        )
+        self.settings["discord_log_mirror_include_stderr"] = bool(
+            self.settings.get("discord_log_mirror_include_stderr", True)
+        )
+        self.settings["discord_log_mirror_redact_sensitive"] = bool(
+            self.settings.get("discord_log_mirror_redact_sensitive", True)
+        )
+        self.settings["discord_log_mirror_send_startup_notice"] = bool(
+            self.settings.get("discord_log_mirror_send_startup_notice", False)
+        )
+        self.settings["discord_log_mirror_filter_preset"] = normalize_discord_log_filter_preset(
+            self.settings.get("discord_log_mirror_filter_preset", "all")
+        )
+        self.settings["discord_log_mirror_ping_user_id"] = re.sub(
+            r"\D",
+            "",
+            str(self.settings.get("discord_log_mirror_ping_user_id", "") or ""),
+        )
+        self.settings["discord_log_mirror_ping_only_errors"] = bool(
+            self.settings.get("discord_log_mirror_ping_only_errors", True)
+        )
+        try:
+            screenshot_interval = int(self.settings.get("discord_log_mirror_screenshot_interval_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            screenshot_interval = 0
+        self.settings["discord_log_mirror_screenshot_interval_minutes"] = max(0, min(1440, screenshot_interval))
+        self.settings["discord_log_mirror_screenshot_all_monitors"] = bool(
+            self.settings.get("discord_log_mirror_screenshot_all_monitors", False)
+        )
         if platform.system() != "Windows":
             self.settings["roblox_headless_mode_enabled"] = False
         self.settings["roblox_headless_mode_enabled"] = bool(
@@ -11749,6 +11984,23 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_instance_manager()
 
+        def open_discord_log_mirror_and_close_settings():
+            settings_window.destroy()
+            self.open_discord_log_mirror_panel()
+
+        discord_mirror_card = create_settings_card(
+            advanced_tab,
+            "Discord Monitor",
+            "Send logs and screenshots to a Discord webhook",
+        )
+
+        ttk.Button(
+            discord_mirror_card,
+            text="Open Discord Monitor",
+            style="Dark.TButton",
+            command=open_discord_log_mirror_and_close_settings,
+        ).pack(fill="x")
+
         console_card = create_settings_card(advanced_tab, "Console", "Open the live log console")
 
         ttk.Button(
@@ -13974,6 +14226,833 @@ class AccountManagerUI:
         if self.console_window:
             self.console_window.show()
 
+    def open_discord_log_mirror_panel(self, parent: Optional[tk.Misc] = None) -> None:
+        if self.discord_log_mirror_window and self.discord_log_mirror_window.winfo_exists():
+            self.discord_log_mirror_window.deiconify()
+            self.discord_log_mirror_window.lift()
+            self.discord_log_mirror_window.focus_force()
+            return
+
+        owner = parent or self.root
+        window = tk.Toplevel(owner)
+        window.withdraw()
+        window.title("Discord Monitor")
+        window.configure(bg=self.BG_DARK)
+        window.resizable(True, True)
+        window.transient(owner)
+        window.grab_set()
+        self.register_toplevel(window)
+        self.discord_log_mirror_window = window
+
+        if self.settings.get("enable_topmost", False):
+            try:
+                window.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+
+        enabled_var = tk.BooleanVar(value=self.settings.get("discord_log_mirror_enabled", False))
+        webhook_var = tk.StringVar(value=self.settings.get("discord_log_mirror_webhook_url", ""))
+        stdout_var = tk.BooleanVar(value=self.settings.get("discord_log_mirror_include_stdout", True))
+        stderr_var = tk.BooleanVar(value=self.settings.get("discord_log_mirror_include_stderr", True))
+        redact_var = tk.BooleanVar(value=self.settings.get("discord_log_mirror_redact_sensitive", True))
+        startup_var = tk.BooleanVar(value=self.settings.get("discord_log_mirror_send_startup_notice", False))
+        ping_user_id_var = tk.StringVar(value=self.settings.get("discord_log_mirror_ping_user_id", ""))
+        ping_only_errors_var = tk.BooleanVar(value=self.settings.get("discord_log_mirror_ping_only_errors", True))
+        screenshot_interval_var = tk.IntVar(
+            value=int(self.settings.get("discord_log_mirror_screenshot_interval_minutes", 0) or 0)
+        )
+        all_monitors_available = self._get_discord_screenshot_monitor_count() > 1
+        screenshot_all_monitors_var = tk.BooleanVar(
+            value=all_monitors_available
+            and bool(self.settings.get("discord_log_mirror_screenshot_all_monitors", False))
+        )
+        selected_filter_preset = get_discord_log_filter_preset(
+            self.settings.get("discord_log_mirror_filter_preset", "all")
+        )
+        if selected_filter_preset.key == DISCORD_LOG_FILTER_PRESET_CUSTOM:
+            selected_filter_preset = get_discord_log_filter_preset("all")
+        preset_labels = [
+            preset.label
+            for preset in DISCORD_LOG_FILTER_PRESETS
+            if preset.key != DISCORD_LOG_FILTER_PRESET_CUSTOM
+        ]
+        filter_preset_label_var = tk.StringVar(value=selected_filter_preset.label)
+        max_lines_var = tk.IntVar(value=self._get_discord_log_mirror_max_lines_per_message())
+
+        def close_panel() -> None:
+            try:
+                save_panel_settings()
+            except tk.TclError:
+                pass
+            try:
+                window.destroy()
+            finally:
+                self.discord_log_mirror_window = None
+                try:
+                    if owner is not self.root and owner.winfo_exists():
+                        owner.grab_set()
+                        owner.focus_force()
+                except tk.TclError:
+                    pass
+
+        def save_panel_settings(*_args: object) -> None:
+            try:
+                max_lines = int(max_lines_var.get())
+            except (tk.TclError, ValueError):
+                max_lines = 20
+            try:
+                screenshot_interval = int(screenshot_interval_var.get())
+            except (tk.TclError, ValueError):
+                screenshot_interval = 0
+
+            max_lines = max(1, min(50, max_lines))
+            screenshot_interval = max(0, min(1440, screenshot_interval))
+            max_lines_var.set(max_lines)
+            screenshot_interval_var.set(screenshot_interval)
+
+            webhook_url = str(webhook_var.get() or "").strip()
+            ping_user_id = re.sub(r"\D", "", str(ping_user_id_var.get() or ""))
+            ping_user_id_var.set(ping_user_id)
+            self.settings["discord_log_mirror_enabled"] = bool(enabled_var.get())
+            self.settings["discord_log_mirror_webhook_url"] = webhook_url
+            self.settings["discord_log_mirror_include_stdout"] = bool(stdout_var.get())
+            self.settings["discord_log_mirror_include_stderr"] = bool(stderr_var.get())
+            self.settings["discord_log_mirror_redact_sensitive"] = bool(redact_var.get())
+            self.settings["discord_log_mirror_send_startup_notice"] = bool(startup_var.get())
+            self.settings["discord_log_mirror_ping_user_id"] = ping_user_id
+            self.settings["discord_log_mirror_ping_only_errors"] = bool(ping_only_errors_var.get())
+            self.settings["discord_log_mirror_screenshot_interval_minutes"] = screenshot_interval
+            self.settings["discord_log_mirror_screenshot_all_monitors"] = (
+                all_monitors_available and bool(screenshot_all_monitors_var.get())
+            )
+            screenshot_all_monitors_var.set(bool(self.settings["discord_log_mirror_screenshot_all_monitors"]))
+            selected_preset = DISCORD_LOG_FILTER_PRESET_BY_LABEL.get(
+                str(filter_preset_label_var.get() or ""),
+                get_discord_log_filter_preset(self.settings.get("discord_log_mirror_filter_preset", "all")),
+            )
+            self.settings["discord_log_mirror_filter_preset"] = selected_preset.key
+            self.settings["discord_log_mirror_include_filter"] = selected_preset.include_filter
+            self.settings["discord_log_mirror_exclude_filter"] = selected_preset.exclude_filter
+            self.settings["discord_log_mirror_max_lines_per_message"] = max_lines
+            self.save_settings()
+
+            if self.settings["discord_log_mirror_enabled"] and webhook_url and self._is_valid_discord_webhook_url(webhook_url):
+                self._discord_log_mirror_start(reset_index=True)
+            else:
+                self._discord_log_mirror_stop()
+
+        def send_test() -> None:
+            save_panel_settings()
+            self._send_discord_log_mirror_test(window)
+
+        def send_test_screenshot() -> None:
+            save_panel_settings()
+            self._send_discord_log_mirror_test_screenshot(window)
+
+        def apply_filter_preset(*_args: object) -> None:
+            selected_preset = DISCORD_LOG_FILTER_PRESET_BY_LABEL.get(str(filter_preset_label_var.get() or ""))
+            if selected_preset is None:
+                selected_preset = get_discord_log_filter_preset("all")
+                filter_preset_label_var.set(selected_preset.label)
+            save_panel_settings()
+
+        main = ttk.Frame(window, style="Dark.TFrame")
+        main.pack(fill="both", expand=True, padx=18, pady=16)
+
+        ttk.Label(
+            main,
+            text="Discord Monitor",
+            style="Dark.TLabel",
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+
+        ttk.Checkbutton(
+            main,
+            text="Enable Discord Logging",
+            variable=enabled_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(anchor="w", pady=2)
+
+        ttk.Label(main, text="Webhook URL", style="Dark.TLabel").pack(anchor="w", pady=(8, 2))
+        webhook_entry = ttk.Entry(main, textvariable=webhook_var, style="Dark.TEntry", show="*")
+        webhook_entry.pack(fill="x")
+        webhook_entry.bind("<FocusOut>", lambda _evt: save_panel_settings())
+        webhook_entry.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
+
+        stream_frame = ttk.Frame(main, style="Dark.TFrame")
+        stream_frame.pack(fill="x", pady=(10, 0))
+        ttk.Checkbutton(
+            stream_frame,
+            text="Normal logs",
+            variable=stdout_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(side="left")
+        ttk.Checkbutton(
+            stream_frame,
+            text="Errors",
+            variable=stderr_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(side="left", padx=(10, 0))
+
+        ttk.Checkbutton(
+            main,
+            text="Redact sensitive info before sending",
+            variable=redact_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(anchor="w", pady=(8, 0))
+
+        ttk.Checkbutton(
+            main,
+            text="Send connected notice on startup",
+            variable=startup_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(anchor="w", pady=2)
+
+        ttk.Label(main, text="Ping user on alerts (User ID)", style="Dark.TLabel").pack(anchor="w", pady=(10, 2))
+        ping_entry = ttk.Entry(main, textvariable=ping_user_id_var, style="Dark.TEntry")
+        ping_entry.pack(fill="x")
+        ping_entry.bind("<FocusOut>", lambda _evt: save_panel_settings())
+        ping_entry.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
+
+        ttk.Checkbutton(
+            main,
+            text="Ping only on [Error]",
+            variable=ping_only_errors_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(anchor="w", pady=(6, 0))
+
+        ttk.Label(main, text="Log Filter", style="Dark.TLabel").pack(anchor="w", pady=(10, 2))
+        filter_preset_combo = ttk.Combobox(
+            main,
+            textvariable=filter_preset_label_var,
+            values=preset_labels,
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        filter_preset_combo.pack(fill="x")
+        filter_preset_combo.bind("<<ComboboxSelected>>", apply_filter_preset)
+
+        limits_frame = ttk.Frame(main, style="Dark.TFrame")
+        limits_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(limits_frame, text="Lines per message", style="Dark.TLabel").pack(side="left")
+        lines_spin = ttk.Spinbox(
+            limits_frame,
+            from_=1,
+            to=50,
+            increment=1,
+            textvariable=max_lines_var,
+            width=7,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=save_panel_settings,
+        )
+        lines_spin.pack(side="left", padx=(6, 0))
+        lines_spin.bind("<FocusOut>", lambda _evt: save_panel_settings())
+        lines_spin.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
+
+        screenshot_frame = ttk.Frame(main, style="Dark.TFrame")
+        screenshot_frame.pack(fill="x", pady=(10, 0))
+        ttk.Label(screenshot_frame, text="Screenshot every", style="Dark.TLabel").pack(side="left")
+        screenshot_spin = ttk.Spinbox(
+            screenshot_frame,
+            from_=0,
+            to=1440,
+            increment=1,
+            textvariable=screenshot_interval_var,
+            width=7,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=save_panel_settings,
+        )
+        screenshot_spin.pack(side="left", padx=(6, 6))
+        ttk.Label(screenshot_frame, text="minutes (0=off)", style="Dark.TLabel").pack(side="left")
+        screenshot_spin.bind("<FocusOut>", lambda _evt: save_panel_settings())
+        screenshot_spin.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
+
+        if all_monitors_available:
+            ttk.Checkbutton(
+                main,
+                text="Screenshot all monitors",
+                variable=screenshot_all_monitors_var,
+                style="Dark.TCheckbutton",
+                command=save_panel_settings,
+            ).pack(anchor="w", pady=(6, 0))
+
+        button_frame = ttk.Frame(main, style="Dark.TFrame")
+        button_frame.pack(fill="x", pady=(12, 0))
+        ttk.Button(button_frame, text="Send Test", style="Dark.TButton", command=send_test).pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, 5),
+        )
+        ttk.Button(
+            button_frame,
+            text="Send Test Screenshot",
+            style="Dark.TButton",
+            command=send_test_screenshot,
+        ).pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=5,
+        )
+        ttk.Button(button_frame, text="Close", style="Dark.TButton", command=close_panel).pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(5, 0),
+        )
+
+        window.protocol("WM_DELETE_WINDOW", close_panel)
+        window.bind("<Escape>", lambda _evt: (close_panel(), "break")[1])
+        window.update_idletasks()
+        self._center_window(window, max(620, window.winfo_reqwidth() + 50), max(500, window.winfo_reqheight() + 50))
+        window.deiconify()
+        webhook_entry.focus_set()
+
+    def _get_discord_log_mirror_webhook_url(self) -> str:
+        return str(self.settings.get("discord_log_mirror_webhook_url", "") or "").strip()
+
+    def _is_valid_discord_webhook_url(self, webhook_url: str) -> bool:
+        return bool(
+            re.match(
+                r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[^\s/]+",
+                str(webhook_url or "").strip(),
+            )
+        )
+
+    def _discord_log_mirror_get_current_total(self) -> int:
+        _, total = self.console_output.get_entries_since(10**9)
+        return int(total)
+
+    def _discord_log_mirror_maybe_start(self) -> None:
+        webhook_url = self._get_discord_log_mirror_webhook_url()
+        if self.settings.get("discord_log_mirror_enabled", False) and self._is_valid_discord_webhook_url(webhook_url):
+            self._discord_log_mirror_start(reset_index=True)
+        else:
+            self._discord_log_mirror_stop()
+
+    def _on_console_output_entry_added(self) -> None:
+        self._discord_log_mirror_schedule()
+
+    def _discord_log_mirror_start(self, reset_index: bool = False) -> None:
+        if reset_index:
+            self._discord_log_mirror_last_index = self._discord_log_mirror_get_current_total()
+        if self.settings.get("discord_log_mirror_send_startup_notice", False):
+            self._discord_log_mirror_send_startup_notice()
+        self._discord_log_mirror_schedule_screenshot(reset=True)
+
+    def _discord_log_mirror_stop(self) -> None:
+        after_id = self._discord_log_mirror_after_id
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._discord_log_mirror_after_id = None
+        self._discord_log_mirror_in_progress = False
+        self._discord_log_mirror_cancel_screenshot()
+
+    def _discord_log_mirror_schedule(self, delay_ms: Optional[int] = None) -> None:
+        if self._discord_log_mirror_after_id is not None:
+            return
+        webhook_url = self._get_discord_log_mirror_webhook_url()
+        if not self.settings.get("discord_log_mirror_enabled", False) or not self._is_valid_discord_webhook_url(webhook_url):
+            return
+        if delay_ms is None:
+            delay_ms = DISCORD_LOG_MIRROR_SEND_DEBOUNCE_MS
+        try:
+            self._discord_log_mirror_after_id = self.root.after(max(0, int(delay_ms)), self._discord_log_mirror_poll)
+        except (RuntimeError, tk.TclError):
+            self._discord_log_mirror_after_id = None
+
+    def _get_discord_log_mirror_max_lines_per_message(self) -> int:
+        try:
+            value = int(self.settings.get("discord_log_mirror_max_lines_per_message", 20) or 20)
+        except (TypeError, ValueError):
+            value = 20
+        return max(1, min(50, value))
+
+    def _get_discord_log_mirror_screenshot_interval_minutes(self) -> int:
+        try:
+            value = int(self.settings.get("discord_log_mirror_screenshot_interval_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        return max(0, min(1440, value))
+
+    def _get_discord_screenshot_monitor_count(self) -> int:
+        if not win32api:
+            return 0
+        try:
+            return len(win32api.EnumDisplayMonitors(None, None))
+        except (AttributeError, TypeError, win32api.error):
+            return 0
+
+    def _discord_log_mirror_should_capture_all_monitors(self) -> bool:
+        return bool(self.settings.get("discord_log_mirror_screenshot_all_monitors", False)) and (
+            self._get_discord_screenshot_monitor_count() > 1
+        )
+
+    def _get_discord_screenshot_virtual_bounds(self) -> Optional[tuple[int, int, int, int]]:
+        if not win32api or not win32con:
+            return None
+        try:
+            left = int(win32api.GetSystemMetrics(getattr(win32con, "SM_XVIRTUALSCREEN", 76)))
+            top = int(win32api.GetSystemMetrics(getattr(win32con, "SM_YVIRTUALSCREEN", 77)))
+            width = int(win32api.GetSystemMetrics(getattr(win32con, "SM_CXVIRTUALSCREEN", 78)))
+            height = int(win32api.GetSystemMetrics(getattr(win32con, "SM_CYVIRTUALSCREEN", 79)))
+        except (AttributeError, TypeError, ValueError, win32api.error):
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return left, top, left + width, top + height
+
+    def _get_discord_screenshot_current_monitor_bounds(self) -> Optional[tuple[int, int, int, int]]:
+        if not win32api or not win32gui:
+            return None
+        try:
+            hwnd = int(self.root.winfo_id())
+            monitor_handle = win32api.MonitorFromWindow(
+                hwnd,
+                getattr(win32con, "MONITOR_DEFAULTTONEAREST", 2),
+            )
+            monitor_info = win32api.GetMonitorInfo(monitor_handle)
+        except (AttributeError, TypeError, ValueError, tk.TclError, win32api.error):
+            return None
+
+        monitor_bounds = monitor_info.get("Monitor")
+        if not monitor_bounds or len(monitor_bounds) != 4:
+            return None
+        return (
+            int(monitor_bounds[0]),
+            int(monitor_bounds[1]),
+            int(monitor_bounds[2]),
+            int(monitor_bounds[3]),
+        )
+
+    def _get_discord_screenshot_bounds(self) -> Optional[tuple[int, int, int, int]]:
+        if self._discord_log_mirror_should_capture_all_monitors():
+            virtual_bounds = self._get_discord_screenshot_virtual_bounds()
+            if virtual_bounds is not None:
+                return virtual_bounds
+        current_monitor_bounds = self._get_discord_screenshot_current_monitor_bounds()
+        if current_monitor_bounds is not None:
+            return current_monitor_bounds
+        return self._get_discord_screenshot_virtual_bounds()
+
+    def _discord_log_mirror_cancel_screenshot(self) -> None:
+        after_id = self._discord_log_mirror_screenshot_after_id
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._discord_log_mirror_screenshot_after_id = None
+        self._discord_log_mirror_screenshot_in_progress = False
+
+    def _discord_log_mirror_schedule_screenshot(self, reset: bool = False) -> None:
+        if reset:
+            self._discord_log_mirror_cancel_screenshot()
+        if self._discord_log_mirror_screenshot_after_id is not None:
+            return
+        if not self.settings.get("discord_log_mirror_enabled", False):
+            return
+        if not self._is_valid_discord_webhook_url(self._get_discord_log_mirror_webhook_url()):
+            return
+        interval_minutes = self._get_discord_log_mirror_screenshot_interval_minutes()
+        if interval_minutes <= 0:
+            return
+        try:
+            self._discord_log_mirror_screenshot_after_id = self.root.after(
+                interval_minutes * 60 * 1000,
+                self._discord_log_mirror_send_screenshot,
+            )
+        except tk.TclError:
+            self._discord_log_mirror_screenshot_after_id = None
+
+    def _discord_log_mirror_poll(self) -> None:
+        self._discord_log_mirror_after_id = None
+        if not self.settings.get("discord_log_mirror_enabled", False):
+            return
+        if not self._is_valid_discord_webhook_url(self._get_discord_log_mirror_webhook_url()):
+            return
+        if self._discord_log_mirror_in_progress:
+            self._discord_log_mirror_schedule()
+            return
+
+        entries, total = self.console_output.get_entries_since(self._discord_log_mirror_last_index)
+        self._discord_log_mirror_last_index = int(total)
+        filtered_entries = self._filter_discord_log_mirror_entries(entries)
+
+        if filtered_entries:
+            self._discord_log_mirror_in_progress = True
+            threading.Thread(
+                target=self._discord_log_mirror_send_entries,
+                args=(filtered_entries,),
+                daemon=True,
+                name="discord-log-mirror",
+            ).start()
+
+    def _discord_log_mirror_send_screenshot(self) -> None:
+        self._discord_log_mirror_screenshot_after_id = None
+        if self._discord_log_mirror_screenshot_in_progress:
+            self._discord_log_mirror_schedule_screenshot()
+            return
+        webhook_url = self._get_discord_log_mirror_webhook_url()
+        if not self.settings.get("discord_log_mirror_enabled", False) or not self._is_valid_discord_webhook_url(webhook_url):
+            self._discord_log_mirror_cancel_screenshot()
+            return
+        if self._get_discord_log_mirror_screenshot_interval_minutes() <= 0:
+            self._discord_log_mirror_cancel_screenshot()
+            return
+
+        self._discord_log_mirror_screenshot_in_progress = True
+
+        def worker() -> None:
+            try:
+                screenshot_path = self._capture_discord_monitor_screenshot()
+                if screenshot_path is None:
+                    self._discord_log_mirror_last_error = "Could not capture screenshot."
+                    return
+                try:
+                    ok, error = self._post_discord_webhook_file(
+                        webhook_url,
+                        "FRAM screenshot",
+                        screenshot_path,
+                        "fram_screenshot.png",
+                    )
+                    if ok:
+                        self._discord_log_mirror_last_error = ""
+                    else:
+                        self._discord_log_mirror_last_error = error
+                finally:
+                    try:
+                        screenshot_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            finally:
+                self._discord_log_mirror_screenshot_in_progress = False
+                try:
+                    self.root.after(0, self._discord_log_mirror_schedule_screenshot)
+                except (RuntimeError, tk.TclError):
+                    pass
+
+        threading.Thread(target=worker, daemon=True, name="discord-log-mirror-screenshot").start()
+
+    def _capture_discord_monitor_screenshot(self) -> Optional[Path]:
+        if platform.system() != "Windows":
+            return None
+        try:
+            import win32ui
+        except ImportError:
+            return None
+
+        bounds = self._get_discord_screenshot_bounds()
+        if bounds is None:
+            return None
+
+        left, top, right, bottom = bounds
+        width = max(1, int(right - left))
+        height = max(1, int(bottom - top))
+        temp_file = tempfile.NamedTemporaryFile(prefix="fram_screenshot_", suffix=".png", delete=False)
+        screenshot_path = Path(temp_file.name)
+        temp_file.close()
+
+        desktop_hwnd = None
+        screen_dc = None
+        source_dc = None
+        memory_dc = None
+        bitmap = None
+        try:
+            desktop_hwnd = win32gui.GetDesktopWindow()
+            screen_dc = win32gui.GetWindowDC(desktop_hwnd)
+            source_dc = win32ui.CreateDCFromHandle(screen_dc)
+            memory_dc = source_dc.CreateCompatibleDC()
+            bitmap = win32ui.CreateBitmap()
+            bitmap.CreateCompatibleBitmap(source_dc, width, height)
+            memory_dc.SelectObject(bitmap)
+            copy_flags = win32con.SRCCOPY | getattr(win32con, "CAPTUREBLT", 0x40000000)
+            memory_dc.BitBlt((0, 0), (width, height), source_dc, (int(left), int(top)), copy_flags)
+            if save_hbitmap_as_png(int(bitmap.GetHandle()), screenshot_path):
+                return screenshot_path
+            try:
+                screenshot_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        except (win32gui.error, win32ui.error, OSError):
+            try:
+                screenshot_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        finally:
+            if bitmap is not None:
+                try:
+                    win32gui.DeleteObject(bitmap.GetHandle())
+                except win32gui.error:
+                    pass
+            if memory_dc is not None:
+                try:
+                    memory_dc.DeleteDC()
+                except win32ui.error:
+                    pass
+            if source_dc is not None:
+                try:
+                    source_dc.DeleteDC()
+                except win32ui.error:
+                    pass
+            if screen_dc is not None and desktop_hwnd is not None:
+                try:
+                    win32gui.ReleaseDC(desktop_hwnd, screen_dc)
+                except win32gui.error:
+                    pass
+
+    def _parse_discord_log_mirror_terms(self, value: Any) -> list[str]:
+        raw_text = str(value or "").strip()
+        if not raw_text:
+            return []
+        return [
+            term.strip().lower()
+            for term in re.split(r"[\n,]", raw_text)
+            if term.strip()
+        ]
+
+    def _filter_discord_log_mirror_entries(self, entries: list[str]) -> list[str]:
+        include_stdout = bool(self.settings.get("discord_log_mirror_include_stdout", True))
+        include_stderr = bool(self.settings.get("discord_log_mirror_include_stderr", True))
+        include_terms = self._parse_discord_log_mirror_terms(
+            self.settings.get("discord_log_mirror_include_filter", "")
+        )
+        exclude_terms = self._parse_discord_log_mirror_terms(
+            self.settings.get("discord_log_mirror_exclude_filter", "")
+        )
+        redact_sensitive = bool(self.settings.get("discord_log_mirror_redact_sensitive", True))
+
+        filtered_entries = []
+        for entry in entries:
+            if "[STDOUT]" in entry and not include_stdout:
+                continue
+            if "[STDERR]" in entry and not include_stderr:
+                continue
+            searchable_entry = entry.lower()
+            if include_terms and not any(term in searchable_entry for term in include_terms):
+                continue
+            if exclude_terms and any(term in searchable_entry for term in exclude_terms):
+                continue
+            filtered_entries.append(redact_sensitive_console_text(entry) if redact_sensitive else entry)
+
+        return filtered_entries
+
+    def _discord_log_mirror_send_entries(self, entries: list[str]) -> None:
+        try:
+            webhook_url = self._get_discord_log_mirror_webhook_url()
+            if not self._is_valid_discord_webhook_url(webhook_url):
+                self._discord_log_mirror_last_error = "Invalid Discord webhook URL."
+                return
+            ping_user_id = self._get_discord_log_mirror_ping_user_id()
+            should_ping_batch = self._discord_log_mirror_should_ping_entries(entries)
+            ping_sent = False
+            for message in self._build_discord_log_mirror_messages(entries):
+                message_ping_user_id = ping_user_id if should_ping_batch and not ping_sent else ""
+                ok, error = self._post_discord_webhook_message(
+                    webhook_url,
+                    message,
+                    ping_user_id=message_ping_user_id,
+                )
+                if not ok:
+                    self._discord_log_mirror_last_error = error
+                    return
+                if message_ping_user_id:
+                    ping_sent = True
+            self._discord_log_mirror_last_error = ""
+        finally:
+            self._discord_log_mirror_in_progress = False
+            try:
+                self.root.after(0, self._discord_log_mirror_schedule)
+            except (RuntimeError, tk.TclError):
+                pass
+
+    def _get_discord_log_mirror_ping_user_id(self) -> str:
+        return re.sub(r"\D", "", str(self.settings.get("discord_log_mirror_ping_user_id", "") or ""))
+
+    def _discord_log_mirror_should_ping_entries(self, entries: list[str]) -> bool:
+        if not self._get_discord_log_mirror_ping_user_id():
+            return False
+        if not bool(self.settings.get("discord_log_mirror_ping_only_errors", True)):
+            return True
+        for entry in entries:
+            entry_text = str(entry or "").lower()
+            if "[stderr]" in entry_text or "[error]" in entry_text:
+                return True
+            if re.search(r"\b(error|failed|exception|traceback|warning)\b", entry_text):
+                return True
+        return False
+
+    def _build_discord_log_mirror_messages(self, entries: list[str]) -> list[str]:
+        max_lines = self._get_discord_log_mirror_max_lines_per_message()
+        messages = []
+        current_lines = []
+        current_length = 0
+        max_content_length = 1850
+
+        for entry in entries:
+            normalized_entry = str(entry or "").replace("```", "` ` `")
+            projected_length = current_length + len(normalized_entry) + 1
+            if current_lines and (len(current_lines) >= max_lines or projected_length > max_content_length):
+                messages.append("```text\n" + "\n".join(current_lines) + "\n```")
+                current_lines = []
+                current_length = 0
+            if len(normalized_entry) > max_content_length:
+                normalized_entry = normalized_entry[: max_content_length - 3] + "..."
+            current_lines.append(normalized_entry)
+            current_length += len(normalized_entry) + 1
+
+        if current_lines:
+            messages.append("```text\n" + "\n".join(current_lines) + "\n```")
+
+        return messages
+
+    def _post_discord_webhook_message(
+        self,
+        webhook_url: str,
+        content: str,
+        ping_user_id: str = "",
+    ) -> tuple[bool, str]:
+        normalized_ping_user_id = re.sub(r"\D", "", str(ping_user_id or ""))
+        message_content = content
+        allowed_mentions = {"parse": []}
+        if normalized_ping_user_id:
+            message_content = f"<@{normalized_ping_user_id}> {message_content}"
+            allowed_mentions = {"users": [normalized_ping_user_id]}
+        payload = {
+            "content": message_content,
+            "username": "FRAM Logs",
+            "allowed_mentions": allowed_mentions,
+        }
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=10)
+            if response.status_code in (200, 204):
+                return True, ""
+            return False, f"Discord returned HTTP {response.status_code}."
+        except requests.exceptions.RequestException as exc:
+            return False, str(exc)
+
+    def _post_discord_webhook_file(
+        self,
+        webhook_url: str,
+        content: str,
+        file_path: Path,
+        file_name: str,
+    ) -> tuple[bool, str]:
+        payload = {
+            "content": content,
+            "username": "FRAM Logs",
+            "allowed_mentions": {"parse": []},
+        }
+        content_type = "image/png" if file_name.lower().endswith(".png") else "application/octet-stream"
+        try:
+            with file_path.open("rb") as file_handle:
+                response = requests.post(
+                    webhook_url,
+                    data={"payload_json": json.dumps(payload)},
+                    files={"file": (file_name, file_handle, content_type)},
+                    timeout=20,
+                )
+            if response.status_code in (200, 204):
+                return True, ""
+            return False, f"Discord returned HTTP {response.status_code}."
+        except (OSError, requests.exceptions.RequestException) as exc:
+            return False, str(exc)
+
+    def _discord_log_mirror_send_startup_notice(self) -> None:
+        if self._discord_log_mirror_sent_startup_notice:
+            return
+        webhook_url = self._get_discord_log_mirror_webhook_url()
+        if not self._is_valid_discord_webhook_url(webhook_url):
+            return
+        self._discord_log_mirror_sent_startup_notice = True
+
+        def worker() -> None:
+            self._post_discord_webhook_message(webhook_url, "FRAM is connected.")
+
+        threading.Thread(target=worker, daemon=True, name="discord-log-mirror-startup").start()
+
+    def _send_discord_log_mirror_test(self, parent: tk.Misc) -> None:
+        webhook_url = self._get_discord_log_mirror_webhook_url()
+        if not self._is_valid_discord_webhook_url(webhook_url):
+            messagebox.showerror("Discord", "Enter a valid Discord webhook URL first.", parent=parent)
+            return
+
+        def worker() -> None:
+            ok, error = self._post_discord_webhook_message(webhook_url, "FRAM test message.")
+
+            def done() -> None:
+                try:
+                    dialog_parent = parent if parent.winfo_exists() else self.root
+                except tk.TclError:
+                    dialog_parent = self.root
+                if ok:
+                    messagebox.showinfo("Discord", "Test message sent.", parent=dialog_parent)
+                else:
+                    messagebox.showerror("Discord", f"Test message failed:\n{error}", parent=dialog_parent)
+
+            try:
+                self.root.after(0, done)
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="discord-log-mirror-test").start()
+
+    def _send_discord_log_mirror_test_screenshot(self, parent: tk.Misc) -> None:
+        webhook_url = self._get_discord_log_mirror_webhook_url()
+        if not self._is_valid_discord_webhook_url(webhook_url):
+            messagebox.showerror("Discord", "Enter a valid Discord webhook URL first.", parent=parent)
+            return
+
+        def worker() -> None:
+            screenshot_path = self._capture_discord_monitor_screenshot()
+            if screenshot_path is None:
+                ok = False
+                error = "Could not capture a screenshot."
+            else:
+                try:
+                    ok, error = self._post_discord_webhook_file(
+                        webhook_url,
+                        "FRAM test screenshot",
+                        screenshot_path,
+                        "fram_screenshot.png",
+                    )
+                finally:
+                    try:
+                        screenshot_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+            def done() -> None:
+                try:
+                    dialog_parent = parent if parent.winfo_exists() else self.root
+                except tk.TclError:
+                    dialog_parent = self.root
+                if ok:
+                    messagebox.showinfo("Discord", "Test screenshot sent.", parent=dialog_parent)
+                else:
+                    messagebox.showerror("Discord", f"Test screenshot failed:\n{error}", parent=dialog_parent)
+
+            try:
+                self.root.after(0, done)
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="discord-log-mirror-test-screenshot").start()
+
     def handle_app_close(self):
         monitor = getattr(self, "_auto_rejoin_monitor", None)
         if monitor is not None:
@@ -13990,6 +15069,11 @@ class AccountManagerUI:
         try:
             self._auto_memory_trim_stop()
         except Exception:
+            pass
+
+        try:
+            self._discord_log_mirror_stop()
+        except (RuntimeError, tk.TclError):
             pass
 
         try:
