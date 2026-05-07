@@ -1291,6 +1291,7 @@ class RobloxAccountManager:
         max_rejoin_attempts=0,
         server_job_id="",
         launch_mode="game",
+        rejoin_launch_behavior="rejoin_same_server",
         version_path=None,
         preserve_rejoin_attempts=False,
     ):
@@ -1318,6 +1319,7 @@ class RobloxAccountManager:
             user_id=user_id,
             server_job_id=server_job_id,
             launch_mode=launch_mode,
+            rejoin_launch_behavior=rejoin_launch_behavior,
             version_path=version_path,
             preserve_rejoin_attempts=preserve_rejoin_attempts,
         )
@@ -1390,6 +1392,7 @@ class RobloxAccountManager:
         auto_rejoin=None,
         rejoin_delay=5,
         max_rejoin_attempts=0,
+        rejoin_launch_behavior="rejoin_same_server",
         preserve_rejoin_attempts=False,
     ):
         """
@@ -1442,6 +1445,7 @@ class RobloxAccountManager:
                 max_rejoin_attempts=max_rejoin_attempts,
                 server_job_id=server_job_id,
                 launch_mode=normalized_launch_mode,
+                rejoin_launch_behavior=rejoin_launch_behavior,
                 version_path=version,
                 preserve_rejoin_attempts=preserve_rejoin_attempts,
             )

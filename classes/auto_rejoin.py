@@ -38,6 +38,7 @@ class SessionEntry:
     user_id: str = ""
     server_job_id: str = ""
     launch_mode: str = "game"
+    rejoin_launch_behavior: str = "rejoin_same_server"
     version_path: Optional[str] = None
     rejoin_attempts: int = 0
     intentionally_stopped: bool = False
@@ -118,6 +119,7 @@ class AutoRejoinMonitor:
         user_id="",
         server_job_id="",
         launch_mode="game",
+        rejoin_launch_behavior="rejoin_same_server",
         version_path=None,
         preserve_rejoin_attempts=False,
     ):
@@ -128,6 +130,9 @@ class AutoRejoinMonitor:
         normalized_mode = str(launch_mode or "game").strip().lower()
         if normalized_mode not in {"game", "join_user"}:
             normalized_mode = "game"
+        normalized_rejoin_launch_behavior = self._normalize_rejoin_launch_behavior(
+            rejoin_launch_behavior
+        )
 
         normalized_pid = self._normalize_int(pid, default=0, minimum=0)
         normalized_delay = self._normalize_int(rejoin_delay, default=5, minimum=0)
@@ -158,6 +163,7 @@ class AutoRejoinMonitor:
                 session.user_id = normalized_user_id
             session.server_job_id = normalized_server_job_id
             session.launch_mode = normalized_mode
+            session.rejoin_launch_behavior = normalized_rejoin_launch_behavior
             session.version_path = normalized_version_path
             session.intentionally_stopped = False
             session.disabled_reason = ""
@@ -202,6 +208,7 @@ class AutoRejoinMonitor:
         auto_rejoin=None,
         rejoin_delay=None,
         max_rejoin_attempts=None,
+        rejoin_launch_behavior=None,
     ):
         username = str(username or "").strip()
         if not username:
@@ -223,6 +230,10 @@ class AutoRejoinMonitor:
                     max_rejoin_attempts,
                     default=0,
                     minimum=0,
+                )
+            if rejoin_launch_behavior is not None:
+                session.rejoin_launch_behavior = self._normalize_rejoin_launch_behavior(
+                    rejoin_launch_behavior
                 )
             return True
 
@@ -500,10 +511,20 @@ class AutoRejoinMonitor:
             attempt_number = session.rejoin_attempts + 1
             delay_seconds = session.rejoin_delay
             place_id = str(session.place_id or "").strip() or "Unknown"
+            rejoin_launch_behavior = self._normalize_rejoin_launch_behavior(
+                session.rejoin_launch_behavior
+            )
 
-        self._set_status(username, "Kicked - Rejoining", ttl_seconds=15)
+        if rejoin_launch_behavior == "rejoin_same_game":
+            status_text = "Kicked - Rejoining Game"
+            target_text = f"place {place_id}"
+        else:
+            status_text = "Kicked - Rejoining Server"
+            target_text = f"server for place {place_id}"
+
+        self._set_status(username, status_text, ttl_seconds=15)
         self._log(
-            f"[AUTO REJOIN] {username}: disconnect detected for place {place_id} "
+            f"[AUTO REJOIN] {username}: disconnect detected for {target_text} "
             f"({reason}). Attempt {attempt_number} in {delay_seconds}s."
         )
         threading.Thread(
@@ -547,6 +568,9 @@ class AutoRejoinMonitor:
                 )
                 return
 
+            rejoin_launch_behavior = self._normalize_rejoin_launch_behavior(
+                session.rejoin_launch_behavior
+            )
             if not str(session.place_id or "").strip():
                 self._disable_session(
                     username,
@@ -589,9 +613,17 @@ class AutoRejoinMonitor:
             session.rejoin_attempts += 1
             attempt_number = int(session.rejoin_attempts)
             place_id = str(session.place_id or "").strip()
+            rejoin_launch_behavior = self._normalize_rejoin_launch_behavior(
+                session.rejoin_launch_behavior
+            )
 
+        action_text = (
+            "rejoin same game"
+            if rejoin_launch_behavior == "rejoin_same_game"
+            else "rejoin same server"
+        )
         self._log(
-            f"[AUTO REJOIN] Attempt {attempt_number}: account={username} place_id={place_id}"
+            f"[AUTO REJOIN] Attempt {attempt_number}: account={username} action={action_text} place_id={place_id}"
         )
 
         launched = False
@@ -725,6 +757,17 @@ class AutoRejoinMonitor:
         except Exception:
             parsed = int(default)
         return max(int(minimum), parsed)
+
+    @staticmethod
+    def _normalize_rejoin_launch_behavior(value: object) -> str:
+        normalized = str(value or "rejoin_same_server").strip().lower()
+        if normalized in {"relaunch_client_same_server", "relaunch_client", "client", "app"}:
+            return "rejoin_same_server"
+        if normalized in {"relaunch_client_same_game", "relaunch_game_client"}:
+            return "rejoin_same_game"
+        if normalized in {"rejoin_same_game", "same_game"}:
+            return "rejoin_same_game"
+        return "rejoin_same_server"
 
     @staticmethod
     def _is_process_running(pid):

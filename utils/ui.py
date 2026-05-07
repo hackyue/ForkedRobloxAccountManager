@@ -1435,6 +1435,7 @@ class AccountManagerUI:
             "auto_rejoin_enable_all_accounts": False,
             "auto_rejoin_delay_seconds": 5,
             "auto_rejoin_max_attempts": 0,
+            "auto_rejoin_launch_behavior": "rejoin_same_server",
             "auto_relaunch_enabled": False,
             "auto_relaunch_interval_minutes": 60,
             "auto_relaunch_group": "",
@@ -1522,6 +1523,9 @@ class AccountManagerUI:
         except (TypeError, ValueError):
             auto_rejoin_max_attempts = 0
         self.settings["auto_rejoin_max_attempts"] = max(0, auto_rejoin_max_attempts)
+        self.settings["auto_rejoin_launch_behavior"] = self._normalize_auto_rejoin_launch_behavior(
+            self.settings.get("auto_rejoin_launch_behavior", "rejoin_same_server")
+        )
         self._set_keep_clients_arranged_enabled(
             self.settings.get("keep_roblox_clients_arranged", False),
             save=False,
@@ -1594,6 +1598,23 @@ class AccountManagerUI:
             value = 0
         return max(0, value)
 
+    def _normalize_auto_rejoin_launch_behavior(self, value: Any) -> str:
+        normalized = str(value or "rejoin_same_server").strip().lower()
+        if normalized in {"relaunch_client_same_server", "relaunch_client", "client", "app"}:
+            return "rejoin_same_server"
+        if normalized in {"relaunch_client_same_game", "relaunch_game_client"}:
+            return "rejoin_same_game"
+        if normalized in {"rejoin_same_game", "same_game"}:
+            return "rejoin_same_game"
+        return "rejoin_same_server"
+
+    def _get_auto_rejoin_launch_behavior(self) -> str:
+        behavior = self._normalize_auto_rejoin_launch_behavior(
+            self.settings.get("auto_rejoin_launch_behavior", "rejoin_same_server")
+        )
+        self.settings["auto_rejoin_launch_behavior"] = behavior
+        return behavior
+
     def _is_auto_rejoin_force_enabled(self):
         return bool(self.settings.get("auto_rejoin_enable_all_accounts", False))
 
@@ -1616,6 +1637,7 @@ class AccountManagerUI:
 
         delay_seconds = self._get_auto_rejoin_delay_seconds()
         max_attempts = self._get_auto_rejoin_max_attempts()
+        rejoin_launch_behavior = self._get_auto_rejoin_launch_behavior()
 
         for username in list(usernames or []):
             try:
@@ -1624,6 +1646,7 @@ class AccountManagerUI:
                     auto_rejoin=self._get_effective_auto_rejoin_enabled(username),
                     rejoin_delay=delay_seconds,
                     max_rejoin_attempts=max_attempts,
+                    rejoin_launch_behavior=rejoin_launch_behavior,
                 )
             except Exception:
                 continue
@@ -9496,22 +9519,31 @@ class AccountManagerUI:
 
         self._launch_game_for_usernames(usernames, confirm_group=group)
 
-    def launch_auto_rejoin_session(self, session, attempt_number=0):
+    def launch_auto_rejoin_session(self, session: Any, attempt_number: int = 0) -> bool:
+        username = str(getattr(session, "username", "") or "").strip()
+        if not username:
+            return False
+
+        rejoin_launch_behavior = self._normalize_auto_rejoin_launch_behavior(
+            getattr(session, "rejoin_launch_behavior", self._get_auto_rejoin_launch_behavior())
+        )
         place_id = str(getattr(session, "place_id", "") or "").strip()
         if not place_id:
             return False
 
-        private_server = str(getattr(session, "private_server_link", "") or "").strip()
+        private_server = ""
         server_job_id = ""
-        if not private_server:
+        if rejoin_launch_behavior == "rejoin_same_server":
+            private_server = str(getattr(session, "private_server_link", "") or "").strip()
+        if rejoin_launch_behavior == "rejoin_same_server" and not private_server:
             server_job_id = str(getattr(session, "server_job_id", "") or "").strip()
 
         return bool(
             self.launch_game(
-                usernames=[str(getattr(session, "username", "") or "").strip()],
+                usernames=[username],
                 place_id_override=place_id,
                 private_server_override=private_server,
-                manual_server_job_id_override=server_job_id or None,
+                manual_server_job_id_override=server_job_id,
                 version_path_override=getattr(session, "version_path", None),
                 launch_mode_override="place_id",
                 join_input_override=place_id,
@@ -9706,6 +9738,7 @@ class AccountManagerUI:
                         auto_rejoin=effective_auto_rejoin,
                         rejoin_delay=self._get_auto_rejoin_delay_seconds(),
                         max_rejoin_attempts=self._get_auto_rejoin_max_attempts(),
+                        rejoin_launch_behavior=self._get_auto_rejoin_launch_behavior(),
                         preserve_rejoin_attempts=preserve_rejoin_attempts,
                     )
                     last_effective_private_server = account_private_server
@@ -9730,6 +9763,7 @@ class AccountManagerUI:
                             auto_rejoin=effective_auto_rejoin,
                             rejoin_delay=self._get_auto_rejoin_delay_seconds(),
                             max_rejoin_attempts=self._get_auto_rejoin_max_attempts(),
+                            rejoin_launch_behavior=self._get_auto_rejoin_launch_behavior(),
                             preserve_rejoin_attempts=preserve_rejoin_attempts,
                         )
                         if launched:
@@ -10721,7 +10755,7 @@ class AccountManagerUI:
 
         ttk.Checkbutton(
             server_selection_card,
-            text="Randomize Server Job IDs",
+            text="Prefer Random Servers",
             variable=randomize_job_id_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("randomize_server_job_ids", randomize_job_id_var)
@@ -11176,6 +11210,20 @@ class AccountManagerUI:
         )
         auto_rejoin_delay_var = tk.IntVar(value=self._get_auto_rejoin_delay_seconds())
         auto_rejoin_max_attempts_var = tk.IntVar(value=self._get_auto_rejoin_max_attempts())
+        auto_rejoin_launch_behavior_labels = {
+            "Rejoin Same Server": "rejoin_same_server",
+            "Rejoin Same Game": "rejoin_same_game",
+        }
+        auto_rejoin_launch_behavior_value_to_label = {
+            value: label
+            for label, value in auto_rejoin_launch_behavior_labels.items()
+        }
+        auto_rejoin_launch_behavior_var = tk.StringVar(
+            value=auto_rejoin_launch_behavior_value_to_label.get(
+                self._get_auto_rejoin_launch_behavior(),
+                "Rejoin Same Server",
+            )
+        )
 
         def on_auto_rejoin_settings_update(*_):
             try:
@@ -11194,9 +11242,21 @@ class AccountManagerUI:
             if auto_rejoin_max_attempts_var.get() != max_attempts:
                 auto_rejoin_max_attempts_var.set(max_attempts)
 
+            rejoin_launch_behavior = auto_rejoin_launch_behavior_labels.get(
+                auto_rejoin_launch_behavior_var.get(),
+                "rejoin_same_server",
+            )
+            auto_rejoin_launch_behavior_var.set(
+                auto_rejoin_launch_behavior_value_to_label.get(
+                    rejoin_launch_behavior,
+                    "Rejoin Same Server",
+                )
+            )
+
             self.settings["auto_rejoin_enable_all_accounts"] = bool(auto_rejoin_enable_all_var.get())
             self.settings["auto_rejoin_delay_seconds"] = int(delay_seconds)
             self.settings["auto_rejoin_max_attempts"] = int(max_attempts)
+            self.settings["auto_rejoin_launch_behavior"] = rejoin_launch_behavior
             self.save_settings()
             self._apply_auto_rejoin_preferences_to_active_sessions()
             self.refresh_accounts(selected_usernames=self._get_selected_usernames_silent())
@@ -11204,7 +11264,7 @@ class AccountManagerUI:
         auto_rejoin_card = create_settings_card(
             automation_tab,
             "Auto Rejoin On Kick",
-            "Automatically rejoins the account into the same game if it gets kicked/crashes",
+            "Automatically handles the account if it gets kicked/crashes",
         )
 
         ttk.Checkbutton(
@@ -11214,6 +11274,20 @@ class AccountManagerUI:
             style="Dark.TCheckbutton",
             command=on_auto_rejoin_settings_update,
         ).pack(anchor="w", pady=2)
+
+        auto_rejoin_behavior_frame = ttk.Frame(auto_rejoin_card, style="Dark.TFrame")
+        auto_rejoin_behavior_frame.pack(fill="x", pady=(6, 0))
+        ttk.Label(auto_rejoin_behavior_frame, text="Disconnect Action", style="Dark.TLabel").pack(side="left")
+        auto_rejoin_behavior_combo = ttk.Combobox(
+            auto_rejoin_behavior_frame,
+            values=list(auto_rejoin_launch_behavior_labels.keys()),
+            textvariable=auto_rejoin_launch_behavior_var,
+            state="readonly",
+            style="Dark.TCombobox",
+            width=20,
+        )
+        auto_rejoin_behavior_combo.pack(side="right")
+        auto_rejoin_behavior_combo.bind("<<ComboboxSelected>>", on_auto_rejoin_settings_update)
 
         auto_rejoin_delay_frame = ttk.Frame(auto_rejoin_card, style="Dark.TFrame")
         auto_rejoin_delay_frame.pack(fill="x", pady=(6, 0))
@@ -12539,6 +12613,10 @@ class AccountManagerUI:
                                     enable_debug=debug_enabled,
                                     server_job_id=str(context.get("server_job_id") or "").strip(),
                                     launch_mode=context_mode,
+                                    auto_rejoin=self._get_effective_auto_rejoin_enabled(account),
+                                    rejoin_delay=self._get_auto_rejoin_delay_seconds(),
+                                    max_rejoin_attempts=self._get_auto_rejoin_max_attempts(),
+                                    rejoin_launch_behavior=self._get_auto_rejoin_launch_behavior(),
                                 )
                             )
                         else:
