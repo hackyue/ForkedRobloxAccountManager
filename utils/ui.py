@@ -229,6 +229,81 @@ class InstanceManagerCardWidgets:
     actions_frame: tk.Frame
 
 
+MULTI_SELECT_KEYBIND_DEFAULT: str = "Control"
+MULTI_SELECT_MODIFIER_STATE_MASKS: dict[str, int] = {
+    "Shift": 0x0001,
+    "Control": 0x0004,
+    "Alt": 0x0008,
+}
+MULTI_SELECT_KEYBIND_ALIASES: dict[str, str] = {
+    "control": "Control",
+    "control_l": "Control",
+    "control_r": "Control",
+    "ctrl": "Control",
+    "shift": "Shift",
+    "shift_l": "Shift",
+    "shift_r": "Shift",
+    "alt": "Alt",
+    "alt_l": "Alt",
+    "alt_r": "Alt",
+    "option": "Alt",
+    "option_l": "Alt",
+    "option_r": "Alt",
+    "escape": "Escape",
+    "esc": "Escape",
+    "space": "space",
+    "spacebar": "space",
+    "return": "Return",
+    "enter": "Return",
+    "backspace": "BackSpace",
+    "delete": "Delete",
+}
+MULTI_SELECT_KEYBIND_LABELS: dict[str, str] = {
+    "Control": "Ctrl",
+    "Shift": "Shift",
+    "Alt": "Alt",
+    "Escape": "Esc",
+    "space": "Space",
+    "Return": "Enter",
+    "BackSpace": "Backspace",
+    "Delete": "Delete",
+    "Tab": "Tab",
+}
+
+
+def normalize_multi_select_keybind(value: Any) -> str:
+    value_text = str(value or "").strip()
+    if not value_text:
+        return MULTI_SELECT_KEYBIND_DEFAULT
+
+    alias_key = value_text.replace(" ", "_").lower()
+    aliased_value = MULTI_SELECT_KEYBIND_ALIASES.get(alias_key)
+    if aliased_value:
+        return aliased_value
+
+    if len(value_text) == 1:
+        return value_text.lower()
+
+    return value_text
+
+
+def format_multi_select_keybind(value: Any) -> str:
+    key = normalize_multi_select_keybind(value)
+    label = MULTI_SELECT_KEYBIND_LABELS.get(key)
+    if label:
+        return label
+    if len(key) == 1:
+        return key.upper()
+    return key.replace("_", " ")
+
+
+def normalize_multi_select_event_key(event: tk.Event) -> Optional[str]:
+    keysym = str(getattr(event, "keysym", "") or "").strip()
+    if not keysym:
+        return None
+    return normalize_multi_select_keybind(keysym)
+
+
 def clamp_multi_launch_delay(value):
     """Clamp arbitrary input to the allowed multi-launch delay range."""
     try:
@@ -1056,6 +1131,7 @@ class AccountManagerUI:
             "is_dragging": False,
         }
         self.account_drop_indicator = None
+        self._pressed_multi_select_keys: set[str] = set()
 
         self.themable_text_widgets = []
         self.themable_windows = set()
@@ -1132,6 +1208,9 @@ class AccountManagerUI:
         self.apply_theme(self.theme_name, persist=True)
         self.register_toplevel(self.root)
         self.root.after(50, self._apply_title_bar_theme_all)
+        self.root.bind_all("<KeyPress>", self._on_multi_select_key_press, add="+")
+        self.root.bind_all("<KeyRelease>", self._on_multi_select_key_release, add="+")
+        self.root.bind("<FocusOut>", self._clear_multi_select_pressed_keys, add="+")
 
       
         self.root.grid_rowconfigure(0, weight=1)
@@ -1217,7 +1296,6 @@ class AccountManagerUI:
         self.account_list.bind("<B1-Motion>", self.on_account_drag_motion)
         self.account_list.bind("<ButtonRelease-1>", self.on_account_drag_stop)
         self.account_list.bind("<Button-3>", self.show_account_context_menu)
-        self.account_list.bind("<Control-ButtonPress-1>", self.on_account_ctrl_click)
 
         self.account_context_menu = tk.Menu(self.root, tearoff=False)
         self.account_context_menu.add_command(label="Copy Username", command=self.copy_selected_account_usernames)
@@ -1417,6 +1495,7 @@ class AccountManagerUI:
             "prefer_small_public_servers": False,
             "max_recent_games": 10,
             "enable_multi_select": False,
+            "multi_select_keybind": MULTI_SELECT_KEYBIND_DEFAULT,
             "enable_debug_logging": False,
             "hide_sensitive_info": True,
             "bug_issue_prompt_enabled": True,
@@ -1468,6 +1547,9 @@ class AccountManagerUI:
 
         self.settings["multi_launch_delay"] = clamp_multi_launch_delay(
             self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS)
+        )
+        self.settings["multi_select_keybind"] = normalize_multi_select_keybind(
+            self.settings.get("multi_select_keybind", MULTI_SELECT_KEYBIND_DEFAULT)
         )
         browser_pref = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
         if browser_pref not in {"auto", "chrome", "firefox"}:
@@ -6715,7 +6797,9 @@ class AccountManagerUI:
             menu.grab_release()
         return "break"
 
-    def on_account_drag_start(self, event):
+    def on_account_drag_start(self, event: tk.Event) -> Optional[str]:
+        if self.settings.get("enable_multi_select", False) and self._multi_select_modifier_active(event):
+            return self.on_account_multi_select_click(event)
         if self.account_list.size() <= 1:
             return
         index = self.account_list.nearest(event.y)
@@ -6769,8 +6853,13 @@ class AccountManagerUI:
         self._reset_drag_data()
         return "break"
 
-    def on_account_ctrl_click(self, event):
+    def on_account_ctrl_click(self, event: tk.Event) -> Optional[str]:
+        return self.on_account_multi_select_click(event)
+
+    def on_account_multi_select_click(self, event: tk.Event) -> Optional[str]:
         if not self.settings.get("enable_multi_select", False):
+            return
+        if not self._multi_select_modifier_active(event):
             return
         if self.account_list.size() <= 0:
             return "break"
@@ -6796,6 +6885,28 @@ class AccountManagerUI:
     @staticmethod
     def _ctrl_modifier_active(event):
         return bool(event.state & 0x4)
+
+    def _on_multi_select_key_press(self, event: tk.Event) -> None:
+        key = normalize_multi_select_event_key(event)
+        if key:
+            self._pressed_multi_select_keys.add(key)
+
+    def _on_multi_select_key_release(self, event: tk.Event) -> None:
+        key = normalize_multi_select_event_key(event)
+        if key:
+            self._pressed_multi_select_keys.discard(key)
+
+    def _clear_multi_select_pressed_keys(self, event: tk.Event) -> None:
+        if event.widget is self.root:
+            self._pressed_multi_select_keys.clear()
+
+    def _multi_select_modifier_active(self, event: tk.Event) -> bool:
+        key = self._get_multi_select_keybind()
+        state = int(getattr(event, "state", 0) or 0)
+        state_mask = MULTI_SELECT_MODIFIER_STATE_MASKS.get(key)
+        if state_mask is not None and bool(state & state_mask):
+            return True
+        return key in self._pressed_multi_select_keys
 
     def _reset_drag_data(self):
         self.account_list_drag_data = {
@@ -9973,6 +10084,19 @@ class AccountManagerUI:
                 self.settings["enable_multi_roblox"] = False
                 self.save_settings()
 
+    def _get_multi_select_keybind(self) -> str:
+        key = normalize_multi_select_keybind(
+            self.settings.get("multi_select_keybind", MULTI_SELECT_KEYBIND_DEFAULT)
+        )
+        self.settings["multi_select_keybind"] = key
+        return key
+
+    def _get_multi_select_label_text(self) -> str:
+        return f"Multi Select ({format_multi_select_keybind(self._get_multi_select_keybind())} + Click)"
+
+    def _get_multi_select_keybind_setting_text(self) -> str:
+        return f"Keybind: {format_multi_select_keybind(self._get_multi_select_keybind())}"
+
     def open_settings(self):
         """Open the Settings window"""
         settings_window = tk.Toplevel(self.root)
@@ -10092,6 +10216,8 @@ class AccountManagerUI:
         randomize_job_id_var = tk.BooleanVar(value=self.settings.get("randomize_server_job_ids", False))
         prefer_small_servers_var = tk.BooleanVar(value=self.settings.get("prefer_small_public_servers", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
+        multi_select_text_var = tk.StringVar(value=self._get_multi_select_label_text())
+        multi_select_keybind_text_var = tk.StringVar(value=self._get_multi_select_keybind_setting_text())
         active_client_indicator_var = tk.BooleanVar(value=self.settings.get("show_active_client_indicator", True))
         rename_client_titles_var = tk.BooleanVar(value=self.settings.get("rename_client_titles_to_account_name", True))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
@@ -10200,6 +10326,37 @@ class AccountManagerUI:
                     self.account_list.selection_set(target_index)
                     self.account_list.activate(target_index)
             self.save_settings()
+
+        def refresh_multi_select_keybind_text() -> None:
+            multi_select_text_var.set(self._get_multi_select_label_text())
+            multi_select_keybind_text_var.set(self._get_multi_select_keybind_setting_text())
+            _refresh_settings_search_index()
+
+        multi_select_keybind_capture_active = {"value": False}
+
+        def begin_multi_select_keybind_capture() -> str:
+            multi_select_keybind_capture_active["value"] = True
+            multi_select_keybind_text_var.set("Press any key...")
+            try:
+                multi_select_keybind_button.focus_set()
+            except (NameError, tk.TclError):
+                pass
+            return "break"
+
+        def capture_multi_select_keybind(event: tk.Event) -> Optional[str]:
+            if not multi_select_keybind_capture_active["value"]:
+                return None
+            key = normalize_multi_select_event_key(event)
+            if key is None:
+                return "break"
+            self.settings["multi_select_keybind"] = key
+            self._pressed_multi_select_keys.clear()
+            self.save_settings()
+            multi_select_keybind_capture_active["value"] = False
+            refresh_multi_select_keybind_text()
+            return "break"
+
+        settings_window.bind("<KeyPress>", capture_multi_select_keybind, add="+")
 
         def on_active_client_indicator_toggle():
             self.settings["show_active_client_indicator"] = active_client_indicator_var.get()
@@ -10650,13 +10807,27 @@ class AccountManagerUI:
             command=auto_save_setting("enable_topmost", topmost_var)
         ).pack(anchor="w", pady=2)
 
+        multi_select_row = ttk.Frame(window_behavior_card, style="Dark.TFrame")
+        multi_select_row.pack(fill="x", pady=2)
+        multi_select_row.columnconfigure(0, weight=1)
+
         ttk.Checkbutton(
-            window_behavior_card,
-            text="Multi Select (Ctrl + Click)",
+            multi_select_row,
+            textvariable=multi_select_text_var,
             variable=multi_select_var,
             style="Dark.TCheckbutton",
             command=on_multi_select_toggle
-        ).pack(anchor="w", pady=2)
+        ).grid(row=0, column=0, sticky="w")
+
+        multi_select_keybind_button = ttk.Button(
+            multi_select_row,
+            textvariable=multi_select_keybind_text_var,
+            width=18,
+            style="Dark.TButton",
+            command=begin_multi_select_keybind_capture,
+        )
+        multi_select_keybind_button.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        multi_select_keybind_button.bind("<KeyPress>", capture_multi_select_keybind)
 
         ttk.Checkbutton(
             window_behavior_card,
