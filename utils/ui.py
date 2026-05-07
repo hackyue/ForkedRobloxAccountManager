@@ -10094,9 +10094,6 @@ class AccountManagerUI:
     def _get_multi_select_label_text(self) -> str:
         return f"Multi Select ({format_multi_select_keybind(self._get_multi_select_keybind())} + Click)"
 
-    def _get_multi_select_keybind_setting_text(self) -> str:
-        return f"Keybind: {format_multi_select_keybind(self._get_multi_select_keybind())}"
-
     def open_settings(self):
         """Open the Settings window"""
         settings_window = tk.Toplevel(self.root)
@@ -10217,7 +10214,6 @@ class AccountManagerUI:
         prefer_small_servers_var = tk.BooleanVar(value=self.settings.get("prefer_small_public_servers", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         multi_select_text_var = tk.StringVar(value=self._get_multi_select_label_text())
-        multi_select_keybind_text_var = tk.StringVar(value=self._get_multi_select_keybind_setting_text())
         active_client_indicator_var = tk.BooleanVar(value=self.settings.get("show_active_client_indicator", True))
         rename_client_titles_var = tk.BooleanVar(value=self.settings.get("rename_client_titles_to_account_name", True))
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
@@ -10329,19 +10325,17 @@ class AccountManagerUI:
 
         def refresh_multi_select_keybind_text() -> None:
             multi_select_text_var.set(self._get_multi_select_label_text())
-            multi_select_keybind_text_var.set(self._get_multi_select_keybind_setting_text())
             _refresh_settings_search_index()
 
         multi_select_keybind_capture_active = {"value": False}
+        multi_select_keybind_menu = tk.Menu(settings_window, tearoff=False)
 
-        def begin_multi_select_keybind_capture() -> str:
+        def begin_multi_select_keybind_capture() -> None:
             multi_select_keybind_capture_active["value"] = True
-            multi_select_keybind_text_var.set("Press any key...")
             try:
-                multi_select_keybind_button.focus_set()
-            except (NameError, tk.TclError):
+                settings_window.focus_force()
+            except tk.TclError:
                 pass
-            return "break"
 
         def capture_multi_select_keybind(event: tk.Event) -> Optional[str]:
             if not multi_select_keybind_capture_active["value"]:
@@ -10357,6 +10351,18 @@ class AccountManagerUI:
             return "break"
 
         settings_window.bind("<KeyPress>", capture_multi_select_keybind, add="+")
+
+        def show_multi_select_keybind_menu(event: tk.Event) -> str:
+            multi_select_keybind_menu.delete(0, tk.END)
+            multi_select_keybind_menu.add_command(
+                label="Change Bind...",
+                command=begin_multi_select_keybind_capture,
+            )
+            try:
+                multi_select_keybind_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                multi_select_keybind_menu.grab_release()
+            return "break"
 
         def on_active_client_indicator_toggle():
             self.settings["show_active_client_indicator"] = active_client_indicator_var.get()
@@ -10811,23 +10817,17 @@ class AccountManagerUI:
         multi_select_row.pack(fill="x", pady=2)
         multi_select_row.columnconfigure(0, weight=1)
 
-        ttk.Checkbutton(
+        multi_select_checkbutton = ttk.Checkbutton(
             multi_select_row,
             textvariable=multi_select_text_var,
             variable=multi_select_var,
             style="Dark.TCheckbutton",
             command=on_multi_select_toggle
-        ).grid(row=0, column=0, sticky="w")
-
-        multi_select_keybind_button = ttk.Button(
-            multi_select_row,
-            textvariable=multi_select_keybind_text_var,
-            width=18,
-            style="Dark.TButton",
-            command=begin_multi_select_keybind_capture,
         )
-        multi_select_keybind_button.grid(row=0, column=1, sticky="e", padx=(6, 0))
-        multi_select_keybind_button.bind("<KeyPress>", capture_multi_select_keybind)
+        multi_select_checkbutton.grid(row=0, column=0, sticky="w")
+
+        for widget in (multi_select_row, multi_select_checkbutton):
+            widget.bind("<Button-3>", show_multi_select_keybind_menu)
 
         ttk.Checkbutton(
             window_behavior_card,
