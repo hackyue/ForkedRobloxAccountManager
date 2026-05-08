@@ -37,12 +37,14 @@ import ctypes
 from ctypes import wintypes
 
 if platform.system() == "Windows":
+    import pywintypes
     import win32api
     import win32con
     import win32gui
     import webbrowser
     import win32process
 else:
+    pywintypes = None
     win32api = win32con = win32gui = win32process = None
 
 from classes.roblox_api import RobloxAPI
@@ -197,6 +199,24 @@ ACTIVE_CLIENT_SYMBOL = "\u2B24"
 SETTINGS_SYMBOL = "\u2699"
 GDI_PLUS_OK = 0
 DISCORD_LOG_MIRROR_SEND_DEBOUNCE_MS = 250
+CLIENT_TITLE_RENAME_PID_WAIT_SECONDS = 12.0
+CLIENT_TITLE_RENAME_PID_POLL_SECONDS = 0.4
+CLIENT_TITLE_RENAME_MAX_ATTEMPTS = 2
+CLIENT_TITLE_RENAME_DELAY_SECONDS = 0.5
+CLIENT_TITLE_RENAME_STABLE_ATTEMPTS = 1
+PYWIN32_ERROR_TYPES: tuple[type[BaseException], ...] = (
+    (pywintypes.error,)
+    if pywintypes is not None
+    else ()
+)
+WINDOWS_API_ERROR_TYPES: tuple[type[BaseException], ...] = (
+    AttributeError,
+    ctypes.ArgumentError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+) + PYWIN32_ERROR_TYPES
 
 
 class Guid(ctypes.Structure):
@@ -379,6 +399,22 @@ def normalize_discord_log_filter_preset(value: Any) -> str:
 
 def get_discord_log_filter_preset(value: Any) -> DiscordLogFilterPreset:
     return DISCORD_LOG_FILTER_PRESET_BY_KEY[normalize_discord_log_filter_preset(value)]
+
+
+def coerce_bool_setting(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disabled"}:
+        return False
+    return default
 
 
 MULTI_SELECT_KEYBIND_DEFAULT: str = "Control"
@@ -1336,6 +1372,8 @@ class AccountManagerUI:
         self._pid_account_map = {}
         self._pid_launch_context_map = {}
         self._pid_account_lock = threading.Lock()
+        self._client_title_rename_lock = threading.Lock()
+        self._client_title_rename_active_pids: set[int] = set()
         self._tracked_roblox_exes = {
             "robloxplayerbeta.exe",
             "robloxstudiobeta.exe",
@@ -1803,6 +1841,10 @@ class AccountManagerUI:
         self.settings["multi_select_keybind"] = normalize_multi_select_keybind(
             self.settings.get("multi_select_keybind", MULTI_SELECT_KEYBIND_DEFAULT)
         )
+        self.settings["rename_client_titles_to_account_name"] = coerce_bool_setting(
+            self.settings.get("rename_client_titles_to_account_name", True),
+            True,
+        )
         browser_pref = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
         if browser_pref not in {"auto", "chrome", "firefox"}:
             browser_pref = "auto"
@@ -2042,8 +2084,17 @@ class AccountManagerUI:
     def _get_active_client_indicator_enabled(self):
         return bool(self.settings.get("show_active_client_indicator", True))
 
-    def _get_rename_client_titles_enabled(self):
-        return bool(self.settings.get("rename_client_titles_to_account_name", True))
+    def _get_rename_client_titles_enabled(self) -> bool:
+        return coerce_bool_setting(
+            self.settings.get("rename_client_titles_to_account_name", True),
+            True,
+        )
+
+    def _log_client_title_rename(self, message: str, debug: bool = False) -> None:
+        if debug and not self.settings.get("enable_debug_logging", False):
+            return
+        level = "DEBUG" if debug else "INFO"
+        print(f"[{level}] Title rename: {message}")
 
     def _invalidate_active_client_indicator_cache(self):
         self._active_client_indicator_cache = {"ts": 0.0, "usernames": set()}
@@ -8305,11 +8356,17 @@ class AccountManagerUI:
 
         threading.Thread(target=worker, daemon=True, name="keep-clients-arranged").start()
 
-    def _notify_roblox_windows_changed(self, success_count, delay_ms=2000):
+    def _notify_roblox_windows_changed(self, success_count: Any, delay_ms: int = 2000) -> None:
         if int(success_count or 0) <= 0:
             return
         self._invalidate_tracked_process_caches()
         self._invalidate_active_client_indicator_cache()
+        if self._get_rename_client_titles_enabled():
+            self._log_client_title_rename(
+                f"Roblox launch detected; scheduling title refresh in {int(delay_ms)} ms.",
+                debug=True,
+            )
+            self._schedule_rename_tracked_roblox_client_window_titles(delay_ms=delay_ms)
         if self.settings.get("roblox_headless_mode_enabled", False):
             self._log_roblox_headless(
                 f"Roblox launch detected; scheduling NoClient pass in {int(delay_ms)} ms.",
@@ -9263,14 +9320,12 @@ class AccountManagerUI:
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
-                    before_pids = self._get_running_tracked_roblox_pid_set()
-                    if self.manager.launch_home_app(uname, version=version_path or None, enable_debug=debug_enabled):
+                    before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
+                    launched = self.manager.launch_home_app(uname, version=version_path or None, enable_debug=debug_enabled)
+                    after_pids = before_pids
+                    if launched:
                         success_count += 1
-                    time.sleep(0.8)
-                    after_pids = self._get_running_tracked_roblox_pid_set()
-                    if not (set(after_pids) - set(before_pids)):
-                        time.sleep(1.0)
-                        after_pids = self._get_running_tracked_roblox_pid_set()
+                        after_pids = self._wait_for_tracked_roblox_pid_change(before_pids)
                     self._assign_new_pids_to_account(
                         uname,
                         before_pids,
@@ -9311,8 +9366,62 @@ class AccountManagerUI:
         self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
         self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
 
-    def _get_running_tracked_roblox_pid_set(self):
-        return set(self._query_tracked_process_pid_map(getattr(self, "_tracked_roblox_exes", set())).keys())
+    def _get_running_tracked_roblox_pid_set(self, use_cache: bool = True) -> set[int]:
+        return set(
+            self._query_tracked_process_pid_map(
+                getattr(self, "_tracked_roblox_exes", set()),
+                use_cache=use_cache,
+            ).keys()
+        )
+
+    def _normalize_pid_set(self, pid_values: Any) -> set[int]:
+        if pid_values is None:
+            return set()
+        if isinstance(pid_values, (str, bytes)):
+            iterable_values = [pid_values]
+        else:
+            try:
+                iterable_values = list(pid_values)
+            except TypeError:
+                iterable_values = [pid_values]
+
+        normalized_pids: set[int] = set()
+        for raw_pid in iterable_values:
+            try:
+                pid_value = int(raw_pid)
+            except (TypeError, ValueError):
+                continue
+            if pid_value > 0:
+                normalized_pids.add(pid_value)
+        return normalized_pids
+
+    def _wait_for_tracked_roblox_pid_change(
+        self,
+        before_pids: Any,
+        timeout_seconds: float = CLIENT_TITLE_RENAME_PID_WAIT_SECONDS,
+        poll_interval_seconds: float = CLIENT_TITLE_RENAME_PID_POLL_SECONDS,
+    ) -> set[int]:
+        normalized_before = self._normalize_pid_set(before_pids)
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        sleep_seconds = max(0.1, float(poll_interval_seconds))
+        last_seen = self._get_running_tracked_roblox_pid_set(use_cache=False)
+
+        while time.monotonic() <= deadline:
+            last_seen = self._get_running_tracked_roblox_pid_set(use_cache=False)
+            new_pids = sorted(last_seen - normalized_before)
+            if new_pids:
+                self._log_client_title_rename(
+                    f"Detected new Roblox PID(s) after launch: {', '.join(str(pid) for pid in new_pids)}.",
+                    debug=True,
+                )
+                return last_seen
+            time.sleep(sleep_seconds)
+
+        self._log_client_title_rename(
+            "No new Roblox PID was detected before the launch wait timed out.",
+            debug=True,
+        )
+        return last_seen
 
     def _query_tasklist_pid_map(self, executables, use_cache=True):
         """Return pid->image_name for the provided executable names."""
@@ -9773,97 +9882,261 @@ class AccountManagerUI:
         ranked.sort()
         return int(ranked[0][2]) if ranked else 0
 
-    def _assign_new_pids_to_account(self, username, before_pids, after_pids, launch_context=None):
-        if not username:
+    def _assign_new_pids_to_account(
+        self,
+        username: Any,
+        before_pids: Any,
+        after_pids: Any,
+        launch_context: Optional[dict[str, Any]] = None,
+    ) -> None:
+        normalized_username = str(username or "").strip()
+        if not normalized_username:
             return
-        try:
-            new_pids = set(after_pids) - set(before_pids)
-        except Exception:
-            return
+
+        normalized_before = self._normalize_pid_set(before_pids)
+        normalized_after = self._normalize_pid_set(after_pids)
+        new_pids = normalized_after - normalized_before
         if not new_pids:
+            self._log_client_title_rename(
+                f"No new Roblox PID could be mapped to account {normalized_username}.",
+                debug=True,
+            )
             return
+
         normalized_context = self._normalize_launch_context(launch_context)
-        try:
-            with self._pid_account_lock:
-                for pid_value in new_pids:
-                    self._pid_account_map[int(pid_value)] = str(username)
-                    self._pid_launch_context_map[int(pid_value)] = dict(normalized_context)
-        except Exception:
-            pass
+        with self._pid_account_lock:
+            for pid_value in new_pids:
+                self._pid_account_map[int(pid_value)] = normalized_username
+                self._pid_launch_context_map[int(pid_value)] = dict(normalized_context)
+
+        self._log_client_title_rename(
+            (
+                f"Mapped Roblox PID(s) {', '.join(str(pid) for pid in sorted(new_pids))} "
+                f"to account {normalized_username}."
+            ),
+            debug=True,
+        )
 
         self._invalidate_active_client_indicator_cache()
 
         for pid_value in new_pids:
-            self._rename_roblox_client_window_title(int(pid_value), str(username))
+            self._rename_roblox_client_window_title(int(pid_value), normalized_username)
 
         session_pid = self._select_primary_session_pid(new_pids)
         if session_pid > 0:
             try:
-                self.manager.update_active_session_pid(username, session_pid)
-            except Exception:
+                self.manager.update_active_session_pid(normalized_username, session_pid)
+            except (AttributeError, TypeError, ValueError, RuntimeError):
                 pass
-            self.set_account_rejoin_status(username, "", 0)
+            self.set_account_rejoin_status(normalized_username, "", 0)
 
         root = getattr(self, "root", None)
         if root is not None:
             try:
                 root.after(
                     0,
-                    lambda target_username=str(username): self.refresh_accounts(
+                    lambda target_username=normalized_username: self.refresh_accounts(
                         selected_usernames=self._get_selected_usernames_silent() or [target_username]
                     ),
                 )
-            except Exception:
+            except (AttributeError, tk.TclError, TypeError):
                 pass
 
-    def _rename_roblox_client_window_title(self, pid_value, username):
+    def _schedule_rename_tracked_roblox_client_window_titles(self, delay_ms: int = 0) -> None:
         if platform.system() != "Windows":
-            return
-        if not pid_value or not username:
+            self._log_client_title_rename("Skipping title refresh because this platform is not Windows.", debug=True)
             return
         if not self._get_rename_client_titles_enabled():
+            self._log_client_title_rename("Skipping title refresh because the setting is disabled.", debug=True)
             return
 
-        def _rename_worker(target_pid, target_name):
-            max_attempts = 15
-            delay_seconds = 0.4
-            for _ in range(max_attempts):
-                hwnd = self._find_main_window_for_pid(target_pid)
-                if hwnd:
-                    try:
-                        win32gui.SetWindowText(hwnd, target_name)
+        root = getattr(self, "root", None)
+        if root is None:
+            self._rename_tracked_roblox_client_window_titles()
+            return
+
+        try:
+            root.after(max(0, int(delay_ms)), self._rename_tracked_roblox_client_window_titles)
+        except (tk.TclError, TypeError, ValueError):
+            self._rename_tracked_roblox_client_window_titles()
+
+    def _rename_tracked_roblox_client_window_titles(self) -> None:
+        if platform.system() != "Windows":
+            self._log_client_title_rename("Skipping tracked title refresh because this platform is not Windows.", debug=True)
+            return
+        if not self._get_rename_client_titles_enabled():
+            self._log_client_title_rename("Skipping tracked title refresh because the setting is disabled.", debug=True)
+            return
+
+        running_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
+        with self._pid_account_lock:
+            pid_account_map = dict(self._pid_account_map)
+
+        queued_count = 0
+        for raw_pid, raw_username in pid_account_map.items():
+            try:
+                pid_value = int(raw_pid)
+            except (TypeError, ValueError):
+                continue
+            username = str(raw_username or "").strip()
+            if pid_value not in running_pids or not username:
+                continue
+            queued_count += 1
+            self._rename_roblox_client_window_title(pid_value, username)
+
+        self._log_client_title_rename(
+            f"Queued title refresh for {queued_count} tracked Roblox client(s).",
+            debug=True,
+        )
+
+    def _rename_roblox_client_window_title(self, pid_value: Any, username: Any) -> None:
+        if platform.system() != "Windows":
+            self._log_client_title_rename("Skipping title rename because this platform is not Windows.", debug=True)
+            return
+
+        try:
+            normalized_pid = int(pid_value)
+        except (TypeError, ValueError):
+            self._log_client_title_rename(f"Skipping title rename for invalid PID {pid_value!r}.", debug=True)
+            return
+
+        normalized_username = str(username or "").strip()
+        if normalized_pid <= 0 or not normalized_username:
+            self._log_client_title_rename(
+                f"Skipping title rename for pid={normalized_pid} because the account name is empty.",
+                debug=True,
+            )
+            return
+        if not self._get_rename_client_titles_enabled():
+            self._log_client_title_rename(
+                f"Skipping title rename for pid={normalized_pid} because the setting is disabled.",
+                debug=True,
+            )
+            return
+
+        with self._client_title_rename_lock:
+            if normalized_pid in self._client_title_rename_active_pids:
+                self._log_client_title_rename(
+                    f"Title rename worker is already active for pid={normalized_pid}.",
+                    debug=True,
+                )
+                return
+            self._client_title_rename_active_pids.add(normalized_pid)
+
+        def _rename_worker(target_pid: int, target_name: str) -> None:
+            stable_attempts = 0
+            saw_window = False
+            last_title = ""
+            try:
+                for attempt in range(1, CLIENT_TITLE_RENAME_MAX_ATTEMPTS + 1):
+                    if not self._get_rename_client_titles_enabled():
+                        self._log_client_title_rename(
+                            f"Stopped title rename for pid={target_pid} because the setting was disabled.",
+                            debug=True,
+                        )
                         return
-                    except Exception:
-                        pass
-                time.sleep(delay_seconds)
 
-        threading.Thread(target=_rename_worker, args=(int(pid_value), str(username)), daemon=True).start()
+                    hwnd = self._find_main_window_for_pid(target_pid, include_hidden=True)
+                    if not hwnd:
+                        if attempt in {1, CLIENT_TITLE_RENAME_MAX_ATTEMPTS}:
+                            self._log_client_title_rename(
+                                f"Waiting for Roblox window for pid={target_pid} (attempt {attempt}).",
+                                debug=True,
+                            )
+                        stable_attempts = 0
+                        time.sleep(CLIENT_TITLE_RENAME_DELAY_SECONDS)
+                        continue
 
-    def _find_main_window_for_pid(self, pid_value):
+                    saw_window = True
+                    try:
+                        current_title = str(win32gui.GetWindowText(hwnd) or "").strip()
+                    except WINDOWS_API_ERROR_TYPES:
+                        current_title = ""
+                    last_title = current_title
+
+                    if current_title != target_name:
+                        try:
+                            win32gui.SetWindowText(hwnd, target_name)
+                            self._invalidate_tracked_process_caches()
+                            stable_attempts = 1
+                            self._log_client_title_rename(
+                                (
+                                    f"Set title for pid={target_pid} hwnd={int(hwnd)} "
+                                    f"from {current_title or '(blank)'} to {target_name}."
+                                ),
+                                debug=True,
+                            )
+                        except WINDOWS_API_ERROR_TYPES as exc:
+                            stable_attempts = 0
+                            self._log_client_title_rename(
+                                f"SetWindowText failed for pid={target_pid}: {exc}.",
+                                debug=True,
+                            )
+                    else:
+                        stable_attempts += 1
+
+                    if stable_attempts >= CLIENT_TITLE_RENAME_STABLE_ATTEMPTS:
+                        self._log_client_title_rename(
+                            f"Title rename confirmed for pid={target_pid} as {target_name}.",
+                            debug=True,
+                        )
+                        return
+
+                    time.sleep(CLIENT_TITLE_RENAME_DELAY_SECONDS)
+
+                if saw_window:
+                    self._log_client_title_rename(
+                        (
+                            f"Title rename did not stabilize for pid={target_pid}; "
+                            f"last observed title was {last_title or '(blank)'}."
+                        ),
+                        debug=True,
+                    )
+                else:
+                    self._log_client_title_rename(
+                        f"No Roblox window was found for pid={target_pid} before title rename timed out.",
+                        debug=True,
+                    )
+            finally:
+                with self._client_title_rename_lock:
+                    self._client_title_rename_active_pids.discard(target_pid)
+
+        threading.Thread(
+            target=_rename_worker,
+            args=(normalized_pid, normalized_username),
+            daemon=True,
+            name=f"rename-client-title-{normalized_pid}",
+        ).start()
+
+    def _find_main_window_for_pid(self, pid_value: Any, include_hidden: bool = False) -> Optional[int]:
         if platform.system() != "Windows":
             return None
 
-        found_hwnd = {"value": None}
+        found_hwnd: dict[str, Optional[int]] = {"value": None}
+        try:
+            normalized_pid = int(pid_value)
+        except (TypeError, ValueError):
+            return None
 
-        def _enum_handler(hwnd, _):
+        def _enum_handler(hwnd: int, _: Any) -> bool:
             if found_hwnd["value"] is not None:
                 return False
-            if not win32gui.IsWindowVisible(hwnd):
+            if not include_hidden and not win32gui.IsWindowVisible(hwnd):
                 return True
             if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
                 return True
             try:
                 _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
-            except Exception:
+            except WINDOWS_API_ERROR_TYPES:
                 return True
-            if int(window_pid) != int(pid_value):
+            if int(window_pid) != normalized_pid:
                 return True
             found_hwnd["value"] = hwnd
             return False
 
         try:
             win32gui.EnumWindows(_enum_handler, None)
-        except Exception:
+        except WINDOWS_API_ERROR_TYPES:
             return None
         return found_hwnd["value"]
 
@@ -10129,7 +10402,7 @@ class AccountManagerUI:
                     if prefer_small and account_private_server:
                         print(f"[INFO] Lowest-population server setting ignored for {uname} because a private server link code is set.")
 
-                    before_pids = self._get_running_tracked_roblox_pid_set()
+                    before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
                     effective_auto_rejoin = self._get_effective_auto_rejoin_enabled(uname)
                     launched = self.manager.launch_roblox(
                         uname,
@@ -10174,11 +10447,9 @@ class AccountManagerUI:
                             effective_server_job_id = ""
                     if launched:
                         success_count += 1
-                    time.sleep(0.8)
-                    after_pids = self._get_running_tracked_roblox_pid_set()
-                    if not (set(after_pids) - set(before_pids)):
-                        time.sleep(1.0)
-                        after_pids = self._get_running_tracked_roblox_pid_set()
+                    after_pids = before_pids
+                    if launched:
+                        after_pids = self._wait_for_tracked_roblox_pid_change(before_pids)
                     self._assign_new_pids_to_account(
                         uname,
                         before_pids,
@@ -10506,7 +10777,7 @@ class AccountManagerUI:
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         multi_select_text_var = tk.StringVar(value=self._get_multi_select_label_text())
         active_client_indicator_var = tk.BooleanVar(value=self.settings.get("show_active_client_indicator", True))
-        rename_client_titles_var = tk.BooleanVar(value=self.settings.get("rename_client_titles_to_account_name", True))
+        rename_client_titles_var = tk.BooleanVar(value=self._get_rename_client_titles_enabled())
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         hide_sensitive_var = tk.BooleanVar(value=self.settings.get("hide_sensitive_info", False))
         bug_prompt_var = tk.BooleanVar(value=self.settings.get("bug_issue_prompt_enabled", True))
@@ -10661,25 +10932,17 @@ class AccountManagerUI:
             self._invalidate_active_client_indicator_cache()
             self.refresh_accounts(selected_usernames=self._get_selected_usernames_silent())
 
-        def on_rename_client_titles_toggle():
-            self.settings["rename_client_titles_to_account_name"] = rename_client_titles_var.get()
+        def on_rename_client_titles_toggle() -> None:
+            enabled = bool(rename_client_titles_var.get())
+            self.settings["rename_client_titles_to_account_name"] = enabled
             self.save_settings()
-            if not rename_client_titles_var.get():
+            self._log_client_title_rename(
+                f"Rename Title to Account Name setting {'enabled' if enabled else 'disabled'}.",
+                debug=True,
+            )
+            if not enabled:
                 return
-            running_pids = self._get_running_tracked_roblox_pid_set()
-            try:
-                with self._pid_account_lock:
-                    pid_account_map = dict(self._pid_account_map)
-            except Exception:
-                pid_account_map = {}
-            for pid_value, username in pid_account_map.items():
-                try:
-                    normalized_pid = int(pid_value)
-                except Exception:
-                    continue
-                normalized_username = str(username or "").strip()
-                if normalized_pid in running_pids and normalized_username:
-                    self._rename_roblox_client_window_title(normalized_pid, normalized_username)
+            self._rename_tracked_roblox_client_window_titles()
 
         tab_var = tk.StringVar(value="general")
         tab_buttons = {}
@@ -11355,13 +11618,13 @@ class AccountManagerUI:
 
         client_windows_card = create_settings_card(
             roblox_tab,
-            "Client Windows",
-            "Window title behavior for active Roblox clients",
+            "Rename Title to Account Name",
+            "Sets each tracked Roblox client window title to the account that launched it",
         )
 
         ttk.Checkbutton(
             client_windows_card,
-            text="Rename title to Account Name",
+            text="Enable title renaming",
             variable=rename_client_titles_var,
             style="Dark.TCheckbutton",
             command=on_rename_client_titles_toggle
