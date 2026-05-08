@@ -1351,6 +1351,8 @@ class AccountManagerUI:
         self._discord_log_mirror_in_progress = False
         self._discord_log_mirror_screenshot_after_id = None
         self._discord_log_mirror_screenshot_in_progress = False
+        self._discord_log_mirror_instance_summary_after_id = None
+        self._discord_log_mirror_instance_summary_in_progress = False
         self._discord_log_mirror_last_index = 0
         self._discord_log_mirror_last_error = ""
         self._discord_log_mirror_sent_startup_notice = False
@@ -1808,6 +1810,8 @@ class AccountManagerUI:
             "discord_log_mirror_ping_only_errors": True,
             "discord_log_mirror_screenshot_interval_minutes": 0,
             "discord_log_mirror_screenshot_all_monitors": False,
+            "discord_log_mirror_instance_summary_enabled": False,
+            "discord_log_mirror_instance_summary_interval_minutes": 15,
             "discord_log_mirror_max_lines_per_message": 20,
             "roblox_headless_mode_enabled": False,
             "roblox_headless_idle_priority": True,
@@ -1914,6 +1918,19 @@ class AccountManagerUI:
         self.settings["discord_log_mirror_screenshot_interval_minutes"] = max(0, min(1440, screenshot_interval))
         self.settings["discord_log_mirror_screenshot_all_monitors"] = bool(
             self.settings.get("discord_log_mirror_screenshot_all_monitors", False)
+        )
+        self.settings["discord_log_mirror_instance_summary_enabled"] = bool(
+            self.settings.get("discord_log_mirror_instance_summary_enabled", False)
+        )
+        try:
+            instance_summary_interval = int(
+                self.settings.get("discord_log_mirror_instance_summary_interval_minutes", 15) or 15
+            )
+        except (TypeError, ValueError):
+            instance_summary_interval = 15
+        self.settings["discord_log_mirror_instance_summary_interval_minutes"] = max(
+            1,
+            min(1440, instance_summary_interval),
         )
         if platform.system() != "Windows":
             self.settings["roblox_headless_mode_enabled"] = False
@@ -14524,6 +14541,12 @@ class AccountManagerUI:
         screenshot_interval_var = tk.IntVar(
             value=int(self.settings.get("discord_log_mirror_screenshot_interval_minutes", 0) or 0)
         )
+        instance_summary_enabled_var = tk.BooleanVar(
+            value=bool(self.settings.get("discord_log_mirror_instance_summary_enabled", False))
+        )
+        instance_summary_interval_var = tk.IntVar(
+            value=int(self.settings.get("discord_log_mirror_instance_summary_interval_minutes", 15) or 15)
+        )
         all_monitors_available = self._get_discord_screenshot_monitor_count() > 1
         screenshot_all_monitors_var = tk.BooleanVar(
             value=all_monitors_available
@@ -14567,11 +14590,17 @@ class AccountManagerUI:
                 screenshot_interval = int(screenshot_interval_var.get())
             except (tk.TclError, ValueError):
                 screenshot_interval = 0
+            try:
+                instance_summary_interval = int(instance_summary_interval_var.get())
+            except (tk.TclError, ValueError):
+                instance_summary_interval = 15
 
             max_lines = max(1, min(50, max_lines))
             screenshot_interval = max(0, min(1440, screenshot_interval))
+            instance_summary_interval = max(1, min(1440, instance_summary_interval))
             max_lines_var.set(max_lines)
             screenshot_interval_var.set(screenshot_interval)
+            instance_summary_interval_var.set(instance_summary_interval)
 
             webhook_url = str(webhook_var.get() or "").strip()
             ping_user_id = re.sub(r"\D", "", str(ping_user_id_var.get() or ""))
@@ -14588,6 +14617,8 @@ class AccountManagerUI:
             self.settings["discord_log_mirror_screenshot_all_monitors"] = (
                 all_monitors_available and bool(screenshot_all_monitors_var.get())
             )
+            self.settings["discord_log_mirror_instance_summary_enabled"] = bool(instance_summary_enabled_var.get())
+            self.settings["discord_log_mirror_instance_summary_interval_minutes"] = instance_summary_interval
             screenshot_all_monitors_var.set(bool(self.settings["discord_log_mirror_screenshot_all_monitors"]))
             selected_preset = DISCORD_LOG_FILTER_PRESET_BY_LABEL.get(
                 str(filter_preset_label_var.get() or ""),
@@ -14612,6 +14643,10 @@ class AccountManagerUI:
             save_panel_settings()
             self._send_discord_log_mirror_test_screenshot(window)
 
+        def send_instance_summary() -> None:
+            save_panel_settings()
+            self._send_discord_log_mirror_instance_summary(window)
+
         def apply_filter_preset(*_args: object) -> None:
             selected_preset = DISCORD_LOG_FILTER_PRESET_BY_LABEL.get(str(filter_preset_label_var.get() or ""))
             if selected_preset is None:
@@ -14619,32 +14654,134 @@ class AccountManagerUI:
                 filter_preset_label_var.set(selected_preset.label)
             save_panel_settings()
 
+        window.minsize(700, 560)
+
         main = ttk.Frame(window, style="Dark.TFrame")
         main.pack(fill="both", expand=True, padx=18, pady=16)
+        main.rowconfigure(1, weight=1)
+        main.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(main, style="Dark.TFrame")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.columnconfigure(0, weight=1)
 
         ttk.Label(
-            main,
+            header,
             text="Discord Monitor",
             style="Dark.TLabel",
-            font=("Segoe UI", 14, "bold"),
-        ).pack(anchor="w", pady=(0, 10))
+            font=("Segoe UI", 15, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header,
+            text="Webhook logging, alerts, screenshots, and instance reports",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
+        body_host = ttk.Frame(main, style="Dark.TFrame")
+        body_host.grid(row=1, column=0, sticky="nsew")
+        body_host.rowconfigure(0, weight=1)
+        body_host.columnconfigure(0, weight=1)
+
+        body_canvas = tk.Canvas(body_host, bg=self.BG_DARK, highlightthickness=0, bd=0)
+        body_scroll = ttk.Scrollbar(body_host, orient="vertical", command=body_canvas.yview)
+        body_canvas.configure(yscrollcommand=body_scroll.set)
+        body_canvas.grid(row=0, column=0, sticky="nsew")
+        body_scroll.grid(row=0, column=1, sticky="ns")
+
+        body = ttk.Frame(body_canvas, style="Dark.TFrame")
+        body_window = body_canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def sync_body_scrollregion(_evt: Optional[tk.Event] = None) -> None:
+            try:
+                body_canvas.configure(scrollregion=body_canvas.bbox("all"))
+            except tk.TclError:
+                pass
+
+        def sync_body_width(_evt: Optional[tk.Event] = None) -> None:
+            try:
+                body_canvas.itemconfigure(body_window, width=body_canvas.winfo_width())
+            except tk.TclError:
+                pass
+            sync_body_scrollregion()
+
+        def on_body_mousewheel(event: tk.Event) -> str:
+            delta = int(getattr(event, "delta", 0) or 0)
+            if delta:
+                body_canvas.yview_scroll(-1 * int(delta / 120), "units")
+            return "break"
+
+        body.bind("<Configure>", sync_body_scrollregion)
+        body_canvas.bind("<Configure>", sync_body_width)
+        body_canvas.bind("<MouseWheel>", on_body_mousewheel)
+        body.bind("<MouseWheel>", on_body_mousewheel)
+
+        def create_monitor_section(parent: tk.Widget, title: str, subtitle: str) -> ttk.Frame:
+            outer = tk.Frame(
+                parent,
+                bg=self.BG_MID,
+                highlightbackground=self.BORDER_COLOR,
+                highlightthickness=1,
+                bd=0,
+            )
+            outer.pack(fill="x", pady=(0, 10))
+            section_header = tk.Frame(outer, bg=self.BG_MID)
+            section_header.pack(fill="x", padx=12, pady=(10, 0))
+            ttk.Label(
+                section_header,
+                text=title,
+                style="Dark.TLabel",
+                font=("Segoe UI", 11, "bold"),
+            ).pack(anchor="w")
+            ttk.Label(
+                section_header,
+                text=subtitle,
+                style="Dark.TLabel",
+                font=("Segoe UI", 9),
+                foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+            ).pack(anchor="w", pady=(2, 0))
+            section_body = ttk.Frame(outer, style="Dark.TFrame")
+            section_body.pack(fill="x", padx=12, pady=(10, 12))
+            return section_body
+
+        def create_row(parent: tk.Widget) -> ttk.Frame:
+            row = ttk.Frame(parent, style="Dark.TFrame")
+            row.pack(fill="x", pady=(0, 8))
+            return row
+
+        connection_section = create_monitor_section(
+            body,
+            "Connection",
+            "Control the webhook endpoint and when FRAM starts sending to it",
+        )
+        connection_options_row = create_row(connection_section)
         ttk.Checkbutton(
-            main,
+            connection_options_row,
             text="Enable Discord Logging",
             variable=enabled_var,
             style="Dark.TCheckbutton",
             command=save_panel_settings,
-        ).pack(anchor="w", pady=2)
-
-        ttk.Label(main, text="Webhook URL", style="Dark.TLabel").pack(anchor="w", pady=(8, 2))
-        webhook_entry = ttk.Entry(main, textvariable=webhook_var, style="Dark.TEntry", show="*")
+        ).pack(side="left")
+        ttk.Checkbutton(
+            connection_options_row,
+            text="Connected notice on startup",
+            variable=startup_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(side="left", padx=(18, 0))
+        ttk.Label(connection_section, text="Webhook URL", style="Dark.TLabel").pack(anchor="w", pady=(2, 3))
+        webhook_entry = ttk.Entry(connection_section, textvariable=webhook_var, style="Dark.TEntry", show="*")
         webhook_entry.pack(fill="x")
         webhook_entry.bind("<FocusOut>", lambda _evt: save_panel_settings())
         webhook_entry.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
 
-        stream_frame = ttk.Frame(main, style="Dark.TFrame")
-        stream_frame.pack(fill="x", pady=(10, 0))
+        logs_section = create_monitor_section(
+            body,
+            "Log Delivery",
+            "Choose which console entries are mirrored and how messages are batched",
+        )
+        stream_frame = create_row(logs_section)
         ttk.Checkbutton(
             stream_frame,
             text="Normal logs",
@@ -14658,54 +14795,36 @@ class AccountManagerUI:
             variable=stderr_var,
             style="Dark.TCheckbutton",
             command=save_panel_settings,
-        ).pack(side="left", padx=(10, 0))
-
+        ).pack(side="left", padx=(18, 0))
         ttk.Checkbutton(
-            main,
-            text="Redact sensitive info before sending",
+            stream_frame,
+            text="Redact sensitive info",
             variable=redact_var,
             style="Dark.TCheckbutton",
             command=save_panel_settings,
-        ).pack(anchor="w", pady=(8, 0))
-
-        ttk.Checkbutton(
-            main,
-            text="Send connected notice on startup",
-            variable=startup_var,
-            style="Dark.TCheckbutton",
-            command=save_panel_settings,
-        ).pack(anchor="w", pady=2)
-
-        ttk.Label(main, text="Ping user on alerts (User ID)", style="Dark.TLabel").pack(anchor="w", pady=(10, 2))
-        ping_entry = ttk.Entry(main, textvariable=ping_user_id_var, style="Dark.TEntry")
-        ping_entry.pack(fill="x")
-        ping_entry.bind("<FocusOut>", lambda _evt: save_panel_settings())
-        ping_entry.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
-
-        ttk.Checkbutton(
-            main,
-            text="Ping only on [Error]",
-            variable=ping_only_errors_var,
-            style="Dark.TCheckbutton",
-            command=save_panel_settings,
-        ).pack(anchor="w", pady=(6, 0))
-
-        ttk.Label(main, text="Log Filter", style="Dark.TLabel").pack(anchor="w", pady=(10, 2))
+        ).pack(side="left", padx=(18, 0))
+        filter_grid = ttk.Frame(logs_section, style="Dark.TFrame")
+        filter_grid.pack(fill="x")
+        filter_grid.columnconfigure(1, weight=1)
+        ttk.Label(filter_grid, text="Log Filter", style="Dark.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
         filter_preset_combo = ttk.Combobox(
-            main,
+            filter_grid,
             textvariable=filter_preset_label_var,
             values=preset_labels,
             state="readonly",
             style="Dark.TCombobox",
         )
-        filter_preset_combo.pack(fill="x")
+        filter_preset_combo.grid(row=0, column=1, sticky="ew")
         filter_preset_combo.bind("<<ComboboxSelected>>", apply_filter_preset)
-
-        limits_frame = ttk.Frame(main, style="Dark.TFrame")
-        limits_frame.pack(fill="x", pady=(10, 0))
-        ttk.Label(limits_frame, text="Lines per message", style="Dark.TLabel").pack(side="left")
+        ttk.Label(filter_grid, text="Lines per message", style="Dark.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            padx=(0, 10),
+            pady=(8, 0),
+        )
         lines_spin = ttk.Spinbox(
-            limits_frame,
+            filter_grid,
             from_=1,
             to=50,
             increment=1,
@@ -14715,15 +14834,41 @@ class AccountManagerUI:
             justify="center",
             command=save_panel_settings,
         )
-        lines_spin.pack(side="left", padx=(6, 0))
+        lines_spin.grid(row=1, column=1, sticky="w", pady=(8, 0))
         lines_spin.bind("<FocusOut>", lambda _evt: save_panel_settings())
         lines_spin.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
 
-        screenshot_frame = ttk.Frame(main, style="Dark.TFrame")
-        screenshot_frame.pack(fill="x", pady=(10, 0))
-        ttk.Label(screenshot_frame, text="Screenshot every", style="Dark.TLabel").pack(side="left")
+        alerts_section = create_monitor_section(
+            body,
+            "Alerts",
+            "Optionally mention a Discord user when important log entries are sent",
+        )
+        alerts_grid = ttk.Frame(alerts_section, style="Dark.TFrame")
+        alerts_grid.pack(fill="x")
+        alerts_grid.columnconfigure(1, weight=1)
+        ttk.Label(alerts_grid, text="Ping User ID", style="Dark.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ping_entry = ttk.Entry(alerts_grid, textvariable=ping_user_id_var, style="Dark.TEntry")
+        ping_entry.grid(row=0, column=1, sticky="ew")
+        ping_entry.bind("<FocusOut>", lambda _evt: save_panel_settings())
+        ping_entry.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
+        ttk.Checkbutton(
+            alerts_section,
+            text="Ping only on errors and warnings",
+            variable=ping_only_errors_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).pack(anchor="w", pady=(8, 0))
+
+        captures_section = create_monitor_section(
+            body,
+            "Screenshots",
+            "Send monitor captures on a fixed interval",
+        )
+        screenshot_grid = ttk.Frame(captures_section, style="Dark.TFrame")
+        screenshot_grid.pack(fill="x")
+        ttk.Label(screenshot_grid, text="Send every", style="Dark.TLabel").grid(row=0, column=0, sticky="w")
         screenshot_spin = ttk.Spinbox(
-            screenshot_frame,
+            screenshot_grid,
             from_=0,
             to=1440,
             increment=1,
@@ -14733,26 +14878,58 @@ class AccountManagerUI:
             justify="center",
             command=save_panel_settings,
         )
-        screenshot_spin.pack(side="left", padx=(6, 6))
-        ttk.Label(screenshot_frame, text="minutes (0=off)", style="Dark.TLabel").pack(side="left")
+        screenshot_spin.grid(row=0, column=1, sticky="w", padx=(8, 6))
+        ttk.Label(screenshot_grid, text="minutes (0 = off)", style="Dark.TLabel").grid(row=0, column=2, sticky="w")
         screenshot_spin.bind("<FocusOut>", lambda _evt: save_panel_settings())
         screenshot_spin.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
-
         if all_monitors_available:
             ttk.Checkbutton(
-                main,
-                text="Screenshot all monitors",
+                captures_section,
+                text="Capture all monitors",
                 variable=screenshot_all_monitors_var,
                 style="Dark.TCheckbutton",
                 command=save_panel_settings,
-            ).pack(anchor="w", pady=(6, 0))
+            ).pack(anchor="w", pady=(8, 0))
+
+        instances_section = create_monitor_section(
+            body,
+            "Active Instances",
+            "Post running Roblox accounts, PIDs, status, RAM, place, and rejoin state",
+        )
+        instance_summary_frame = ttk.Frame(instances_section, style="Dark.TFrame")
+        instance_summary_frame.pack(fill="x")
+        ttk.Checkbutton(
+            instance_summary_frame,
+            text="Send Active Instance Summary",
+            variable=instance_summary_enabled_var,
+            style="Dark.TCheckbutton",
+            command=save_panel_settings,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(instance_summary_frame, text="every", style="Dark.TLabel").grid(row=0, column=1, sticky="w", padx=(14, 6))
+        instance_summary_spin = ttk.Spinbox(
+            instance_summary_frame,
+            from_=1,
+            to=1440,
+            increment=1,
+            textvariable=instance_summary_interval_var,
+            width=7,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=save_panel_settings,
+        )
+        instance_summary_spin.grid(row=0, column=2, sticky="w")
+        ttk.Label(instance_summary_frame, text="minutes", style="Dark.TLabel").grid(row=0, column=3, sticky="w", padx=(6, 0))
+        instance_summary_spin.bind("<FocusOut>", lambda _evt: save_panel_settings())
+        instance_summary_spin.bind("<Return>", lambda _evt: (save_panel_settings(), "break")[1])
 
         button_frame = ttk.Frame(main, style="Dark.TFrame")
-        button_frame.pack(fill="x", pady=(12, 0))
-        ttk.Button(button_frame, text="Send Test", style="Dark.TButton", command=send_test).pack(
-            side="left",
-            fill="x",
-            expand=True,
+        button_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        for column_index in range(4):
+            button_frame.columnconfigure(column_index, weight=1)
+        ttk.Button(button_frame, text="Send Test", style="Dark.TButton", command=send_test).grid(
+            row=0,
+            column=0,
+            sticky="ew",
             padx=(0, 5),
         )
         ttk.Button(
@@ -14760,23 +14937,24 @@ class AccountManagerUI:
             text="Send Test Screenshot",
             style="Dark.TButton",
             command=send_test_screenshot,
-        ).pack(
-            side="left",
-            fill="x",
-            expand=True,
-            padx=5,
-        )
-        ttk.Button(button_frame, text="Close", style="Dark.TButton", command=close_panel).pack(
-            side="left",
-            fill="x",
-            expand=True,
+        ).grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Button(
+            button_frame,
+            text="Send Summary Now",
+            style="Dark.TButton",
+            command=send_instance_summary,
+        ).grid(row=0, column=2, sticky="ew", padx=5)
+        ttk.Button(button_frame, text="Close", style="Dark.TButton", command=close_panel).grid(
+            row=0,
+            column=3,
+            sticky="ew",
             padx=(5, 0),
         )
 
         window.protocol("WM_DELETE_WINDOW", close_panel)
         window.bind("<Escape>", lambda _evt: (close_panel(), "break")[1])
         window.update_idletasks()
-        self._center_window(window, max(620, window.winfo_reqwidth() + 50), max(500, window.winfo_reqheight() + 50))
+        self._center_window(window, max(740, window.winfo_reqwidth() + 50), max(620, window.winfo_reqheight() + 50))
         window.deiconify()
         webhook_entry.focus_set()
 
@@ -14811,6 +14989,7 @@ class AccountManagerUI:
         if self.settings.get("discord_log_mirror_send_startup_notice", False):
             self._discord_log_mirror_send_startup_notice()
         self._discord_log_mirror_schedule_screenshot(reset=True)
+        self._discord_log_mirror_schedule_instance_summary(reset=True)
 
     def _discord_log_mirror_stop(self) -> None:
         after_id = self._discord_log_mirror_after_id
@@ -14822,6 +15001,7 @@ class AccountManagerUI:
         self._discord_log_mirror_after_id = None
         self._discord_log_mirror_in_progress = False
         self._discord_log_mirror_cancel_screenshot()
+        self._discord_log_mirror_cancel_instance_summary()
 
     def _discord_log_mirror_schedule(self, delay_ms: Optional[int] = None) -> None:
         if self._discord_log_mirror_after_id is not None:
@@ -14849,6 +15029,13 @@ class AccountManagerUI:
         except (TypeError, ValueError):
             value = 0
         return max(0, min(1440, value))
+
+    def _get_discord_log_mirror_instance_summary_interval_minutes(self) -> int:
+        try:
+            value = int(self.settings.get("discord_log_mirror_instance_summary_interval_minutes", 15) or 15)
+        except (TypeError, ValueError):
+            value = 15
+        return max(1, min(1440, value))
 
     def _get_discord_screenshot_monitor_count(self) -> int:
         if not win32api:
@@ -14939,6 +15126,43 @@ class AccountManagerUI:
             )
         except tk.TclError:
             self._discord_log_mirror_screenshot_after_id = None
+
+    def _discord_log_mirror_cancel_instance_summary(self) -> None:
+        after_id = self._discord_log_mirror_instance_summary_after_id
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._discord_log_mirror_instance_summary_after_id = None
+        self._discord_log_mirror_instance_summary_in_progress = False
+
+    def _discord_log_mirror_schedule_instance_summary(self, reset: bool = False) -> None:
+        if reset:
+            self._discord_log_mirror_cancel_instance_summary()
+        if self._discord_log_mirror_instance_summary_after_id is not None:
+            return
+        if not self.settings.get("discord_log_mirror_enabled", False):
+            return
+        if not self.settings.get("discord_log_mirror_instance_summary_enabled", False):
+            return
+        if not self._is_valid_discord_webhook_url(self._get_discord_log_mirror_webhook_url()):
+            return
+        interval_minutes = self._get_discord_log_mirror_instance_summary_interval_minutes()
+        try:
+            self._discord_log_mirror_instance_summary_after_id = self.root.after(
+                interval_minutes * 60 * 1000,
+                self._discord_log_mirror_instance_summary_tick,
+            )
+        except tk.TclError:
+            self._discord_log_mirror_instance_summary_after_id = None
+
+    def _discord_log_mirror_instance_summary_tick(self) -> None:
+        self._discord_log_mirror_instance_summary_after_id = None
+        if self._discord_log_mirror_instance_summary_in_progress:
+            self._discord_log_mirror_schedule_instance_summary()
+            return
+        self._send_discord_log_mirror_instance_summary(parent=None, manual=False)
 
     def _discord_log_mirror_poll(self) -> None:
         self._discord_log_mirror_after_id = None
@@ -15143,6 +15367,300 @@ class AccountManagerUI:
             except (RuntimeError, tk.TclError):
                 pass
 
+    def _format_discord_summary_text(self, value: Any, fallback: str = "n/a", max_length: int = 90) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if not text:
+            return fallback
+        if len(text) > max_length:
+            return text[: max(0, max_length - 3)] + "..."
+        return text
+
+    def _format_discord_memory_value(self, value: Any) -> str:
+        try:
+            byte_count = int(value)
+        except (TypeError, ValueError):
+            return "n/a"
+        if byte_count <= 0:
+            return "n/a"
+        return f"{byte_count / (1024 * 1024):.1f} MB"
+
+    def _format_discord_embed_value(self, value: Any, fallback: str = "n/a", max_length: int = 1024) -> str:
+        text = str(value or "").strip()
+        if not text:
+            text = fallback
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        if len(text) > max_length:
+            return text[: max(0, max_length - 3)] + "..."
+        return text
+
+    def _extract_account_from_window_title(self, title_text: Any) -> str:
+        text = str(title_text or "").strip()
+        if not text:
+            return ""
+
+        accounts = getattr(self.manager, "accounts", {})
+        account_lookup = {}
+        if isinstance(accounts, dict):
+            account_lookup = {
+                str(username).strip().lower(): str(username).strip()
+                for username in accounts.keys()
+                if str(username).strip()
+            }
+
+        exact_match = account_lookup.get(text.lower())
+        if exact_match:
+            return exact_match
+
+        for pattern in (r"([A-Za-z0-9_]{3,})@", r"@([A-Za-z0-9_]{3,})"):
+            for match in re.finditer(pattern, text):
+                candidate = str(match.group(1) or "").strip()
+                if not candidate:
+                    continue
+                resolved = account_lookup.get(candidate.lower())
+                if resolved:
+                    return resolved
+                return candidate
+        return ""
+
+    def _format_discord_instance_place(self, context: dict[str, Any], resolved_place_id: str) -> str:
+        mode = str(context.get("mode", "home") or "home").strip().lower()
+        context_place_id = str(context.get("game_id", "") or "").strip()
+        place_id = str(resolved_place_id or "").strip() or context_place_id
+        if mode == "home":
+            return "Home"
+        if mode == "join_user":
+            return f"Join User {context_place_id}" if context_place_id else "Join User"
+        if place_id:
+            return f"Place {place_id}"
+        return "Unknown"
+
+    def _format_discord_instance_auto_rejoin(self, username: str) -> str:
+        normalized_username = str(username or "").strip()
+        if not normalized_username or normalized_username == "Unknown":
+            return "Unknown"
+
+        session = self._get_auto_rejoin_session_snapshot(normalized_username)
+        if isinstance(session, dict):
+            enabled = bool(session.get("auto_rejoin", False))
+            try:
+                attempts = int(session.get("rejoin_attempts", 0) or 0)
+            except (TypeError, ValueError):
+                attempts = 0
+            try:
+                max_attempts = int(session.get("max_rejoin_attempts", 0) or 0)
+            except (TypeError, ValueError):
+                max_attempts = 0
+            attempt_text = f"{attempts}/{max_attempts}" if max_attempts > 0 else str(attempts)
+            if enabled:
+                status = f"On ({attempt_text})"
+                if bool(session.get("rejoin_in_progress", False)):
+                    status = f"{status}, rejoining"
+                return status
+            disabled_reason = self._format_discord_summary_text(session.get("disabled_reason", ""), fallback="", max_length=40)
+            return f"Off ({disabled_reason})" if disabled_reason else "Off"
+
+        return "On" if self._get_effective_auto_rejoin_enabled(normalized_username) else "Off"
+
+    def _get_discord_active_instance_rows(self) -> list[dict[str, Any]]:
+        target_executables = set(self.ROBLOX_CLIENT_EXECUTABLES)
+        snapshot = self._get_tracked_window_snapshot(target_executables, use_cache=False)
+        pid_to_image = dict(snapshot.get("pid_to_image", {}) or {})
+        pid_to_title = dict(snapshot.get("pid_to_title", {}) or {})
+        pid_to_hung = dict(snapshot.get("pid_to_hung", {}) or {})
+        pid_values = {int(pid_value) for pid_value in pid_to_image.keys()}
+        pid_to_place_id = self._query_pid_place_id_map(
+            target_executables,
+            pid_values=pid_values,
+            allow_log_fallback=False,
+            use_cache=False,
+        )
+
+        with self._pid_account_lock:
+            pid_account_map = dict(self._pid_account_map)
+            pid_launch_context_map = dict(self._pid_launch_context_map)
+
+        rows = []
+        for pid_value in sorted(pid_values):
+            title_text = str(pid_to_title.get(pid_value, "") or "").strip()
+            mapped_username = str(pid_account_map.get(pid_value, "") or "").strip()
+            username = mapped_username or self._extract_account_from_window_title(title_text) or "Unknown"
+            context = self._normalize_launch_context(pid_launch_context_map.get(pid_value))
+            memory_bytes = self._memtrim_get_working_set(pid_value) if platform.system() == "Windows" else None
+            rows.append(
+                {
+                    "pid": pid_value,
+                    "image": str(pid_to_image.get(pid_value, "") or "").strip() or "Roblox",
+                    "account": username,
+                    "status": "Not Responding" if pid_to_hung.get(pid_value) else "Running",
+                    "place": self._format_discord_instance_place(
+                        context,
+                        str(pid_to_place_id.get(pid_value, "") or "").strip(),
+                    ),
+                    "memory_bytes": memory_bytes,
+                    "auto_rejoin": self._format_discord_instance_auto_rejoin(username),
+                    "title": title_text,
+                }
+            )
+        return rows
+
+    def _build_discord_active_instance_summary_embed(self) -> dict[str, Any]:
+        rows = self._get_discord_active_instance_rows()
+        not_responding_count = sum(1 for row in rows if str(row.get("status", "")).lower() == "not responding")
+        total_memory_bytes = 0
+        for row in rows:
+            try:
+                total_memory_bytes += int(row.get("memory_bytes") or 0)
+            except (TypeError, ValueError):
+                continue
+        monitored_count = sum(
+            1
+            for row in rows
+            if str(row.get("auto_rejoin", "")).strip().lower().startswith("on")
+        )
+
+        if not rows:
+            embed_color = 0x5865F2
+            description = "No active Roblox client instances detected."
+        elif not_responding_count > 0:
+            embed_color = 0xF59E0B
+            description = "Active Roblox clients were found, with at least one not responding."
+        else:
+            embed_color = 0x22C55E
+            description = "Active Roblox clients are running normally."
+
+        fields: list[dict[str, Any]] = [
+            {
+                "name": "Overview",
+                "value": self._format_discord_embed_value(
+                    (
+                        f"Active: **{len(rows)}**\n"
+                        f"Not responding: **{not_responding_count}**\n"
+                        f"Total RAM: **{self._format_discord_memory_value(total_memory_bytes)}**"
+                    )
+                ),
+                "inline": True,
+            },
+            {
+                "name": "Automation",
+                "value": self._format_discord_embed_value(
+                    (
+                        f"NoClient: **{'On' if self.settings.get('roblox_headless_mode_enabled', False) else 'Off'}**\n"
+                        f"Memory Trim: **{'On' if self.settings.get('auto_memory_trim_enabled', False) else 'Off'}**\n"
+                        f"Title Rename: **{'On' if self._get_rename_client_titles_enabled() else 'Off'}**"
+                    )
+                ),
+                "inline": True,
+            },
+            {
+                "name": "Auto Rejoin",
+                "value": self._format_discord_embed_value(
+                    (
+                        f"Force: **{'On' if self._is_auto_rejoin_force_enabled() else 'Off'}**\n"
+                        f"Monitored: **{monitored_count}**\n"
+                        f"Delay: **{self._get_auto_rejoin_delay_seconds()}s** | "
+                        f"Max attempts: **{self._get_auto_rejoin_max_attempts()}**"
+                    )
+                ),
+                "inline": True,
+            },
+        ]
+
+        max_instance_fields = 12
+        for row in rows[:max_instance_fields]:
+            account = self._format_discord_summary_text(row.get("account"), fallback="Unknown", max_length=48)
+            fields.append(
+                {
+                    "name": f"{account} - {row.get('status')}",
+                    "value": self._format_discord_embed_value(
+                        (
+                            f"PID: `{row.get('pid')}`\n"
+                            f"Place: `{self._format_discord_summary_text(row.get('place'), fallback='Unknown', max_length=80)}`\n"
+                            f"RAM: `{self._format_discord_memory_value(row.get('memory_bytes'))}`\n"
+                            f"Rejoin: `{row.get('auto_rejoin')}`"
+                        )
+                    ),
+                    "inline": True,
+                }
+            )
+
+        if len(rows) > max_instance_fields:
+            fields.append(
+                {
+                    "name": "More Instances",
+                    "value": f"{len(rows) - max_instance_fields} additional Roblox client(s) not shown.",
+                    "inline": False,
+                }
+            )
+
+        embed = {
+            "title": "FRAM Active Instance Summary",
+            "description": description,
+            "color": embed_color,
+            "fields": fields,
+            "footer": {"text": "FRAM Discord Monitor"},
+            "timestamp": datetime.now().astimezone().isoformat(),
+        }
+        if self.settings.get("discord_log_mirror_redact_sensitive", True):
+            embed["description"] = redact_sensitive_console_text(str(embed.get("description", "")))
+            for field in fields:
+                field["name"] = redact_sensitive_console_text(str(field.get("name", "")))
+                field["value"] = redact_sensitive_console_text(str(field.get("value", "")))
+        return embed
+
+    def _send_discord_log_mirror_instance_summary(
+        self,
+        parent: Optional[tk.Misc] = None,
+        manual: bool = True,
+    ) -> None:
+        webhook_url = self._get_discord_log_mirror_webhook_url()
+        if not self._is_valid_discord_webhook_url(webhook_url):
+            if parent is not None:
+                messagebox.showerror("Discord", "Enter a valid Discord webhook URL first.", parent=parent)
+            return
+        if not manual:
+            if not self.settings.get("discord_log_mirror_enabled", False):
+                return
+            if not self.settings.get("discord_log_mirror_instance_summary_enabled", False):
+                return
+        if self._discord_log_mirror_instance_summary_in_progress:
+            if manual and parent is not None:
+                messagebox.showinfo("Discord", "An active instance summary is already being sent.", parent=parent)
+            return
+
+        self._discord_log_mirror_instance_summary_in_progress = True
+
+        def worker() -> None:
+            ok = False
+            error = ""
+            try:
+                embed = self._build_discord_active_instance_summary_embed()
+                ok, error = self._post_discord_webhook_message(webhook_url, "", embeds=[embed])
+                self._discord_log_mirror_last_error = "" if ok else error
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError, tk.TclError) as exc:
+                error = str(exc)
+                self._discord_log_mirror_last_error = error
+
+            def done() -> None:
+                self._discord_log_mirror_instance_summary_in_progress = False
+                if manual and parent is not None:
+                    try:
+                        dialog_parent = parent if parent.winfo_exists() else self.root
+                    except tk.TclError:
+                        dialog_parent = self.root
+                    if ok:
+                        messagebox.showinfo("Discord", "Active instance summary sent.", parent=dialog_parent)
+                    else:
+                        messagebox.showerror("Discord", f"Active instance summary failed:\n{error}", parent=dialog_parent)
+                if not manual:
+                    self._discord_log_mirror_schedule_instance_summary()
+
+            try:
+                self.root.after(0, done)
+            except (RuntimeError, tk.TclError):
+                self._discord_log_mirror_instance_summary_in_progress = False
+
+        threading.Thread(target=worker, daemon=True, name="discord-log-mirror-instance-summary").start()
+
     def _get_discord_log_mirror_ping_user_id(self) -> str:
         return re.sub(r"\D", "", str(self.settings.get("discord_log_mirror_ping_user_id", "") or ""))
 
@@ -15186,20 +15704,26 @@ class AccountManagerUI:
     def _post_discord_webhook_message(
         self,
         webhook_url: str,
-        content: str,
+        content: str = "",
         ping_user_id: str = "",
+        embeds: Optional[list[dict[str, Any]]] = None,
     ) -> tuple[bool, str]:
         normalized_ping_user_id = re.sub(r"\D", "", str(ping_user_id or ""))
-        message_content = content
+        message_content = str(content or "")
         allowed_mentions = {"parse": []}
         if normalized_ping_user_id:
-            message_content = f"<@{normalized_ping_user_id}> {message_content}"
+            message_content = f"<@{normalized_ping_user_id}> {message_content}".strip()
             allowed_mentions = {"users": [normalized_ping_user_id]}
         payload = {
-            "content": message_content,
             "username": "FRAM Logs",
             "allowed_mentions": allowed_mentions,
         }
+        if message_content:
+            payload["content"] = message_content
+        if embeds:
+            payload["embeds"] = embeds[:10]
+        if "content" not in payload and "embeds" not in payload:
+            payload["content"] = "FRAM"
         try:
             response = requests.post(webhook_url, json=payload, timeout=10)
             if response.status_code in (200, 204):
