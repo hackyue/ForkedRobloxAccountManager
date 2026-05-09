@@ -1485,7 +1485,6 @@ class AccountManagerUI:
         self.launch_input_context_menu = None
         self.place_target_context_menu = None
         self.recent_list_edit_button = None
-        self.recent_list_edit_menu = None
         self.menu_bar_frame = None
         self.menu_buttons = []
         self.version_options = {"Latest Version": None}
@@ -1495,6 +1494,14 @@ class AccountManagerUI:
         self._http_session_lock = threading.Lock()
         self._settings_save_after_ids = {}
         self._discord_button_image = None
+        self._place_icon_images: dict[str, tk.PhotoImage] = {}
+        self._place_icon_fetch_pending: set[str] = set()
+        self._place_icon_fetch_callbacks: dict[str, list[Callable[[str], None]]] = {}
+        self._place_icon_fetch_lock = threading.Lock()
+        self._user_icon_images: dict[str, tk.PhotoImage] = {}
+        self._user_icon_fetch_pending: set[str] = set()
+        self._user_icon_fetch_callbacks: dict[str, list[Callable[[str], None]]] = {}
+        self._user_icon_fetch_lock = threading.Lock()
         self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
         self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
         self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
@@ -1777,12 +1784,11 @@ class AccountManagerUI:
         game_scrollbar.pack(side="right", fill="y")
         self.game_list.config(yscrollcommand=game_scrollbar.set)
         
-        self.recent_list_edit_menu = tk.Menu(self.root, tearoff=False)
         self.recent_list_edit_button = ttk.Button(
             right_frame,
             text="Edit",
             style="Dark.TButton",
-            command=self.show_recent_list_edit_menu,
+            command=self.open_recent_list_editor,
         )
         self.recent_list_edit_button.pack(fill="x", pady=(5, 0))
 
@@ -4305,39 +4311,827 @@ class AccountManagerUI:
             except Exception:
                 pass
 
-    def show_recent_list_edit_menu(self, event: Optional[tk.Event] = None) -> None:
-        menu = getattr(self, "recent_list_edit_menu", None)
-        if menu is None:
-            return
-
+    def open_recent_list_editor(self) -> None:
         launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
-        item_name = "User" if launch_mode == "join_user" else "Game"
-        menu.delete(0, "end")
-        menu.add_command(
-            label=f"Delete Selected {item_name}",
-            command=self.delete_game_from_list,
+        if launch_mode == "join_user":
+            self.open_recent_users_editor()
+            return
+        self.open_recent_games_editor()
+
+    def open_recent_games_editor(self) -> None:
+        games = self.settings.get("game_list", [])
+        if not isinstance(games, list):
+            games = []
+            self.settings["game_list"] = games
+
+        window = tk.Toplevel(self.root)
+        window.title("Edit Recent Games")
+        window.geometry("900x560")
+        window.minsize(760, 460)
+        window.configure(bg=self.BG_DARK)
+        window.transient(self.root)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+
+        selected_index_var = tk.IntVar(value=-1)
+        list_view_var = tk.BooleanVar(value=False)
+        search_var = tk.StringVar(value="")
+        name_var = tk.StringVar(value="")
+        place_id_var = tk.StringVar(value="")
+        private_server_var = tk.StringVar(value="")
+        status_var = tk.StringVar(value="")
+        requested_icon_place_ids: set[str] = set()
+        last_canvas_width = [0]
+
+        main = ttk.Frame(window, style="Dark.TFrame")
+        main.pack(fill="both", expand=True, padx=10, pady=10)
+
+        toolbar = ttk.Frame(main, style="Dark.TFrame")
+        toolbar.pack(fill="x", pady=(0, 8))
+        toolbar.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(
+            toolbar,
+            text="List View",
+            variable=list_view_var,
+            style="Dark.TCheckbutton",
+            command=lambda: render_games(),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        search_entry = ttk.Entry(toolbar, textvariable=search_var, style="Dark.TEntry")
+        search_entry.grid(row=0, column=1, sticky="ew")
+
+        ttk.Button(
+            toolbar,
+            text="Search",
+            style="Dark.TButton",
+            command=lambda: render_games(),
+        ).grid(row=0, column=2, sticky="e", padx=(8, 0))
+
+        body = ttk.Frame(main, style="Dark.TFrame")
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(2, weight=0, minsize=240)
+        body.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            body,
+            bg=self.BG_DARK,
+            highlightthickness=0,
+            bd=0,
+        )
+        canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        tile_host = tk.Frame(canvas, bg=self.BG_DARK, highlightthickness=0, bd=0)
+        canvas_window = canvas.create_window((0, 0), window=tile_host, anchor="nw")
+
+        detail_panel = ttk.Frame(body, style="Dark.TFrame")
+        detail_panel.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+        detail_panel.configure(width=240)
+        detail_panel.grid_propagate(False)
+        detail_panel.columnconfigure(0, weight=1)
+
+        ttk.Label(detail_panel, text="Selected Game", style="Dark.TLabel", font=("Segoe UI", 10, "bold")).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=(0, 8),
+        )
+        ttk.Label(detail_panel, text="Place Name", style="Dark.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Entry(detail_panel, textvariable=name_var, style="Dark.TEntry").grid(row=2, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(detail_panel, text="Place ID", style="Dark.TLabel").grid(row=3, column=0, sticky="w")
+        ttk.Entry(detail_panel, textvariable=place_id_var, style="Dark.TEntry").grid(row=4, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(detail_panel, text="Private Server ID", style="Dark.TLabel").grid(row=5, column=0, sticky="w")
+        ttk.Entry(detail_panel, textvariable=private_server_var, style="Dark.TEntry").grid(row=6, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(detail_panel, textvariable=status_var, style="Dark.TLabel", wraplength=220).grid(
+            row=7,
+            column=0,
+            sticky="ew",
+            pady=(0, 10),
         )
 
-        if event is None:
-            button = getattr(self, "recent_list_edit_button", None)
-            if button is None:
-                return
-            try:
-                x_position = button.winfo_rootx()
-                y_position = button.winfo_rooty() + button.winfo_height()
-            except tk.TclError:
-                return
-        else:
-            x_position = int(getattr(event, "x_root", 0) or 0)
-            y_position = int(getattr(event, "y_root", 0) or 0)
+        ttk.Button(detail_panel, text="Use Selected", style="Dark.TButton", command=lambda: use_selected()).grid(
+            row=8,
+            column=0,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        ttk.Button(detail_panel, text="Save Changes", style="Dark.TButton", command=lambda: save_selected()).grid(
+            row=9,
+            column=0,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        ttk.Button(detail_panel, text="Delete Selected", style="Dark.TButton", command=lambda: delete_selected()).grid(
+            row=10,
+            column=0,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        ttk.Button(detail_panel, text="Close", style="Dark.TButton", command=window.destroy).grid(
+            row=11,
+            column=0,
+            sticky="ew",
+        )
 
-        try:
-            menu.tk_popup(x_position, y_position)
-        finally:
+        def get_games() -> list[Any]:
+            game_rows = self.settings.get("game_list", [])
+            if not isinstance(game_rows, list):
+                game_rows = []
+                self.settings["game_list"] = game_rows
+            return game_rows
+
+        def get_game_text(game: Any, key: str) -> str:
+            if not isinstance(game, dict):
+                return ""
+            return str(game.get(key) or "").strip()
+
+        def filtered_games() -> list[tuple[int, Any]]:
+            query = search_var.get().strip().lower()
+            matches: list[tuple[int, Any]] = []
+            for index, game in enumerate(get_games()):
+                name = get_game_text(game, "name")
+                place_id = get_game_text(game, "place_id")
+                private_server = get_game_text(game, "private_server")
+                haystack = f"{name} {place_id} {private_server}".lower()
+                if query and query not in haystack:
+                    continue
+                matches.append((index, game))
+            return matches
+
+        def set_selected(index: int) -> None:
+            game_rows = get_games()
+            if index < 0 or index >= len(game_rows):
+                selected_index_var.set(-1)
+                name_var.set("")
+                place_id_var.set("")
+                private_server_var.set("")
+                status_var.set("")
+                render_games()
+                return
+
+            game = game_rows[index]
+            selected_index_var.set(index)
+            name_var.set(get_game_text(game, "name"))
+            place_id_var.set(get_game_text(game, "place_id"))
+            private_server_var.set(get_game_text(game, "private_server"))
+            status_var.set("")
+            render_games()
+
+        def refresh_after_icon_fetch(_place_id: str) -> None:
             try:
-                menu.grab_release()
+                if not window.winfo_exists():
+                    return
             except tk.TclError:
-                pass
+                return
+            render_games()
+
+        def shorten_card_value(value: str, max_length: int) -> str:
+            normalized_value = str(value or "").strip()
+            if len(normalized_value) <= max_length:
+                return normalized_value
+            if max_length <= 3:
+                return normalized_value[:max_length]
+            return f"{normalized_value[:max_length - 3]}..."
+
+        def make_tile(parent: tk.Widget, row_index: int, game: Any, row: int, column: int) -> None:
+            is_list_view = bool(list_view_var.get())
+            selected = row_index == selected_index_var.get()
+            background = self.BG_LIGHT if selected else self.BG_MID
+            border = self.FG_ACCENT if selected else self.BORDER_COLOR
+            tile = tk.Frame(
+                parent,
+                bg=background,
+                highlightbackground=border,
+                highlightthickness=2 if selected else 1,
+                bd=0,
+                width=1 if is_list_view else 178,
+                height=92 if is_list_view else 1,
+            )
+            tile.grid(row=row, column=column, sticky="ew", padx=6, pady=6)
+            tile.grid_propagate(not is_list_view)
+            tile.columnconfigure(0, weight=0 if is_list_view else 1)
+            tile.columnconfigure(1, weight=1 if is_list_view else 0)
+            tile.rowconfigure(0, weight=1 if is_list_view else 0)
+
+            name = get_game_text(game, "name") or "Unknown Place"
+            place_id = get_game_text(game, "place_id")
+            private_server = get_game_text(game, "private_server")
+
+            preview_size = 62 if is_list_view else 86
+            preview = tk.Frame(tile, bg=self.BG_DARK, width=preview_size, height=preview_size, highlightthickness=0, bd=0)
+            if is_list_view:
+                preview.grid(row=0, column=0, sticky="nw", padx=8, pady=8)
+            else:
+                preview.grid(row=0, column=0, sticky="n", padx=8, pady=(8, 4))
+            preview.grid_propagate(False)
+            icon_display_size = 58 if is_list_view else 78
+            icon_image = self._load_cached_place_icon_image(place_id, icon_display_size)
+            preview_label = tk.Label(
+                preview,
+                text="" if icon_image is not None else "PLACE",
+                image=icon_image if icon_image is not None else "",
+                bg=self.BG_DARK,
+                fg=self.FG_ACCENT_ALT,
+                font=("Segoe UI", 8, "bold"),
+            )
+            if icon_image is not None:
+                preview_label.image = icon_image
+            elif place_id and place_id not in requested_icon_place_ids:
+                requested_icon_place_ids.add(place_id)
+                self._queue_place_icon_fetch(place_id, refresh_after_icon_fetch)
+            preview_label.place(relx=0.5, rely=0.5, anchor="center")
+
+            text_frame = tk.Frame(tile, bg=background, highlightthickness=0, bd=0)
+            if is_list_view:
+                text_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 8), pady=8)
+            else:
+                text_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(2, 8))
+            text_frame.columnconfigure(0, weight=1)
+
+            wrap_length = max(160, int(canvas.winfo_width() or 520) - 120) if is_list_view else 150
+
+            name_label = tk.Label(
+                text_frame,
+                text=name,
+                bg=background,
+                fg=self.FG_TEXT,
+                font=("Segoe UI", 9, "bold"),
+                anchor="w",
+                justify="left",
+                wraplength=wrap_length,
+            )
+            name_label.grid(row=0, column=0, sticky="ew")
+            id_label = tk.Label(
+                text_frame,
+                text=f"ID: {place_id or 'Unknown'}",
+                bg=background,
+                fg=self.FG_MUTED,
+                font=("Segoe UI", 8),
+                anchor="w",
+                justify="left",
+                wraplength=wrap_length,
+            )
+            id_label.grid(row=1, column=0, sticky="ew", pady=(3, 0))
+
+            private_label = None
+            if private_server:
+                private_text = shorten_card_value(private_server, 54) if is_list_view else private_server
+                private_label = tk.Label(
+                    text_frame,
+                    text=f"Private: {private_text}",
+                    bg=background,
+                    fg=self.FG_ACCENT_ALT,
+                    font=("Segoe UI", 8),
+                    anchor="w",
+                    justify="left",
+                    wraplength=wrap_length,
+                )
+                private_label.grid(row=2, column=0, sticky="ew", pady=(3, 0))
+
+            clickable_widgets = [tile, preview, preview_label, text_frame, name_label, id_label]
+            if private_label is not None:
+                clickable_widgets.append(private_label)
+            for widget in clickable_widgets:
+                widget.bind("<Button-1>", lambda _event, selected_index=row_index: set_selected(selected_index))
+
+        def get_tile_column_count() -> int:
+            if list_view_var.get():
+                return 1
+
+            canvas_width = int(canvas.winfo_width() or 0)
+            if canvas_width <= 1:
+                canvas_width = 600
+            return max(1, min(3, canvas_width // 192))
+
+        def render_games() -> None:
+            for child in tile_host.winfo_children():
+                child.destroy()
+
+            visible_games = filtered_games()
+            if not visible_games:
+                tk.Label(
+                    tile_host,
+                    text="No recent games found.",
+                    bg=self.BG_DARK,
+                    fg=self.FG_MUTED,
+                    font=("Segoe UI", 10),
+                ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
+            else:
+                columns = get_tile_column_count()
+                for column_index in range(3):
+                    tile_host.columnconfigure(
+                        column_index,
+                        weight=1 if column_index < columns else 0,
+                        minsize=0,
+                        uniform="recent_game_tiles" if column_index < columns else "",
+                    )
+                for visible_index, (game_index, game) in enumerate(visible_games):
+                    row = visible_index // columns
+                    column = visible_index % columns
+                    make_tile(tile_host, game_index, game, row, column)
+
+            tile_host.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def save_selected() -> None:
+            index = selected_index_var.get()
+            game_rows = get_games()
+            if index < 0 or index >= len(game_rows):
+                status_var.set("Select a game first.")
+                return
+
+            place_id = place_id_var.get().strip()
+            if not place_id:
+                status_var.set("Place ID is required.")
+                return
+
+            private_server = self.manager.normalize_private_server(private_server_var.get().strip())
+            private_server_var.set(private_server)
+            game_rows[index] = {
+                "place_id": place_id,
+                "name": name_var.get().strip() or f"Place {place_id}",
+                "private_server": private_server,
+            }
+            self.save_settings()
+            self.refresh_game_list()
+            status_var.set("Saved.")
+            render_games()
+
+        def use_selected() -> None:
+            index = selected_index_var.get()
+            game_rows = get_games()
+            if index < 0 or index >= len(game_rows):
+                status_var.set("Select a game first.")
+                return
+
+            game = game_rows[index]
+            place_id = get_game_text(game, "place_id")
+            private_server = self.manager.normalize_private_server(get_game_text(game, "private_server"))
+            if not place_id:
+                status_var.set("Selected game does not have a Place ID.")
+                return
+
+            self._set_launch_input_mode("place_id", save=True)
+            self.place_entry.delete(0, tk.END)
+            self.place_entry.insert(0, place_id)
+            self.private_server_entry.delete(0, tk.END)
+            self.private_server_entry.insert(0, private_server)
+            self.settings["last_place_id"] = place_id
+            self.settings["last_private_server"] = private_server
+            self.save_settings()
+            self.update_game_name()
+            status_var.set("Loaded into launcher.")
+
+        def delete_selected() -> None:
+            index = selected_index_var.get()
+            game_rows = get_games()
+            if index < 0 or index >= len(game_rows):
+                status_var.set("Select a game first.")
+                return
+
+            game = game_rows[index]
+            name = get_game_text(game, "name") or get_game_text(game, "place_id") or "this game"
+            confirm = messagebox.askyesno("Confirm Delete", f"Delete '{name}' from recent games?", parent=window)
+            if not confirm:
+                return
+
+            game_rows.pop(index)
+            self.save_settings()
+            self.refresh_game_list()
+            selected_index_var.set(-1)
+            name_var.set("")
+            place_id_var.set("")
+            private_server_var.set("")
+            status_var.set("Deleted.")
+            render_games()
+
+        def resize_canvas(event: tk.Event) -> None:
+            width = max(1, int(event.width))
+            canvas.itemconfigure(canvas_window, width=width)
+            previous_width = int(last_canvas_width[0] or 0)
+            if previous_width <= 0:
+                last_canvas_width[0] = width
+                render_games()
+                return
+            if abs(width - previous_width) < 64:
+                return
+            last_canvas_width[0] = width
+            render_games()
+
+        search_var.trace_add("write", lambda *_args: render_games())
+        tile_host.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", resize_canvas)
+        window.bind("<Escape>", lambda _event: window.destroy())
+
+        render_games()
+        if filtered_games():
+            set_selected(filtered_games()[0][0])
+        window.update_idletasks()
+        self._center_window(window, max(900, window.winfo_reqwidth() + 40), max(560, window.winfo_reqheight() + 40))
+
+    def open_recent_users_editor(self) -> None:
+        users = self.settings.get("recent_user_list", [])
+        if not isinstance(users, list):
+            users = []
+            self.settings["recent_user_list"] = users
+
+        window = tk.Toplevel(self.root)
+        window.title("Edit Recent Users")
+        window.geometry("640x440")
+        window.minsize(540, 360)
+        window.configure(bg=self.BG_DARK)
+        window.transient(self.root)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+
+        selected_index_var = tk.IntVar(value=-1)
+        search_var = tk.StringVar(value="")
+        username_var = tk.StringVar(value="")
+        user_id_var = tk.StringVar(value="")
+        status_var = tk.StringVar(value="")
+        requested_icon_user_ids: set[str] = set()
+
+        main = ttk.Frame(window, style="Dark.TFrame")
+        main.pack(fill="both", expand=True, padx=12, pady=12)
+
+        toolbar = ttk.Frame(main, style="Dark.TFrame")
+        toolbar.pack(fill="x", pady=(0, 8))
+        toolbar.columnconfigure(0, weight=1)
+
+        search_entry = ttk.Entry(toolbar, textvariable=search_var, style="Dark.TEntry")
+        search_entry.grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            toolbar,
+            text="Search",
+            style="Dark.TButton",
+            command=lambda: render_users(),
+        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        body = ttk.Frame(main, style="Dark.TFrame")
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(2, weight=0, minsize=230)
+        body.rowconfigure(0, weight=1)
+
+        list_frame = ttk.Frame(body, style="Dark.TFrame")
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
+        user_canvas = tk.Canvas(
+            list_frame,
+            bg=self.BG_MID,
+            highlightbackground=self.BORDER_COLOR,
+            highlightcolor=self.BORDER_COLOR,
+            highlightthickness=1,
+            bd=0,
+        )
+        user_canvas.grid(row=0, column=0, sticky="nsew")
+        user_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=user_canvas.yview)
+        user_scrollbar.grid(row=0, column=1, sticky="ns")
+        user_canvas.configure(yscrollcommand=user_scrollbar.set)
+        user_row_host = tk.Frame(user_canvas, bg=self.BG_MID, highlightthickness=0, bd=0)
+        user_canvas_window = user_canvas.create_window((0, 0), window=user_row_host, anchor="nw")
+
+        detail_panel = ttk.Frame(body, style="Dark.TFrame")
+        detail_panel.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+        detail_panel.configure(width=230)
+        detail_panel.grid_propagate(False)
+        detail_panel.columnconfigure(0, weight=1)
+
+        ttk.Label(detail_panel, text="Selected User", style="Dark.TLabel", font=("Segoe UI", 10, "bold")).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=(0, 8),
+        )
+        ttk.Label(detail_panel, text="Username", style="Dark.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Entry(detail_panel, textvariable=username_var, style="Dark.TEntry").grid(row=2, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(detail_panel, text="User ID", style="Dark.TLabel").grid(row=3, column=0, sticky="w")
+        ttk.Entry(detail_panel, textvariable=user_id_var, style="Dark.TEntry").grid(row=4, column=0, sticky="ew", pady=(2, 8))
+        ttk.Label(detail_panel, textvariable=status_var, style="Dark.TLabel", wraplength=210).grid(
+            row=5,
+            column=0,
+            sticky="ew",
+            pady=(0, 10),
+        )
+        ttk.Button(detail_panel, text="Use Selected", style="Dark.TButton", command=lambda: use_selected_user()).grid(
+            row=6,
+            column=0,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        ttk.Button(detail_panel, text="Resolve", style="Dark.TButton", command=lambda: resolve_user_details()).grid(
+            row=7,
+            column=0,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        ttk.Button(detail_panel, text="Save Changes", style="Dark.TButton", command=lambda: save_selected_user()).grid(
+            row=8,
+            column=0,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        ttk.Button(detail_panel, text="Delete Selected", style="Dark.TButton", command=lambda: delete_selected_user()).grid(
+            row=9,
+            column=0,
+            sticky="ew",
+            pady=(0, 6),
+        )
+        ttk.Button(detail_panel, text="Close", style="Dark.TButton", command=window.destroy).grid(
+            row=10,
+            column=0,
+            sticky="ew",
+        )
+
+        def get_users() -> list[Any]:
+            user_rows = self.settings.get("recent_user_list", [])
+            if not isinstance(user_rows, list):
+                user_rows = []
+                self.settings["recent_user_list"] = user_rows
+            return user_rows
+
+        def get_user_text(user: Any, key: str) -> str:
+            if not isinstance(user, dict):
+                return ""
+            return str(user.get(key) or "").strip()
+
+        def get_user_display_text(user: Any) -> str:
+            user_id = get_user_text(user, "user_id")
+            username = get_user_text(user, "username")
+            if username and user_id:
+                return f"{username} ({user_id})"
+            return username or user_id or "Unknown User"
+
+        def filtered_users() -> list[tuple[int, Any]]:
+            query = search_var.get().strip().lower()
+            matches: list[tuple[int, Any]] = []
+            for index, user in enumerate(get_users()):
+                if not isinstance(user, dict):
+                    continue
+                user_id = get_user_text(user, "user_id")
+                username = get_user_text(user, "username")
+                if not user_id and not username:
+                    continue
+                haystack = f"{username} {user_id}".lower()
+                if query and query not in haystack:
+                    continue
+                matches.append((index, user))
+            return matches
+
+        def set_selected_user(index: int) -> None:
+            user_rows = get_users()
+            if index < 0 or index >= len(user_rows):
+                selected_index_var.set(-1)
+                username_var.set("")
+                user_id_var.set("")
+                status_var.set("")
+                render_users()
+                return
+
+            user = user_rows[index]
+            selected_index_var.set(index)
+            username_var.set(get_user_text(user, "username"))
+            user_id_var.set(get_user_text(user, "user_id"))
+            status_var.set("")
+            render_users()
+
+        def refresh_after_user_icon_fetch(_user_id: str) -> None:
+            try:
+                if not window.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            render_users()
+
+        def make_user_row(parent: tk.Widget, row_index: int, user: Any, row: int) -> None:
+            selected = row_index == selected_index_var.get()
+            background = self.BG_LIGHT if selected else self.BG_MID
+            border = self.FG_ACCENT if selected else self.BORDER_COLOR
+            row_frame = tk.Frame(
+                parent,
+                bg=background,
+                highlightbackground=border,
+                highlightthickness=2 if selected else 1,
+                bd=0,
+                height=68,
+            )
+            row_frame.grid(row=row, column=0, sticky="ew", padx=6, pady=4)
+            row_frame.grid_propagate(False)
+            row_frame.columnconfigure(1, weight=1)
+
+            user_id = get_user_text(user, "user_id")
+            username = get_user_text(user, "username") or "Unknown User"
+            avatar_frame = tk.Frame(row_frame, bg=self.BG_DARK, width=50, height=50, highlightthickness=0, bd=0)
+            avatar_frame.grid(row=0, column=0, sticky="nw", padx=8, pady=8)
+            avatar_frame.grid_propagate(False)
+
+            avatar_image = self._load_cached_user_icon_image(user_id, 48)
+            avatar_label = tk.Label(
+                avatar_frame,
+                text="" if avatar_image is not None else "USER",
+                image=avatar_image if avatar_image is not None else "",
+                bg=self.BG_DARK,
+                fg=self.FG_ACCENT_ALT,
+                font=("Segoe UI", 8, "bold"),
+            )
+            if avatar_image is not None:
+                avatar_label.image = avatar_image
+            elif user_id and user_id not in requested_icon_user_ids:
+                requested_icon_user_ids.add(user_id)
+                self._queue_user_icon_fetch(user_id, refresh_after_user_icon_fetch)
+            avatar_label.place(relx=0.5, rely=0.5, anchor="center")
+
+            text_frame = tk.Frame(row_frame, bg=background, highlightthickness=0, bd=0)
+            text_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 8), pady=8)
+            text_frame.columnconfigure(0, weight=1)
+
+            username_label = tk.Label(
+                text_frame,
+                text=username,
+                bg=background,
+                fg=self.FG_TEXT,
+                font=("Segoe UI", 9, "bold"),
+                anchor="w",
+                justify="left",
+            )
+            username_label.grid(row=0, column=0, sticky="ew")
+            user_id_label = tk.Label(
+                text_frame,
+                text=f"ID: {user_id or 'Unknown'}",
+                bg=background,
+                fg=self.FG_MUTED,
+                font=("Segoe UI", 8),
+                anchor="w",
+                justify="left",
+            )
+            user_id_label.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+
+            clickable_widgets = [row_frame, avatar_frame, avatar_label, text_frame, username_label, user_id_label]
+            for widget in clickable_widgets:
+                widget.bind("<Button-1>", lambda _event, selected_index=row_index: set_selected_user(selected_index))
+                widget.bind("<Double-Button-1>", lambda _event: use_selected_user())
+
+        def render_users() -> None:
+            for child in user_row_host.winfo_children():
+                child.destroy()
+
+            user_row_host.columnconfigure(0, weight=1)
+            visible_users = filtered_users()
+            if not visible_users:
+                tk.Label(
+                    user_row_host,
+                    text="No recent users found.",
+                    bg=self.BG_MID,
+                    fg=self.FG_MUTED,
+                    font=("Segoe UI", 10),
+                ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
+            else:
+                for visible_index, (actual_index, user) in enumerate(visible_users):
+                    make_user_row(user_row_host, actual_index, user, visible_index)
+
+            user_row_host.update_idletasks()
+            user_canvas.configure(scrollregion=user_canvas.bbox("all"))
+
+        def save_selected_user() -> None:
+            index = selected_index_var.get()
+            user_rows = get_users()
+            if index < 0 or index >= len(user_rows):
+                status_var.set("Select a user first.")
+                return
+
+            username = username_var.get().strip()
+            user_id = user_id_var.get().strip()
+            if not user_id:
+                status_var.set("User ID is required.")
+                return
+            if not user_id.isdigit():
+                status_var.set("User ID must be numeric.")
+                return
+
+            for other_index in range(len(user_rows) - 1, -1, -1):
+                if other_index == index:
+                    continue
+                other_user_id = get_user_text(user_rows[other_index], "user_id")
+                if other_user_id != user_id:
+                    continue
+                user_rows.pop(other_index)
+                if other_index < index:
+                    index -= 1
+
+            user_rows[index] = {"user_id": user_id, "username": username}
+            selected_index_var.set(index)
+            self.save_settings()
+            self.refresh_game_list()
+            status_var.set("Saved.")
+            render_users()
+
+        def use_selected_user() -> None:
+            index = selected_index_var.get()
+            user_rows = get_users()
+            if index < 0 or index >= len(user_rows):
+                status_var.set("Select a user first.")
+                return
+
+            user = user_rows[index]
+            value = get_user_text(user, "username") or get_user_text(user, "user_id")
+            if not value:
+                status_var.set("Selected user is empty.")
+                return
+
+            self._set_launch_input_mode("join_user", save=True)
+            self.place_entry.delete(0, tk.END)
+            self.place_entry.insert(0, value)
+            self.settings["last_user"] = value
+            self.save_settings()
+            self.update_game_name()
+            status_var.set("Loaded into launcher.")
+
+        def delete_selected_user() -> None:
+            index = selected_index_var.get()
+            user_rows = get_users()
+            if index < 0 or index >= len(user_rows):
+                status_var.set("Select a user first.")
+                return
+
+            user = user_rows[index]
+            display_name = get_user_display_text(user)
+            confirm = messagebox.askyesno("Confirm Delete", f"Delete '{display_name}' from recent users?", parent=window)
+            if not confirm:
+                return
+
+            user_rows.pop(index)
+            self.save_settings()
+            self.refresh_game_list()
+            selected_index_var.set(-1)
+            username_var.set("")
+            user_id_var.set("")
+            status_var.set("Deleted.")
+            render_users()
+
+        def resolve_user_details() -> None:
+            username = username_var.get().strip()
+            user_id = user_id_var.get().strip()
+            if user_id and not user_id.isdigit():
+                status_var.set("User ID must be numeric.")
+                return
+            if not username and not user_id:
+                status_var.set("Enter a username or User ID first.")
+                return
+
+            status_var.set("Resolving...")
+
+            def worker(username_text: str, user_id_text: str) -> None:
+                resolved_user_id = user_id_text
+                resolved_username = username_text
+                if resolved_user_id and not resolved_username:
+                    resolved_username = RobloxAPI.get_username_from_user_id(resolved_user_id) or ""
+                elif resolved_username:
+                    resolved_user_id = RobloxAPI.get_user_id_from_username(resolved_username) or resolved_user_id
+                    if resolved_user_id and not resolved_username:
+                        resolved_username = RobloxAPI.get_username_from_user_id(resolved_user_id) or ""
+
+                def apply_result() -> None:
+                    try:
+                        if not window.winfo_exists():
+                            return
+                    except tk.TclError:
+                        return
+                    if resolved_user_id:
+                        user_id_var.set(resolved_user_id)
+                    if resolved_username:
+                        username_var.set(resolved_username)
+                    status_var.set("Resolved." if resolved_user_id else "User not found.")
+
+                try:
+                    self.root.after(0, apply_result)
+                except (RuntimeError, tk.TclError):
+                    pass
+
+            threading.Thread(target=worker, args=(username, user_id), daemon=True, name="resolve-recent-user").start()
+
+        def resize_user_canvas(event: tk.Event) -> None:
+            user_canvas.itemconfigure(user_canvas_window, width=max(1, int(event.width)))
+
+        search_var.trace_add("write", lambda *_args: render_users())
+        user_row_host.bind("<Configure>", lambda _event: user_canvas.configure(scrollregion=user_canvas.bbox("all")))
+        user_canvas.bind("<Configure>", resize_user_canvas)
+        window.bind("<Return>", lambda _event: save_selected_user())
+        window.bind("<Escape>", lambda _event: window.destroy())
+
+        render_users()
+        if filtered_users():
+            set_selected_user(filtered_users()[0][0])
+        window.update_idletasks()
+        self._center_window(window, max(640, window.winfo_reqwidth() + 40), max(440, window.winfo_reqheight() + 40))
 
     def _ensure_addons_folder(self):
         addons_dir = str(getattr(self, "addons_folder", "") or "").strip()
@@ -6421,6 +7215,259 @@ class AccountManagerUI:
             pass
 
         return None
+
+    def _get_place_icon_cache_dir(self) -> Path:
+        data_folder = str(getattr(self, "data_folder", "AccountManagerData") or "AccountManagerData")
+        return Path(data_folder) / "cache" / "place_icons"
+
+    def _get_place_icon_cache_path(self, place_id: str) -> Path:
+        normalized_place_id = str(place_id or "").strip()
+        safe_place_id = re.sub(r"[^0-9A-Za-z_-]+", "_", normalized_place_id).strip("_")
+        if not safe_place_id:
+            safe_place_id = hashlib.sha256(normalized_place_id.encode("utf-8")).hexdigest()[:16]
+        return self._get_place_icon_cache_dir() / f"place_{safe_place_id}_150x150.png"
+
+    def _load_cached_place_icon_image(self, place_id: str, size: int = 78) -> Optional[tk.PhotoImage]:
+        normalized_place_id = str(place_id or "").strip()
+        if not normalized_place_id:
+            return None
+
+        image_key = f"{normalized_place_id}:{int(size)}"
+        cached_image = self._place_icon_images.get(image_key)
+        if cached_image is not None:
+            return cached_image
+
+        icon_path = self._get_place_icon_cache_path(normalized_place_id)
+        if not icon_path.is_file():
+            return None
+
+        try:
+            image = tk.PhotoImage(file=str(icon_path))
+            largest_dimension = max(int(image.width()), int(image.height()))
+            if largest_dimension > int(size):
+                ratio = max(1, int(math.ceil(largest_dimension / float(size))))
+                image = image.subsample(ratio, ratio)
+            self._place_icon_images[image_key] = image
+            return image
+        except (OSError, tk.TclError, ValueError):
+            try:
+                icon_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
+    def _fetch_place_icon_to_cache(self, place_id: str) -> bool:
+        normalized_place_id = str(place_id or "").strip()
+        if not normalized_place_id.isdigit():
+            return False
+
+        cache_path = self._get_place_icon_cache_path(normalized_place_id)
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            thumbnail_response = self._get_http_session().get(
+                "https://thumbnails.roblox.com/v1/places/gameicons",
+                params={
+                    "placeIds": normalized_place_id,
+                    "returnPolicy": "PlaceHolder",
+                    "size": "150x150",
+                    "format": "Png",
+                    "isCircular": "false",
+                },
+                timeout=8,
+            )
+            thumbnail_response.raise_for_status()
+            thumbnail_payload = thumbnail_response.json() if thumbnail_response.content else {}
+            thumbnail_rows = thumbnail_payload.get("data") if isinstance(thumbnail_payload, dict) else []
+            if not isinstance(thumbnail_rows, list) or not thumbnail_rows:
+                return False
+
+            first_row = thumbnail_rows[0]
+            if not isinstance(first_row, dict):
+                return False
+
+            image_url = str(first_row.get("imageUrl") or "").strip()
+            if not image_url:
+                return False
+
+            image_response = self._get_http_session().get(image_url, timeout=12)
+            image_response.raise_for_status()
+            if not image_response.content.startswith(b"\x89PNG\r\n\x1a\n"):
+                return False
+
+            cache_path.write_bytes(image_response.content)
+            for image_key in list(self._place_icon_images.keys()):
+                if image_key.startswith(f"{normalized_place_id}:"):
+                    self._place_icon_images.pop(image_key, None)
+            return True
+        except (OSError, ValueError, requests.exceptions.RequestException):
+            return False
+
+    def _queue_place_icon_fetch(self, place_id: str, callback: Callable[[str], None]) -> None:
+        normalized_place_id = str(place_id or "").strip()
+        if not normalized_place_id.isdigit():
+            return
+        if self._get_place_icon_cache_path(normalized_place_id).is_file():
+            return
+
+        should_start = False
+        with self._place_icon_fetch_lock:
+            self._place_icon_fetch_callbacks.setdefault(normalized_place_id, []).append(callback)
+            if normalized_place_id not in self._place_icon_fetch_pending:
+                self._place_icon_fetch_pending.add(normalized_place_id)
+                should_start = True
+
+        if not should_start:
+            return
+
+        def fetch_icon() -> None:
+            fetched = self._fetch_place_icon_to_cache(normalized_place_id)
+            with self._place_icon_fetch_lock:
+                self._place_icon_fetch_pending.discard(normalized_place_id)
+                callbacks = list(self._place_icon_fetch_callbacks.pop(normalized_place_id, []))
+
+            if not fetched:
+                return
+
+            def apply_callbacks() -> None:
+                for place_icon_callback in callbacks:
+                    place_icon_callback(normalized_place_id)
+
+            try:
+                self.root.after(0, apply_callbacks)
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(
+            target=fetch_icon,
+            daemon=True,
+            name=f"fetch-place-icon-{normalized_place_id}",
+        ).start()
+
+    def _get_user_icon_cache_dir(self) -> Path:
+        data_folder = str(getattr(self, "data_folder", "AccountManagerData") or "AccountManagerData")
+        return Path(data_folder) / "cache" / "user_icons"
+
+    def _get_user_icon_cache_path(self, user_id: str) -> Path:
+        normalized_user_id = str(user_id or "").strip()
+        safe_user_id = re.sub(r"[^0-9A-Za-z_-]+", "_", normalized_user_id).strip("_")
+        if not safe_user_id:
+            safe_user_id = hashlib.sha256(normalized_user_id.encode("utf-8")).hexdigest()[:16]
+        return self._get_user_icon_cache_dir() / f"user_{safe_user_id}_48x48.png"
+
+    def _load_cached_user_icon_image(self, user_id: str, size: int = 48) -> Optional[tk.PhotoImage]:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id:
+            return None
+
+        image_key = f"{normalized_user_id}:{int(size)}"
+        cached_image = self._user_icon_images.get(image_key)
+        if cached_image is not None:
+            return cached_image
+
+        icon_path = self._get_user_icon_cache_path(normalized_user_id)
+        if not icon_path.is_file():
+            return None
+
+        try:
+            image = tk.PhotoImage(file=str(icon_path))
+            largest_dimension = max(int(image.width()), int(image.height()))
+            if largest_dimension > int(size):
+                ratio = max(1, int(math.ceil(largest_dimension / float(size))))
+                image = image.subsample(ratio, ratio)
+            self._user_icon_images[image_key] = image
+            return image
+        except (OSError, tk.TclError, ValueError):
+            try:
+                icon_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
+    def _fetch_user_icon_to_cache(self, user_id: str) -> bool:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id.isdigit():
+            return False
+
+        cache_path = self._get_user_icon_cache_path(normalized_user_id)
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            thumbnail_response = self._get_http_session().get(
+                "https://thumbnails.roblox.com/v1/users/avatar-headshot",
+                params={
+                    "userIds": normalized_user_id,
+                    "size": "48x48",
+                    "format": "Png",
+                    "isCircular": "false",
+                },
+                timeout=8,
+            )
+            thumbnail_response.raise_for_status()
+            thumbnail_payload = thumbnail_response.json() if thumbnail_response.content else {}
+            thumbnail_rows = thumbnail_payload.get("data") if isinstance(thumbnail_payload, dict) else []
+            if not isinstance(thumbnail_rows, list) or not thumbnail_rows:
+                return False
+
+            first_row = thumbnail_rows[0]
+            if not isinstance(first_row, dict):
+                return False
+
+            image_url = str(first_row.get("imageUrl") or "").strip()
+            if not image_url:
+                return False
+
+            image_response = self._get_http_session().get(image_url, timeout=12)
+            image_response.raise_for_status()
+            if not image_response.content.startswith(b"\x89PNG\r\n\x1a\n"):
+                return False
+
+            cache_path.write_bytes(image_response.content)
+            for image_key in list(self._user_icon_images.keys()):
+                if image_key.startswith(f"{normalized_user_id}:"):
+                    self._user_icon_images.pop(image_key, None)
+            return True
+        except (OSError, ValueError, requests.exceptions.RequestException):
+            return False
+
+    def _queue_user_icon_fetch(self, user_id: str, callback: Callable[[str], None]) -> None:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id.isdigit():
+            return
+        if self._get_user_icon_cache_path(normalized_user_id).is_file():
+            return
+
+        should_start = False
+        with self._user_icon_fetch_lock:
+            self._user_icon_fetch_callbacks.setdefault(normalized_user_id, []).append(callback)
+            if normalized_user_id not in self._user_icon_fetch_pending:
+                self._user_icon_fetch_pending.add(normalized_user_id)
+                should_start = True
+
+        if not should_start:
+            return
+
+        def fetch_icon() -> None:
+            fetched = self._fetch_user_icon_to_cache(normalized_user_id)
+            with self._user_icon_fetch_lock:
+                self._user_icon_fetch_pending.discard(normalized_user_id)
+                callbacks = list(self._user_icon_fetch_callbacks.pop(normalized_user_id, []))
+
+            if not fetched:
+                return
+
+            def apply_callbacks() -> None:
+                for user_icon_callback in callbacks:
+                    user_icon_callback(normalized_user_id)
+
+            try:
+                self.root.after(0, apply_callbacks)
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(
+            target=fetch_icon,
+            daemon=True,
+            name=f"fetch-user-icon-{normalized_user_id}",
+        ).start()
 
     def _sanitize_issue_report_text(self, text):
         """Best-effort redaction for issue drafts to avoid exposing secrets."""
