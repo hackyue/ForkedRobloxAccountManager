@@ -1484,6 +1484,8 @@ class AccountManagerUI:
         self._account_context_auto_rejoin_index = None
         self.launch_input_context_menu = None
         self.place_target_context_menu = None
+        self.recent_list_edit_button = None
+        self.recent_list_edit_menu = None
         self.menu_bar_frame = None
         self.menu_buttons = []
         self.version_options = {"Latest Version": None}
@@ -1672,7 +1674,13 @@ class AccountManagerUI:
         self.place_label.pack(anchor="w")
         self.place_entry = ttk.Entry(right_frame, style="Dark.TEntry")
         self.place_entry.pack(fill="x", pady=(0, 5))
-        self.place_entry.insert(0, self.settings.get("last_place_id", ""))
+        initial_launch_input_mode = self._normalize_launch_input_mode(
+            self.settings.get("launch_input_mode", "place_id")
+        )
+        self.place_entry.insert(
+            0,
+            self.settings.get(self._get_launch_input_setting_key(initial_launch_input_mode), ""),
+        )
         self.place_entry.bind("<KeyRelease>", self.on_place_id_change)
         self.place_label.bind("<Button-3>", self.show_launch_input_context_menu)
         self.place_entry.bind("<Button-3>", self.show_launch_input_context_menu)
@@ -1769,7 +1777,14 @@ class AccountManagerUI:
         game_scrollbar.pack(side="right", fill="y")
         self.game_list.config(yscrollcommand=game_scrollbar.set)
         
-        ttk.Button(right_frame, text="Delete Selected", style="Dark.TButton", command=self.delete_game_from_list).pack(fill="x", pady=(5, 0))
+        self.recent_list_edit_menu = tk.Menu(self.root, tearoff=False)
+        self.recent_list_edit_button = ttk.Button(
+            right_frame,
+            text="Edit",
+            style="Dark.TButton",
+            command=self.show_recent_list_edit_menu,
+        )
+        self.recent_list_edit_button.pack(fill="x", pady=(5, 0))
 
         ttk.Label(right_frame, text="Quick Actions", style="Dark.TLabel").pack(anchor="w", pady=(10, 5))
 
@@ -1833,6 +1848,7 @@ class AccountManagerUI:
         """Load UI settings from file"""
         defaults = {
             "last_place_id": "",
+            "last_user": "",
             "last_private_server": "",
             "launch_input_mode": "place_id",
             "place_join_target_mode": "private_server",
@@ -1916,8 +1932,19 @@ class AccountManagerUI:
                 migrated_keep_clients_arranged = legacy_auto_arrange_after_group_launch
             self.settings["keep_roblox_clients_arranged"] = bool(migrated_keep_clients_arranged)
 
+        had_last_user_setting = "last_user" in self.settings
+
         for key, value in defaults.items():
             self.settings.setdefault(key, value)
+
+        if (
+            not had_last_user_setting
+            and self._normalize_launch_input_mode(self.settings.get("launch_input_mode", "place_id")) == "join_user"
+        ):
+            self.settings["last_user"] = str(self.settings.get("last_place_id", "") or "").strip()
+
+        self.settings["last_place_id"] = str(self.settings.get("last_place_id", "") or "").strip()
+        self.settings["last_user"] = str(self.settings.get("last_user", "") or "").strip()
 
         self.settings["multi_launch_delay"] = clamp_multi_launch_delay(
             self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS)
@@ -4276,6 +4303,40 @@ class AccountManagerUI:
             try:
                 self.add_account_menu.grab_release()
             except Exception:
+                pass
+
+    def show_recent_list_edit_menu(self, event: Optional[tk.Event] = None) -> None:
+        menu = getattr(self, "recent_list_edit_menu", None)
+        if menu is None:
+            return
+
+        launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+        item_name = "User" if launch_mode == "join_user" else "Game"
+        menu.delete(0, "end")
+        menu.add_command(
+            label=f"Delete Selected {item_name}",
+            command=self.delete_game_from_list,
+        )
+
+        if event is None:
+            button = getattr(self, "recent_list_edit_button", None)
+            if button is None:
+                return
+            try:
+                x_position = button.winfo_rootx()
+                y_position = button.winfo_rooty() + button.winfo_height()
+            except tk.TclError:
+                return
+        else:
+            x_position = int(getattr(event, "x_root", 0) or 0)
+            y_position = int(getattr(event, "y_root", 0) or 0)
+
+        try:
+            menu.tk_popup(x_position, y_position)
+        finally:
+            try:
+                menu.grab_release()
+            except tk.TclError:
                 pass
 
     def _ensure_addons_folder(self):
@@ -7028,11 +7089,26 @@ class AccountManagerUI:
             pass
         return False
 
-    def on_place_id_change(self, event=None):
+    def on_place_id_change(self, event: Optional[tk.Event] = None) -> None:
         """Called when place ID changes"""
-        place_id = self.place_entry.get().strip()
-        self._schedule_setting_save("last_place_id", place_id, delay_ms=250)
+        value = self.place_entry.get().strip()
+        setting_key = self._get_launch_input_setting_key(
+            getattr(self, "launch_input_mode", "place_id")
+        )
+        self._schedule_setting_save(setting_key, value, delay_ms=250)
         self.update_game_name()
+
+    def _get_launch_input_setting_key(self, mode: Any) -> str:
+        normalized = self._normalize_launch_input_mode(mode)
+        if normalized == "join_user":
+            return "last_user"
+        return "last_place_id"
+
+    def _replace_launch_input_value(self, value: Any) -> None:
+        if not getattr(self, "place_entry", None):
+            return
+        self.place_entry.delete(0, tk.END)
+        self.place_entry.insert(0, str(value or ""))
 
     def on_private_server_change(self, event=None):
         """Called when private server ID changes"""
@@ -7267,8 +7343,17 @@ class AccountManagerUI:
             except Exception:
                 pass
 
-    def _set_launch_input_mode(self, mode, save=True):
+    def _set_launch_input_mode(self, mode: Any, save: bool = True) -> None:
         normalized = self._normalize_launch_input_mode(mode)
+        previous = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+        if previous != normalized and getattr(self, "place_entry", None):
+            if save:
+                previous_key = self._get_launch_input_setting_key(previous)
+                self.settings[previous_key] = self.place_entry.get().strip()
+            next_key = self._get_launch_input_setting_key(normalized)
+            self._replace_launch_input_value(self.settings.get(next_key, ""))
+            self._last_game_name_query_value = None
+
         self.launch_input_mode = normalized
 
         is_join_user = normalized == "join_user"
@@ -7526,7 +7611,7 @@ class AccountManagerUI:
                     return
                 self.place_entry.delete(0, tk.END)
                 self.place_entry.insert(0, value)
-                self.settings["last_place_id"] = value
+                self.settings["last_user"] = value
                 self.save_settings()
                 self.update_game_name()
                 return
@@ -11003,6 +11088,10 @@ class AccountManagerUI:
             required_label = "Join User" if launch_mode == "join_user" else "Place ID"
             messagebox.showwarning("Missing Information", f"Please enter a {required_label}.")
             return False
+
+        if place_id_override is None:
+            self.settings[self._get_launch_input_setting_key(launch_mode)] = target_value
+            self.save_settings()
 
         if launch_mode == "join_user" and not str(game_id).isdigit():
             resolved_user_id = RobloxAPI.get_user_id_from_username(game_id)
