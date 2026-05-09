@@ -11027,22 +11027,22 @@ class AccountManagerUI:
         prefer_small_servers = self.settings.get("prefer_small_public_servers", False)
 
         def run_launch_batch(
-            selected_usernames,
-            pid,
-            psid,
-            manual_job_id,
-            ver,
-            debug_flag,
-            delay_seconds,
-            randomize_jobs,
-            prefer_small,
-            active_launch_mode,
-            join_input_text,
-        ):
+            selected_usernames: list[str],
+            pid: str,
+            psid: str,
+            manual_job_id: str,
+            ver: Any,
+            debug_flag: bool,
+            delay_seconds: float,
+            randomize_jobs: bool,
+            prefer_small: bool,
+            active_launch_mode: str,
+            join_input_text: Any,
+        ) -> dict[str, Any]:
             success_count = 0
             recent_join_username = ""
             last_effective_private_server = psid
-            public_server_job_pool = []
+            public_server_job_pool: list[str] = []
             public_server_pool_loaded = False
             if active_launch_mode == "join_user":
                 entered = str(join_input_text or "").strip()
@@ -11062,7 +11062,7 @@ class AccountManagerUI:
             if prefer_small and randomize_jobs and not psid and not manual_job_id and active_launch_mode != "join_user":
                 print("[INFO] Lowest-population server setting is enabled; random server selection will be ignored.")
 
-            def take_public_server_job_id():
+            def take_public_server_job_id() -> str:
                 nonlocal public_server_job_pool, public_server_pool_loaded
                 if public_server_job_pool:
                     return public_server_job_pool.pop(0)
@@ -11177,6 +11177,10 @@ class AccountManagerUI:
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
                     time.sleep(delay_seconds)
 
+            game_name = ""
+            if success_count > 0 and update_recent_history and active_launch_mode != "join_user":
+                game_name = RobloxAPI.get_game_name(pid) or ""
+
             return {
                 "success_count": success_count,
                 "selected_usernames": list(selected_usernames),
@@ -11184,9 +11188,10 @@ class AccountManagerUI:
                 "recent_private_server": last_effective_private_server if len(selected_usernames) == 1 else psid,
                 "recent_join_username": recent_join_username,
                 "pid": pid,
+                "game_name": game_name,
             }
 
-        def handle_launch_result(result):
+        def handle_launch_result(result: dict[str, Any]) -> bool:
             success_count = int(result.get("success_count", 0) or 0)
             selected_usernames = list(result.get("selected_usernames") or [])
             active_launch_mode = str(result.get("active_launch_mode") or launch_mode).strip()
@@ -11194,7 +11199,7 @@ class AccountManagerUI:
                 if update_recent_history:
                     if active_launch_mode != "join_user":
                         recent_private_server = str(result.get("recent_private_server") or "").strip()
-                        gname = RobloxAPI.get_game_name(game_id)
+                        gname = str(result.get("game_name") or "").strip()
                         if gname:
                             self.add_game_to_list(game_id, gname, recent_private_server)
                         else:
@@ -11243,7 +11248,7 @@ class AccountManagerUI:
         )
 
         if run_async:
-            def threaded_worker():
+            def threaded_worker() -> None:
                 result = run_launch_batch(*worker_args)
                 self.root.after(0, lambda: handle_launch_result(result))
 
@@ -11262,7 +11267,7 @@ class AccountManagerUI:
             success_holder = {"ok": bool(result.get("success_count", 0))}
             done_event = threading.Event()
 
-            def apply_result():
+            def apply_result() -> None:
                 try:
                     success_holder["ok"] = handle_launch_result(result)
                 finally:
