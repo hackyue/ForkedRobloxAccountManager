@@ -340,6 +340,20 @@ class InstanceManagerCardWidgets:
 
 
 @dataclass(frozen=True)
+class AntiAfkWindow:
+    hwnd: int
+    pid: int
+    title: str
+
+
+@dataclass(frozen=True)
+class AntiAfkPassSummary:
+    total_windows: int
+    successful_windows: int
+    failed_windows: int
+
+
+@dataclass(frozen=True)
 class DiscordLogFilterPreset:
     key: str
     label: str
@@ -1325,6 +1339,50 @@ class AccountManagerUI:
         "robloxplayerlauncher.exe",
     }
     ROBLOX_HEADLESS_TARGET_EXECUTABLES = {"robloxplayerbeta.exe"}
+    ANTI_AFK_TARGET_EXECUTABLES: set[str] = {"robloxplayerbeta.exe"}
+    ANTI_AFK_DEFAULT_INTERVAL_MINUTES: int = 10
+    ANTI_AFK_MIN_INTERVAL_MINUTES: int = 1
+    ANTI_AFK_MAX_INTERVAL_MINUTES: int = 19
+    ANTI_AFK_WAIT_CHECK_SECONDS: int = 60
+    ANTI_AFK_DEFAULT_KEY_NAME: str = "M1"
+    ANTI_AFK_DEFAULT_KEY_CODE: int = 0
+    ANTI_AFK_MOUSE_BUTTON_NAMES: dict[str, str] = {
+        "m1": "M1",
+        "mouse1": "M1",
+        "left click": "M1",
+        "button 1": "M1",
+        "m2": "M2",
+        "mouse2": "M2",
+        "right click": "M2",
+        "button 3": "M2",
+        "m3": "M3",
+        "mouse3": "M3",
+        "middle click": "M3",
+        "button 2": "M3",
+    }
+    ANTI_AFK_KEY_CODES: dict[str, int] = {
+        "F13": 0x7C,
+        "F14": 0x7D,
+        "F15": 0x7E,
+        "F16": 0x7F,
+        "F17": 0x80,
+        "F18": 0x81,
+        "F19": 0x82,
+        "F20": 0x83,
+        "F21": 0x84,
+        "F22": 0x85,
+        "F23": 0x86,
+        "F24": 0x87,
+        "Space": 0x20,
+        "W": 0x57,
+        "A": 0x41,
+        "S": 0x53,
+        "D": 0x44,
+        "Up Arrow": 0x26,
+        "Down Arrow": 0x28,
+        "Left Arrow": 0x25,
+        "Right Arrow": 0x27,
+    }
     KEEP_CLIENTS_ARRANGED_INTERVAL_MS = 5000
     ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS = 2
     ROBLOX_HEADLESS_MEMORY_TRIM_INTERVAL_SECONDS = 30
@@ -1347,6 +1405,17 @@ class AccountManagerUI:
         self._auto_relaunch_in_progress = False
         self._auto_memory_trim_after_id = None
         self._auto_memory_trim_in_progress = False
+        self._anti_afk_after_id: Optional[str] = None
+        self._anti_afk_in_progress: bool = False
+        self._anti_afk_last_result: Optional[AntiAfkPassSummary] = None
+        self._anti_afk_next_run_at: Optional[float] = None
+        self._anti_afk_next_label_after_id: Optional[str] = None
+        self._anti_afk_next_label_positioned: bool = False
+        self._anti_afk_next_label_drag_offset: tuple[int, int] = (0, 0)
+        self._anti_afk_wait_after_id: Optional[str] = None
+        self.anti_afk_next_window: Optional[tk.Toplevel] = None
+        self.anti_afk_next_label: Optional[tk.Label] = None
+        self.anti_afk_next_label_var: Optional[tk.StringVar] = None
         self._discord_log_mirror_after_id = None
         self._discord_log_mirror_in_progress = False
         self._discord_log_mirror_screenshot_after_id = None
@@ -1717,6 +1786,9 @@ class AccountManagerUI:
         )
         self.trim_roblox_memory_btn.pack(fill="x", pady=2)
 
+        self.anti_afk_next_label_var = tk.StringVar(value="")
+        self._refresh_anti_afk_next_label()
+
         bottom_frame = ttk.Frame(self.root, style="Dark.TFrame")
         bottom_frame.pack(fill="x", padx=10, pady=(5, 10), anchor='s')
 
@@ -1752,6 +1824,7 @@ class AccountManagerUI:
 
         self.root.after(500, self._auto_relaunch_maybe_start)
         self.root.after(500, self._auto_memory_trim_maybe_start)
+        self.root.after(500, self._anti_afk_maybe_start)
         self.root.after(700, self._roblox_headless_maybe_start)
         self.root.after(900, self._discord_log_mirror_maybe_start)
         self.root.after(1500, self._auto_update_maybe_start)
@@ -1797,6 +1870,13 @@ class AccountManagerUI:
             "auto_relaunch_group": "",
             "auto_memory_trim_enabled": False,
             "auto_memory_trim_interval_minutes": 5,
+            "anti_afk_enabled": False,
+            "anti_afk_interval_minutes": self.ANTI_AFK_DEFAULT_INTERVAL_MINUTES,
+            "anti_afk_key_name": self.ANTI_AFK_DEFAULT_KEY_NAME,
+            "anti_afk_key_code": self.ANTI_AFK_DEFAULT_KEY_CODE,
+            "anti_afk_show_next_label": False,
+            "anti_afk_next_label_x": None,
+            "anti_afk_next_label_y": None,
             "discord_log_mirror_enabled": False,
             "discord_log_mirror_webhook_url": "",
             "discord_log_mirror_include_stdout": True,
@@ -1880,6 +1960,30 @@ class AccountManagerUI:
         except (TypeError, ValueError):
             mm = 5
         self.settings["auto_memory_trim_interval_minutes"] = max(1, min(120, mm))
+        if platform.system() != "Windows":
+            self.settings["anti_afk_enabled"] = False
+        self.settings["anti_afk_enabled"] = bool(self.settings.get("anti_afk_enabled", False))
+        self.settings["anti_afk_interval_minutes"] = self._normalize_anti_afk_interval_minutes(
+            self.settings.get("anti_afk_interval_minutes", self.ANTI_AFK_DEFAULT_INTERVAL_MINUTES)
+        )
+        anti_afk_key_name = self.settings.get("anti_afk_key_name", self.ANTI_AFK_DEFAULT_KEY_NAME)
+        if (
+            not bool(self.settings.get("anti_afk_default_key_migrated_to_m1", False))
+            and str(anti_afk_key_name or "").strip().casefold() == "f15"
+        ):
+            anti_afk_key_name = self.ANTI_AFK_DEFAULT_KEY_NAME
+        self.settings["anti_afk_key_name"] = self._normalize_anti_afk_key_name(
+            anti_afk_key_name
+        )
+        self.settings["anti_afk_key_code"] = self._normalize_anti_afk_key_code(
+            self.settings.get("anti_afk_key_code", self.ANTI_AFK_DEFAULT_KEY_CODE),
+            self.settings["anti_afk_key_name"],
+        )
+        self.settings["anti_afk_show_next_label"] = bool(
+            self.settings.get("anti_afk_show_next_label", False)
+        )
+        self._normalize_anti_afk_next_label_position_settings()
+        self.settings["anti_afk_default_key_migrated_to_m1"] = True
         try:
             discord_max_lines = int(self.settings.get("discord_log_mirror_max_lines_per_message", 20) or 20)
         except (TypeError, ValueError):
@@ -2478,6 +2582,583 @@ class AccountManagerUI:
                     self._auto_memory_trim_in_progress = False
 
         threading.Thread(target=worker, daemon=True, name="auto-memory-trim").start()
+
+    def _normalize_anti_afk_interval_minutes(self, value: Any) -> int:
+        try:
+            minutes = int(value or self.ANTI_AFK_DEFAULT_INTERVAL_MINUTES)
+        except (TypeError, ValueError, tk.TclError):
+            minutes = self.ANTI_AFK_DEFAULT_INTERVAL_MINUTES
+        return max(
+            self.ANTI_AFK_MIN_INTERVAL_MINUTES,
+            min(self.ANTI_AFK_MAX_INTERVAL_MINUTES, minutes),
+        )
+
+    def _get_anti_afk_interval_minutes(self) -> int:
+        minutes = self._normalize_anti_afk_interval_minutes(
+            self.settings.get("anti_afk_interval_minutes", self.ANTI_AFK_DEFAULT_INTERVAL_MINUTES)
+        )
+        self.settings["anti_afk_interval_minutes"] = minutes
+        return minutes
+
+    def _normalize_anti_afk_key_name(self, value: Any) -> str:
+        raw_key_name = str(value or self.ANTI_AFK_DEFAULT_KEY_NAME).strip()
+        if not raw_key_name:
+            return self.ANTI_AFK_DEFAULT_KEY_NAME
+
+        normalized_lookup_name = raw_key_name.replace("_", " ").casefold()
+        mouse_button_name = self.ANTI_AFK_MOUSE_BUTTON_NAMES.get(normalized_lookup_name)
+        if mouse_button_name:
+            return mouse_button_name
+
+        for key_name in self.ANTI_AFK_KEY_CODES.keys():
+            if raw_key_name.casefold() == key_name.casefold():
+                return key_name
+
+        if len(raw_key_name) == 1:
+            return raw_key_name.upper()
+
+        function_key_match = re.fullmatch(r"(?i)f([1-9]|1[0-9]|2[0-4])", raw_key_name)
+        if function_key_match:
+            return f"F{function_key_match.group(1)}"
+
+        return raw_key_name.replace("_", " ")
+
+    def _normalize_anti_afk_key_code(self, value: Any, key_name: str) -> int:
+        if key_name in {"M1", "M2", "M3"}:
+            return self.ANTI_AFK_DEFAULT_KEY_CODE
+        try:
+            key_code = int(value or 0)
+        except (TypeError, ValueError, tk.TclError):
+            key_code = 0
+        if key_code > 0:
+            return key_code
+        return int(
+            self.ANTI_AFK_KEY_CODES.get(
+                key_name,
+                self.ANTI_AFK_KEY_CODES["F15"],
+            )
+        )
+
+    def _get_anti_afk_key_name(self) -> str:
+        key_name = self._normalize_anti_afk_key_name(
+            self.settings.get("anti_afk_key_name", self.ANTI_AFK_DEFAULT_KEY_NAME)
+        )
+        self.settings["anti_afk_key_name"] = key_name
+        return key_name
+
+    def _get_anti_afk_key_code(self) -> int:
+        key_name = self._get_anti_afk_key_name()
+        key_code = self._normalize_anti_afk_key_code(
+            self.settings.get("anti_afk_key_code", self.ANTI_AFK_DEFAULT_KEY_CODE),
+            key_name,
+        )
+        self.settings["anti_afk_key_code"] = key_code
+        return key_code
+
+    def _anti_afk_maybe_start(self) -> None:
+        if self.settings.get("anti_afk_enabled", False):
+            self._anti_afk_start()
+        else:
+            self._refresh_anti_afk_next_label()
+
+    def _cancel_anti_afk_schedule(self) -> None:
+        after_id = getattr(self, "_anti_afk_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except (AttributeError, RuntimeError, tk.TclError):
+            pass
+        self._anti_afk_after_id = None
+
+    def _anti_afk_stop(self) -> None:
+        self._cancel_anti_afk_schedule()
+        self._cancel_anti_afk_wait_check()
+        self._anti_afk_next_run_at = None
+        self._refresh_anti_afk_next_label()
+
+    def _anti_afk_config_valid(self) -> bool:
+        if platform.system() != "Windows":
+            return False
+        if win32gui is None or win32process is None or win32con is None:
+            return False
+        if not bool(self.settings.get("anti_afk_enabled", False)):
+            return False
+        return self._get_anti_afk_interval_minutes() >= self.ANTI_AFK_MIN_INTERVAL_MINUTES
+
+    def _anti_afk_start(self) -> None:
+        self._cancel_anti_afk_schedule()
+        self._cancel_anti_afk_wait_check()
+        if not self._anti_afk_config_valid():
+            self._anti_afk_next_run_at = None
+            self._refresh_anti_afk_next_label()
+            return
+        if not self._anti_afk_has_roblox_player_instance():
+            self._anti_afk_next_run_at = None
+            self._refresh_anti_afk_next_label()
+            self._schedule_anti_afk_wait_check()
+            self._log_anti_afk(
+                (
+                    "Waiting for RobloxPlayerBeta.exe before starting maintenance; "
+                    f"checking again in {self.ANTI_AFK_WAIT_CHECK_SECONDS}s."
+                ),
+                debug=True,
+            )
+            return
+        self._schedule_anti_afk_maintenance()
+        self._log_anti_afk(
+            (
+                f"Enabled with {self._get_anti_afk_interval_minutes()} minute interval "
+                f"and {self._get_anti_afk_key_name()} key."
+            ),
+            debug=True,
+        )
+
+    def _anti_afk_has_roblox_player_instance(self) -> bool:
+        return bool(self._anti_afk_find_roblox_windows(use_cache=False))
+
+    def _cancel_anti_afk_wait_check(self) -> None:
+        after_id = getattr(self, "_anti_afk_wait_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except (AttributeError, RuntimeError, tk.TclError):
+            pass
+        self._anti_afk_wait_after_id = None
+
+    def _schedule_anti_afk_wait_check(self, delay_ms: Optional[int] = None) -> None:
+        if not self._anti_afk_config_valid():
+            return
+        if delay_ms is None and getattr(self, "_anti_afk_wait_after_id", None) is not None:
+            return
+        self._cancel_anti_afk_wait_check()
+        if delay_ms is None:
+            delay_ms = self.ANTI_AFK_WAIT_CHECK_SECONDS * 1000
+        try:
+            self._anti_afk_wait_after_id = self.root.after(
+                max(0, int(delay_ms)),
+                self._anti_afk_wait_check,
+            )
+        except (RuntimeError, tk.TclError):
+            self._anti_afk_wait_after_id = None
+
+    def _anti_afk_wait_check(self) -> None:
+        self._anti_afk_wait_after_id = None
+        if not self._anti_afk_config_valid():
+            self._anti_afk_next_run_at = None
+            self._refresh_anti_afk_next_label()
+            return
+        has_scheduled_maintenance = (
+            getattr(self, "_anti_afk_next_run_at", None) is not None
+            or getattr(self, "_anti_afk_after_id", None) is not None
+        )
+        if not self._anti_afk_has_roblox_player_instance():
+            self._cancel_anti_afk_schedule()
+            self._anti_afk_next_run_at = None
+            self._refresh_anti_afk_next_label()
+            self._schedule_anti_afk_wait_check()
+            if has_scheduled_maintenance:
+                self._log_anti_afk(
+                    "RobloxPlayerBeta.exe is no longer detected; maintenance countdown paused.",
+                    debug=True,
+                )
+            return
+        if has_scheduled_maintenance:
+            self._schedule_anti_afk_wait_check()
+            return
+        self._schedule_anti_afk_maintenance()
+        self._log_anti_afk("RobloxPlayerBeta.exe detected; maintenance countdown started.", debug=True)
+
+    def _schedule_anti_afk_maintenance(self) -> None:
+        self._cancel_anti_afk_schedule()
+        interval_ms = self._get_anti_afk_interval_minutes() * 60 * 1000
+        self._anti_afk_next_run_at = time.monotonic() + (interval_ms / 1000.0)
+        try:
+            self._anti_afk_after_id = self.root.after(interval_ms, self._anti_afk_tick)
+        except (RuntimeError, tk.TclError):
+            self._anti_afk_after_id = None
+            self._anti_afk_next_run_at = None
+        self._refresh_anti_afk_next_label()
+        if self._anti_afk_after_id is not None:
+            self._schedule_anti_afk_wait_check()
+
+    def _anti_afk_tick(self) -> None:
+        self._anti_afk_after_id = None
+        if not self._anti_afk_config_valid():
+            self._anti_afk_next_run_at = None
+            self._refresh_anti_afk_next_label()
+            return
+        if not self._anti_afk_has_roblox_player_instance():
+            self._anti_afk_next_run_at = None
+            self._refresh_anti_afk_next_label()
+            self._schedule_anti_afk_wait_check()
+            self._log_anti_afk("RobloxPlayerBeta.exe is no longer detected; waiting for the next instance.", debug=True)
+            return
+        self._anti_afk_run_once(show_feedback=False)
+        self._schedule_anti_afk_maintenance()
+
+    def _cancel_anti_afk_next_label_update(self) -> None:
+        after_id = getattr(self, "_anti_afk_next_label_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except (AttributeError, RuntimeError, tk.TclError):
+            pass
+        self._anti_afk_next_label_after_id = None
+
+    def _format_anti_afk_remaining_seconds(self, remaining_seconds: float) -> str:
+        seconds = max(0, int(round(remaining_seconds)))
+        if seconds >= 3600:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            return f"{hours}h {minutes}m"
+        if seconds >= 60:
+            minutes = seconds // 60
+            seconds = seconds % 60
+            return f"{minutes}m {seconds}s"
+        return f"{seconds}s"
+
+    def _get_anti_afk_next_label_text(self) -> str:
+        next_run_at = getattr(self, "_anti_afk_next_run_at", None)
+        if next_run_at is None:
+            return ""
+
+        remaining_seconds = max(0.0, float(next_run_at) - time.monotonic())
+        remaining_text = self._format_anti_afk_remaining_seconds(remaining_seconds)
+        return f"Anti-AFK Input will send in {remaining_text}"
+
+    def _destroy_anti_afk_next_label_window(self) -> None:
+        window = getattr(self, "anti_afk_next_window", None)
+        self.anti_afk_next_window = None
+        self.anti_afk_next_label = None
+        self._anti_afk_next_label_positioned = False
+        if window is None:
+            return
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except tk.TclError:
+            pass
+
+    def _normalize_anti_afk_next_label_position_settings(self) -> None:
+        for key in ("anti_afk_next_label_x", "anti_afk_next_label_y"):
+            value = self.settings.get(key)
+            if value in (None, ""):
+                self.settings[key] = None
+                continue
+            try:
+                self.settings[key] = int(value)
+            except (TypeError, ValueError):
+                self.settings[key] = None
+
+    def _get_saved_anti_afk_next_label_position(self) -> Optional[tuple[int, int]]:
+        self._normalize_anti_afk_next_label_position_settings()
+        x_position = self.settings.get("anti_afk_next_label_x")
+        y_position = self.settings.get("anti_afk_next_label_y")
+        if x_position is None or y_position is None:
+            return None
+        try:
+            return int(x_position), int(y_position)
+        except (TypeError, ValueError):
+            return None
+
+    def _save_anti_afk_next_label_position(self, x_position: int, y_position: int) -> None:
+        self.settings["anti_afk_next_label_x"] = int(x_position)
+        self.settings["anti_afk_next_label_y"] = int(y_position)
+        self.save_settings()
+
+    def _begin_anti_afk_next_label_drag(self, event: tk.Event) -> str:
+        window = getattr(self, "anti_afk_next_window", None)
+        if window is None:
+            return "break"
+        try:
+            self._anti_afk_next_label_drag_offset = (
+                int(getattr(event, "x_root", 0) or 0) - int(window.winfo_x()),
+                int(getattr(event, "y_root", 0) or 0) - int(window.winfo_y()),
+            )
+        except tk.TclError:
+            self._anti_afk_next_label_drag_offset = (0, 0)
+        return "break"
+
+    def _drag_anti_afk_next_label(self, event: tk.Event) -> str:
+        window = getattr(self, "anti_afk_next_window", None)
+        if window is None:
+            return "break"
+        x_offset, y_offset = self._anti_afk_next_label_drag_offset
+        x_position = int(getattr(event, "x_root", 0) or 0) - int(x_offset)
+        y_position = int(getattr(event, "y_root", 0) or 0) - int(y_offset)
+        try:
+            window.geometry(f"+{x_position}+{y_position}")
+            self._anti_afk_next_label_positioned = True
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _end_anti_afk_next_label_drag(self, _event: tk.Event) -> str:
+        window = getattr(self, "anti_afk_next_window", None)
+        if window is None:
+            return "break"
+        try:
+            self._save_anti_afk_next_label_position(int(window.winfo_x()), int(window.winfo_y()))
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _ensure_anti_afk_next_label_window(self) -> bool:
+        window = getattr(self, "anti_afk_next_window", None)
+        if window is not None:
+            try:
+                if window.winfo_exists():
+                    return True
+            except tk.TclError:
+                pass
+            self.anti_afk_next_window = None
+            self.anti_afk_next_label = None
+            self._anti_afk_next_label_positioned = False
+
+        text_var = getattr(self, "anti_afk_next_label_var", None)
+        if text_var is None:
+            return False
+
+        window = tk.Toplevel(self.root)
+        window.overrideredirect(True)
+        window.configure(
+            bg=self.BG_MID,
+            highlightbackground=self.BORDER_COLOR,
+            highlightcolor=self.BORDER_COLOR,
+            highlightthickness=1,
+            bd=0,
+        )
+        window.resizable(False, False)
+        try:
+            window.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self.anti_afk_next_window = window
+        self.anti_afk_next_label = tk.Label(
+            window,
+            textvariable=text_var,
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            font=("Segoe UI", 9, "bold"),
+            padx=12,
+            pady=5,
+        )
+        self.anti_afk_next_label.pack()
+        for drag_widget in (window, self.anti_afk_next_label):
+            drag_widget.bind("<ButtonPress-1>", self._begin_anti_afk_next_label_drag, add="+")
+            drag_widget.bind("<B1-Motion>", self._drag_anti_afk_next_label, add="+")
+            drag_widget.bind("<ButtonRelease-1>", self._end_anti_afk_next_label_drag, add="+")
+        return True
+
+    def _position_anti_afk_next_label_window(self) -> None:
+        window = getattr(self, "anti_afk_next_window", None)
+        if window is None:
+            return
+        try:
+            self.root.update_idletasks()
+            window.update_idletasks()
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_width = self.root.winfo_width()
+            screen_width = self.root.winfo_screenwidth()
+            label_width = window.winfo_reqwidth()
+            label_height = window.winfo_reqheight()
+            if self._anti_afk_next_label_positioned:
+                x_position = int(window.winfo_x())
+                y_position = int(window.winfo_y())
+            else:
+                saved_position = self._get_saved_anti_afk_next_label_position()
+                if saved_position is not None:
+                    x_position, y_position = saved_position
+                else:
+                    x_position = root_x + root_width + 12
+                    if x_position + label_width > screen_width:
+                        x_position = max(8, root_x - label_width - 12)
+                    y_position = max(8, root_y + 24)
+                self._anti_afk_next_label_positioned = True
+            window.geometry(f"{label_width}x{label_height}+{x_position}+{y_position}")
+        except tk.TclError:
+            pass
+
+    def _refresh_anti_afk_next_label(self) -> None:
+        text_var = getattr(self, "anti_afk_next_label_var", None)
+        if text_var is None:
+            return
+
+        self._cancel_anti_afk_next_label_update()
+        show_label = bool(self.settings.get("anti_afk_show_next_label", False))
+        has_next_run = bool(self.settings.get("anti_afk_enabled", False)) and self._anti_afk_next_run_at is not None
+
+        if not show_label or not has_next_run:
+            self._destroy_anti_afk_next_label_window()
+            return
+
+        text_var.set(self._get_anti_afk_next_label_text())
+        if not self._ensure_anti_afk_next_label_window():
+            return
+        self._position_anti_afk_next_label_window()
+
+        try:
+            self._anti_afk_next_label_after_id = self.root.after(1000, self._refresh_anti_afk_next_label)
+        except (RuntimeError, tk.TclError):
+            self._anti_afk_next_label_after_id = None
+
+    def _anti_afk_find_roblox_windows(self, use_cache: bool = False) -> list[AntiAfkWindow]:
+        if platform.system() != "Windows" or win32gui is None or win32process is None or win32con is None:
+            return []
+
+        pid_to_image = self._query_tracked_process_pid_map(
+            self.ANTI_AFK_TARGET_EXECUTABLES,
+            use_cache=use_cache,
+        )
+        windows: list[AntiAfkWindow] = []
+        for pid_value in sorted(pid_to_image.keys()):
+            hwnd = self._find_main_window_for_pid(pid_value, include_hidden=True)
+            if hwnd is None:
+                continue
+            title_text = ""
+            try:
+                title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
+            except WINDOWS_API_ERROR_TYPES:
+                title_text = ""
+            windows.append(
+                AntiAfkWindow(
+                    hwnd=int(hwnd),
+                    pid=int(pid_value),
+                    title=title_text or str(pid_to_image.get(pid_value, "") or "Roblox"),
+                )
+            )
+        return windows
+
+    def _anti_afk_post_window_input(self, hwnd: int, key_name: str, key_code: int) -> bool:
+        if platform.system() != "Windows" or win32gui is None or win32con is None:
+            return False
+        try:
+            left, top, right, bottom = win32gui.GetClientRect(hwnd)
+            width = max(1, int(right - left))
+            height = max(1, int(bottom - top))
+            jitter = 1 if int(time.monotonic()) % 2 else -1
+            x_value = max(0, min(width - 1, int(width / 2) + jitter))
+            y_value = max(0, min(height - 1, int(height / 2)))
+            mouse_lparam = (y_value << 16) | x_value
+            win32gui.PostMessage(hwnd, getattr(win32con, "WM_MOUSEMOVE", 0x0200), 0, mouse_lparam)
+            if key_name in {"M1", "M2", "M3"}:
+                mouse_message_names = {
+                    "M1": ("WM_LBUTTONDOWN", "WM_LBUTTONUP", "MK_LBUTTON", 0x0201, 0x0202, 0x0001),
+                    "M2": ("WM_RBUTTONDOWN", "WM_RBUTTONUP", "MK_RBUTTON", 0x0204, 0x0205, 0x0002),
+                    "M3": ("WM_MBUTTONDOWN", "WM_MBUTTONUP", "MK_MBUTTON", 0x0207, 0x0208, 0x0010),
+                }
+                down_name, up_name, mask_name, down_default, up_default, mask_default = mouse_message_names[key_name]
+                win32gui.PostMessage(
+                    hwnd,
+                    getattr(win32con, down_name, down_default),
+                    getattr(win32con, mask_name, mask_default),
+                    mouse_lparam,
+                )
+                win32gui.PostMessage(hwnd, getattr(win32con, up_name, up_default), 0, mouse_lparam)
+            else:
+                win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYDOWN", 0x0100), key_code, 1)
+                win32gui.PostMessage(
+                    hwnd,
+                    getattr(win32con, "WM_KEYUP", 0x0101),
+                    key_code,
+                    0xC0000001,
+                )
+            return True
+        except WINDOWS_API_ERROR_TYPES:
+            return False
+
+    def _anti_afk_run_pass(self) -> AntiAfkPassSummary:
+        windows = self._anti_afk_find_roblox_windows(use_cache=False)
+        key_name = self._get_anti_afk_key_name()
+        key_code = self._get_anti_afk_key_code()
+        successful_windows = 0
+        for window in windows:
+            if self._anti_afk_post_window_input(window.hwnd, key_name, key_code):
+                successful_windows += 1
+            time.sleep(0.02)
+        failed_windows = len(windows) - successful_windows
+        if windows:
+            self._log_anti_afk(
+                (
+                    f"{key_name} pulse sent to "
+                    f"{successful_windows}/{len(windows)} Roblox client(s)."
+                ),
+                debug=True,
+            )
+        else:
+            self._log_anti_afk("No Roblox clients detected.", debug=True)
+        return AntiAfkPassSummary(
+            total_windows=len(windows),
+            successful_windows=successful_windows,
+            failed_windows=failed_windows,
+        )
+
+    def _anti_afk_run_once(self, show_feedback: bool = False) -> None:
+        if platform.system() != "Windows":
+            if show_feedback:
+                messagebox.showerror("Anti-AFK", "This feature is only available on Windows.")
+            return
+        if getattr(self, "_anti_afk_in_progress", False):
+            if show_feedback:
+                messagebox.showinfo("Anti-AFK", "Anti-AFK is already running.")
+            return
+
+        self._anti_afk_in_progress = True
+
+        def worker() -> None:
+            error_message = ""
+            try:
+                summary = self._anti_afk_run_pass()
+            except WINDOWS_API_ERROR_TYPES as exc:
+                summary = AntiAfkPassSummary(
+                    total_windows=0,
+                    successful_windows=0,
+                    failed_windows=0,
+                )
+                error_message = str(exc)
+
+            def finish() -> None:
+                self._anti_afk_in_progress = False
+                self._anti_afk_last_result = summary
+                if not show_feedback:
+                    return
+                if error_message:
+                    messagebox.showerror("Anti-AFK", f"Anti-AFK failed:\n{error_message}")
+                    return
+                if summary.total_windows <= 0:
+                    messagebox.showinfo("Anti-AFK", "No Roblox clients were detected.")
+                    return
+                if summary.failed_windows > 0:
+                    messagebox.showwarning(
+                        "Anti-AFK",
+                        (
+                            f"Sent Anti-AFK input to {summary.successful_windows} Roblox client(s).\n"
+                            f"Failed clients: {summary.failed_windows}"
+                        ),
+                    )
+                    return
+                self.show_success_message(
+                    f"Sent Anti-AFK input to {summary.successful_windows} Roblox client(s).",
+                    title="Anti-AFK",
+                )
+
+            try:
+                self.root.after(0, finish)
+            except (RuntimeError, tk.TclError):
+                self._anti_afk_in_progress = False
+                self._anti_afk_last_result = summary
+
+        threading.Thread(target=worker, daemon=True, name="anti-afk").start()
+
+    def _log_anti_afk(self, message: str, debug: bool = False) -> None:
+        if debug and not self.settings.get("enable_debug_logging", False):
+            return
+        level = "DEBUG" if debug else "INFO"
+        print(f"[{level}] Anti-AFK: {message}")
 
     def _roblox_headless_maybe_start(self):
         if self.settings.get("roblox_headless_mode_enabled", False):
@@ -3244,6 +3925,12 @@ class AccountManagerUI:
 
         if getattr(self, "status_label", None):
             self.status_label.configure(bg=self.BG_DARK)
+
+        if getattr(self, "anti_afk_next_window", None):
+            self.anti_afk_next_window.configure(bg=self.BG_MID, highlightbackground=self.BORDER_COLOR)
+
+        if getattr(self, "anti_afk_next_label", None):
+            self.anti_afk_next_label.configure(bg=self.BG_MID, fg=self.FG_TEXT)
 
         if getattr(self, "account_list", None):
             self.account_list.configure(
@@ -8390,6 +9077,12 @@ class AccountManagerUI:
                 debug=True,
             )
             self._schedule_roblox_headless_pass(delay_ms=delay_ms)
+        if self.settings.get("anti_afk_enabled", False):
+            self._log_anti_afk(
+                f"Roblox launch detected; scheduling activation check in {int(delay_ms)} ms.",
+                debug=True,
+            )
+            self._schedule_anti_afk_wait_check(delay_ms=delay_ms)
         if not self.settings.get("keep_roblox_clients_arranged", False):
             return
         self._schedule_keep_clients_arranged_check(
@@ -10800,6 +11493,14 @@ class AccountManagerUI:
         bug_prompt_var = tk.BooleanVar(value=self.settings.get("bug_issue_prompt_enabled", True))
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
         auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update_enabled", True))
+        anti_afk_enabled_var = tk.BooleanVar(value=bool(self.settings.get("anti_afk_enabled", False)))
+        anti_afk_interval_var = tk.IntVar(value=self._get_anti_afk_interval_minutes())
+        anti_afk_key_var = tk.StringVar(value=self._get_anti_afk_key_name())
+        anti_afk_key_code_state = {"value": self._get_anti_afk_key_code()}
+        anti_afk_key_button_text_var = tk.StringVar(value=anti_afk_key_var.get())
+        anti_afk_show_next_label_var = tk.BooleanVar(
+            value=bool(self.settings.get("anti_afk_show_next_label", False))
+        )
         theme_var = tk.StringVar(value=self.settings.get("selected_theme", self.theme_name))
         browser_preference_var = tk.StringVar(value=self._get_preferred_browser())
         custom_launcher_var = tk.BooleanVar(value=self.settings.get("enable_custom_launcher", False))
@@ -11200,7 +11901,7 @@ class AccountManagerUI:
 
         settings_window.bind("<Destroy>", _on_settings_window_destroy)
 
-        def create_settings_card(parent, title, subtitle=""):
+        def create_settings_card(parent, title, subtitle="", header_action_builder=None):
             outer = tk.Frame(
                 parent,
                 bg=self.BG_MID,
@@ -11211,15 +11912,27 @@ class AccountManagerUI:
             outer.pack(fill="x", pady=(0, 10))
             header = tk.Frame(outer, bg=self.BG_MID)
             header.pack(fill="x", padx=10, pady=(8, 0))
+            header_frames = [header]
+            if header_action_builder is None:
+                title_parent = header
+            else:
+                header.columnconfigure(0, weight=1)
+                title_parent = tk.Frame(header, bg=self.BG_MID)
+                title_parent.grid(row=0, column=0, sticky="ew")
+                header_frames.append(title_parent)
+                header_action_frame = tk.Frame(header, bg=self.BG_MID)
+                header_action_frame.grid(row=0, column=1, sticky="e", padx=(10, 0))
+                header_frames.append(header_action_frame)
+                header_action_builder(header_action_frame)
             ttk.Label(
-                header,
+                title_parent,
                 text=title,
                 style="Dark.TLabel",
                 font=("Segoe UI", 11, "bold")
             ).pack(anchor="w")
             if subtitle:
                 subtitle_label = ttk.Label(
-                    header,
+                    title_parent,
                     text=subtitle,
                     style="Dark.TLabel",
                     font=("Segoe UI", 9),
@@ -11233,6 +11946,7 @@ class AccountManagerUI:
                 {
                     "outer": outer,
                     "header": header,
+                    "header_frames": header_frames,
                     "body": body,
                     "parent": parent,
                     "tab_name": tab_content_frames.get(str(parent), ""),
@@ -11364,6 +12078,9 @@ class AccountManagerUI:
                     outer.configure(bg=self.BG_MID, highlightbackground=self.BORDER_COLOR, highlightcolor=self.BORDER_COLOR)
                 if header and header.winfo_exists():
                     header.configure(bg=self.BG_MID)
+                for header_frame in list(card.get("header_frames", []) or []):
+                    if header_frame and header_frame.winfo_exists():
+                        header_frame.configure(bg=self.BG_MID)
 
             for label in settings_muted_labels:
                 if label and label.winfo_exists():
@@ -11949,6 +12666,214 @@ class AccountManagerUI:
             style="Dark.TCheckbutton",
             command=auto_save_setting("auto_update_enabled", auto_update_var)
         ).pack(anchor="w", pady=2)
+
+        anti_afk_supported = (
+            platform.system() == "Windows"
+            and win32gui is not None
+            and win32process is not None
+            and win32con is not None
+        )
+        anti_afk_key_capture_active = {"value": False}
+        anti_afk_key_capture_release_block = {"value": False}
+        anti_afk_key_button_holder = {"widget": None}
+
+        def refresh_anti_afk_key_button_text() -> None:
+            if anti_afk_key_capture_active["value"]:
+                anti_afk_key_button_text_var.set("Listening...")
+            else:
+                anti_afk_key_button_text_var.set(anti_afk_key_var.get())
+            _refresh_settings_search_index()
+
+        def normalize_anti_afk_event_key(event: tk.Event) -> Optional[tuple[str, int]]:
+            keysym = str(getattr(event, "keysym", "") or "").strip()
+            if not keysym:
+                return None
+            key_name_aliases = {
+                "space": "Space",
+                "Up": "Up Arrow",
+                "Down": "Down Arrow",
+                "Left": "Left Arrow",
+                "Right": "Right Arrow",
+            }
+            key_name = self._normalize_anti_afk_key_name(key_name_aliases.get(keysym, keysym))
+            try:
+                key_code = int(getattr(event, "keycode", 0) or 0)
+            except (TypeError, ValueError, tk.TclError):
+                key_code = 0
+            return key_name, self._normalize_anti_afk_key_code(key_code, key_name)
+
+        def normalize_anti_afk_event_mouse(event: tk.Event) -> Optional[tuple[str, int]]:
+            try:
+                button_number = int(getattr(event, "num", 0) or 0)
+            except (TypeError, ValueError, tk.TclError):
+                return None
+            button_map = {
+                1: "M1",
+                2: "M3",
+                3: "M2",
+            }
+            key_name = button_map.get(button_number)
+            if key_name is None:
+                return None
+            return key_name, self.ANTI_AFK_DEFAULT_KEY_CODE
+
+        def finish_anti_afk_key_capture(key_name: str, key_code: int) -> str:
+            normalized_key_name = self._normalize_anti_afk_key_name(key_name)
+            normalized_key_code = self._normalize_anti_afk_key_code(key_code, normalized_key_name)
+            anti_afk_key_capture_active["value"] = False
+            anti_afk_key_var.set(normalized_key_name)
+            anti_afk_key_code_state["value"] = normalized_key_code
+            refresh_anti_afk_key_button_text()
+            on_anti_afk_update()
+            return "break"
+
+        def begin_anti_afk_key_capture() -> None:
+            if not anti_afk_supported:
+                return
+            anti_afk_key_capture_active["value"] = True
+            refresh_anti_afk_key_button_text()
+            try:
+                settings_window.focus_force()
+            except tk.TclError:
+                pass
+
+        def capture_anti_afk_key(event: tk.Event) -> Optional[str]:
+            if not anti_afk_key_capture_active["value"]:
+                return None
+            captured_key = normalize_anti_afk_event_key(event)
+            if captured_key is None:
+                return "break"
+            return finish_anti_afk_key_capture(*captured_key)
+
+        def capture_anti_afk_mouse(event: tk.Event) -> Optional[str]:
+            if not anti_afk_key_capture_active["value"]:
+                return None
+            captured_key = normalize_anti_afk_event_mouse(event)
+            if captured_key is None:
+                return "break"
+            try:
+                anti_afk_key_capture_release_block["value"] = event.widget is anti_afk_key_button_holder["widget"]
+            except (NameError, AttributeError, tk.TclError):
+                anti_afk_key_capture_release_block["value"] = False
+            return finish_anti_afk_key_capture(*captured_key)
+
+        settings_window.bind("<KeyPress>", capture_anti_afk_key, add="+")
+        settings_window.bind("<ButtonPress>", capture_anti_afk_mouse, add="+")
+
+        def block_anti_afk_capture_button_release(_event: tk.Event) -> Optional[str]:
+            if not anti_afk_key_capture_release_block["value"]:
+                return None
+            anti_afk_key_capture_release_block["value"] = False
+            return "break"
+
+        def on_anti_afk_update(*_: object) -> None:
+            if not anti_afk_supported:
+                anti_afk_enabled_var.set(False)
+                self.settings["anti_afk_enabled"] = False
+                self.save_settings()
+                self._anti_afk_stop()
+                return
+            try:
+                interval = anti_afk_interval_var.get()
+            except (tk.TclError, ValueError):
+                interval = self.ANTI_AFK_DEFAULT_INTERVAL_MINUTES
+            normalized_interval = self._normalize_anti_afk_interval_minutes(interval)
+            if interval != normalized_interval:
+                anti_afk_interval_var.set(normalized_interval)
+
+            key_name = self._normalize_anti_afk_key_name(anti_afk_key_var.get())
+            if anti_afk_key_var.get() != key_name:
+                anti_afk_key_var.set(key_name)
+            key_code = self._normalize_anti_afk_key_code(anti_afk_key_code_state.get("value", 0), key_name)
+            anti_afk_key_code_state["value"] = key_code
+
+            self.settings["anti_afk_enabled"] = bool(anti_afk_enabled_var.get())
+            self.settings["anti_afk_interval_minutes"] = int(normalized_interval)
+            self.settings["anti_afk_key_name"] = key_name
+            self.settings["anti_afk_key_code"] = key_code
+            self.settings["anti_afk_show_next_label"] = bool(anti_afk_show_next_label_var.get())
+            self.save_settings()
+            refresh_anti_afk_key_button_text()
+
+            if self._anti_afk_config_valid():
+                self._anti_afk_start()
+            else:
+                self._anti_afk_stop()
+            self._refresh_anti_afk_next_label()
+
+        anti_afk_control_state = "normal" if anti_afk_supported else "disabled"
+
+        def build_anti_afk_header_action(parent: tk.Misc) -> None:
+            anti_afk_key_button = ttk.Button(
+                parent,
+                textvariable=anti_afk_key_button_text_var,
+                style="Dark.TButton",
+                command=begin_anti_afk_key_capture,
+                state=anti_afk_control_state,
+            )
+            anti_afk_key_button.pack(side="right")
+            anti_afk_key_button.bind("<ButtonRelease>", block_anti_afk_capture_button_release)
+            anti_afk_key_button_holder["widget"] = anti_afk_key_button
+
+        anti_afk_card = create_settings_card(
+            automation_tab,
+            "Anti-AFK",
+            "Keeps Roblox clients active with periodic background input",
+            header_action_builder=build_anti_afk_header_action,
+        )
+
+        ttk.Checkbutton(
+            anti_afk_card,
+            text="Enable Anti-AFK",
+            variable=anti_afk_enabled_var,
+            style="Dark.TCheckbutton",
+            command=on_anti_afk_update,
+            state=anti_afk_control_state,
+        ).pack(anchor="w", pady=(0, 2))
+
+        ttk.Checkbutton(
+            anti_afk_card,
+            text="Show Floating Countdown",
+            variable=anti_afk_show_next_label_var,
+            style="Dark.TCheckbutton",
+            command=on_anti_afk_update,
+            state=anti_afk_control_state,
+        ).pack(anchor="w", pady=(0, 8))
+
+        anti_afk_options_frame = ttk.Frame(anti_afk_card, style="Dark.TFrame")
+        anti_afk_options_frame.pack(fill="x", pady=(0, 2))
+        anti_afk_options_frame.columnconfigure(0, weight=1)
+        anti_afk_options_frame.columnconfigure(1, weight=0)
+
+        ttk.Label(
+            anti_afk_options_frame,
+            text="Interval (minutes)",
+            style="Dark.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6))
+
+        anti_afk_interval_spin = ttk.Spinbox(
+            anti_afk_options_frame,
+            from_=self.ANTI_AFK_MIN_INTERVAL_MINUTES,
+            to=self.ANTI_AFK_MAX_INTERVAL_MINUTES,
+            increment=1,
+            textvariable=anti_afk_interval_var,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_anti_afk_update,
+            state=anti_afk_control_state,
+        )
+        anti_afk_interval_spin.grid(row=0, column=1, sticky="e", pady=(0, 6))
+        anti_afk_interval_spin.bind("<FocusOut>", lambda _evt: on_anti_afk_update())
+        anti_afk_interval_spin.bind("<Return>", lambda _evt: on_anti_afk_update())
+
+        if not anti_afk_supported:
+            ttk.Label(
+                anti_afk_card,
+                text="Windows only.",
+                style="Dark.TLabel",
+                foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+            ).pack(anchor="w", pady=(6, 0))
 
         auto_rejoin_enable_all_var = tk.BooleanVar(
             value=bool(self.settings.get("auto_rejoin_enable_all_accounts", False))
@@ -15546,6 +16471,7 @@ class AccountManagerUI:
                     (
                         f"NoClient: **{'On' if self.settings.get('roblox_headless_mode_enabled', False) else 'Off'}**\n"
                         f"Memory Trim: **{'On' if self.settings.get('auto_memory_trim_enabled', False) else 'Off'}**\n"
+                        f"Anti-AFK: **{'On' if self.settings.get('anti_afk_enabled', False) else 'Off'}**\n"
                         f"Title Rename: **{'On' if self._get_rename_client_titles_enabled() else 'Off'}**"
                     )
                 ),
@@ -15856,6 +16782,16 @@ class AccountManagerUI:
         try:
             self._auto_memory_trim_stop()
         except Exception:
+            pass
+
+        try:
+            self._anti_afk_stop()
+        except (AttributeError, RuntimeError, tk.TclError):
+            pass
+
+        try:
+            self._cancel_anti_afk_next_label_update()
+        except (AttributeError, RuntimeError, tk.TclError):
             pass
 
         try:
