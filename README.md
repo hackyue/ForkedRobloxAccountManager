@@ -10,8 +10,8 @@ A powerful tool for managing multiple Roblox accounts with secure cookie extract
 Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <br>
 ⭐ If you like this project, please consider starring the repository! ⭐<br>
 
-<img width="446" height="528" alt="image" src="https://i.ibb.co/Q3h0fhd9/Screenshot-2026-02-19-231414.png" />
-<img width="298" height="347" alt="image" src="https://i.ibb.co/HLtykp6J/Screenshot-2026-02-19-231613.png" />
+<img width="446" height="528" alt="image" src="https://i.ibb.co/B5XTTrJ6/mainimage.png" />
+<img width="298" height="347" alt="image" src="https://i.ibb.co/yBMDTTB3/settingsimage.png" />
 
 
 ## ✨ Features
