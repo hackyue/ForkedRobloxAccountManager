@@ -1346,7 +1346,7 @@ class AccountManagerUI:
     ANTI_AFK_WAIT_CHECK_SECONDS: int = 60
     ANTI_AFK_DEFAULT_KEY_NAME: str = "M1"
     ANTI_AFK_DEFAULT_KEY_CODE: int = 0
-    ANTI_AFK_MOUSE_BUTTON_NAMES: dict[str, str] = {
+    ANTI_AFK_MOUSE_BUTTON_ALIASES: dict[str, str] = {
         "m1": "M1",
         "mouse1": "M1",
         "left click": "M1",
@@ -1360,28 +1360,16 @@ class AccountManagerUI:
         "middle click": "M3",
         "button 2": "M3",
     }
-    ANTI_AFK_KEY_CODES: dict[str, int] = {
-        "F13": 0x7C,
-        "F14": 0x7D,
-        "F15": 0x7E,
-        "F16": 0x7F,
-        "F17": 0x80,
-        "F18": 0x81,
-        "F19": 0x82,
-        "F20": 0x83,
-        "F21": 0x84,
-        "F22": 0x85,
-        "F23": 0x86,
-        "F24": 0x87,
-        "Space": 0x20,
-        "W": 0x57,
-        "A": 0x41,
-        "S": 0x53,
-        "D": 0x44,
-        "Up Arrow": 0x26,
-        "Down Arrow": 0x28,
-        "Left Arrow": 0x25,
-        "Right Arrow": 0x27,
+    ANTI_AFK_KEY_NAME_ALIASES: dict[str, str] = {
+        "space": "Space",
+        "up": "Up Arrow",
+        "up arrow": "Up Arrow",
+        "down": "Down Arrow",
+        "down arrow": "Down Arrow",
+        "left": "Left Arrow",
+        "left arrow": "Left Arrow",
+        "right": "Right Arrow",
+        "right arrow": "Right Arrow",
     }
     KEEP_CLIENTS_ARRANGED_INTERVAL_MS = 5000
     ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS = 2
@@ -2640,13 +2628,13 @@ class AccountManagerUI:
             return self.ANTI_AFK_DEFAULT_KEY_NAME
 
         normalized_lookup_name = raw_key_name.replace("_", " ").casefold()
-        mouse_button_name = self.ANTI_AFK_MOUSE_BUTTON_NAMES.get(normalized_lookup_name)
+        mouse_button_name = self.ANTI_AFK_MOUSE_BUTTON_ALIASES.get(normalized_lookup_name)
         if mouse_button_name:
             return mouse_button_name
 
-        for key_name in self.ANTI_AFK_KEY_CODES.keys():
-            if raw_key_name.casefold() == key_name.casefold():
-                return key_name
+        keyboard_key_name = self.ANTI_AFK_KEY_NAME_ALIASES.get(normalized_lookup_name)
+        if keyboard_key_name:
+            return keyboard_key_name
 
         if len(raw_key_name) == 1:
             return raw_key_name.upper()
@@ -2657,6 +2645,25 @@ class AccountManagerUI:
 
         return raw_key_name.replace("_", " ")
 
+    def _get_anti_afk_legacy_key_code(self, key_name: str) -> int:
+        if len(key_name) == 1:
+            character = key_name.upper()
+            if "A" <= character <= "Z" or "0" <= character <= "9":
+                return ord(character)
+
+        function_key_match = re.fullmatch(r"(?i)f([1-9]|1[0-9]|2[0-4])", key_name)
+        if function_key_match:
+            return 0x70 + int(function_key_match.group(1)) - 1
+
+        special_key_codes = {
+            "Space": 0x20,
+            "Left Arrow": 0x25,
+            "Up Arrow": 0x26,
+            "Right Arrow": 0x27,
+            "Down Arrow": 0x28,
+        }
+        return int(special_key_codes.get(key_name, self.ANTI_AFK_DEFAULT_KEY_CODE))
+
     def _normalize_anti_afk_key_code(self, value: Any, key_name: str) -> int:
         if key_name in {"M1", "M2", "M3"}:
             return self.ANTI_AFK_DEFAULT_KEY_CODE
@@ -2666,12 +2673,7 @@ class AccountManagerUI:
             key_code = 0
         if key_code > 0:
             return key_code
-        return int(
-            self.ANTI_AFK_KEY_CODES.get(
-                key_name,
-                self.ANTI_AFK_KEY_CODES["F15"],
-            )
-        )
+        return self._get_anti_afk_legacy_key_code(key_name)
 
     def _get_anti_afk_key_name(self) -> str:
         key_name = self._normalize_anti_afk_key_name(
@@ -3094,6 +3096,8 @@ class AccountManagerUI:
                 )
                 win32gui.PostMessage(hwnd, getattr(win32con, up_name, up_default), 0, mouse_lparam)
             else:
+                if key_code <= 0:
+                    return False
                 win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYDOWN", 0x0100), key_code, 1)
                 win32gui.PostMessage(
                     hwnd,
@@ -13851,14 +13855,7 @@ class AccountManagerUI:
             keysym = str(getattr(event, "keysym", "") or "").strip()
             if not keysym:
                 return None
-            key_name_aliases = {
-                "space": "Space",
-                "Up": "Up Arrow",
-                "Down": "Down Arrow",
-                "Left": "Left Arrow",
-                "Right": "Right Arrow",
-            }
-            key_name = self._normalize_anti_afk_key_name(key_name_aliases.get(keysym, keysym))
+            key_name = self._normalize_anti_afk_key_name(keysym)
             try:
                 key_code = int(getattr(event, "keycode", 0) or 0)
             except (TypeError, ValueError, tk.TclError):
