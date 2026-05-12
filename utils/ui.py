@@ -1865,6 +1865,7 @@ class AccountManagerUI:
             "confirm_before_launch": False,
             "randomize_server_job_ids": False,
             "prefer_small_public_servers": False,
+            "pick_server_per_account": False,
             "max_recent_games": 10,
             "enable_multi_select": False,
             "multi_select_keybind": MULTI_SELECT_KEYBIND_DEFAULT,
@@ -12161,6 +12162,7 @@ class AccountManagerUI:
         launch_delay = self._get_multi_launch_delay()
         randomize_server_jobs = self.settings.get("randomize_server_job_ids", False)
         prefer_small_servers = self.settings.get("prefer_small_public_servers", False)
+        pick_server_per_account = self.settings.get("pick_server_per_account", False)
 
         def run_launch_batch(
             selected_usernames: list[str],
@@ -12172,6 +12174,7 @@ class AccountManagerUI:
             delay_seconds: float,
             randomize_jobs: bool,
             prefer_small: bool,
+            pick_per_account: bool,
             active_launch_mode: str,
             join_input_text: Any,
         ) -> dict[str, Any]:
@@ -12186,15 +12189,18 @@ class AccountManagerUI:
                     recent_join_username = entered
                 else:
                     recent_join_username = RobloxAPI.get_username_from_user_id(pid) or ""
+            public_server_selection_enabled = bool(randomize_jobs or prefer_small or pick_per_account)
             if active_launch_mode == "join_user":
                 if psid:
                     print("[INFO] Private server ID is ignored in Join User mode.")
-                if randomize_jobs or prefer_small:
+                if public_server_selection_enabled:
                     print("[INFO] Public server selection settings are ignored in Join User mode.")
             if randomize_jobs and manual_job_id:
                 print("[INFO] Random Job ID setting ignored because a manual Job ID is set.")
             if prefer_small and manual_job_id:
                 print("[INFO] Lowest-population server setting ignored because a manual Job ID is set.")
+            if pick_per_account and manual_job_id:
+                print("[INFO] Per-account server selection setting ignored because a manual Job ID is set.")
             if prefer_small and randomize_jobs and not psid and not manual_job_id and active_launch_mode != "join_user":
                 print("[INFO] Lowest-population server setting is enabled; random server selection will be ignored.")
 
@@ -12214,11 +12220,13 @@ class AccountManagerUI:
                 ) or []
                 public_server_pool_loaded = True
                 if public_server_job_pool:
-                    mode_label = "low-population" if prefer_small else "randomized"
+                    mode_label = "low-population" if prefer_small else ("randomized" if randomize_jobs else "per-account")
                     print(f"[INFO] Loaded {len(public_server_job_pool)} {mode_label} public server candidates for this launch batch.")
                     return public_server_job_pool.pop(0)
                 if prefer_small:
                     print("[INFO] Low-population public server unavailable; launching without job ID override.")
+                elif pick_per_account:
+                    print("[INFO] Per-account public server selection unavailable; launching without job ID override.")
                 else:
                     print("[INFO] Random public server unavailable; launching without randomized job ID.")
                 return ""
@@ -12242,11 +12250,15 @@ class AccountManagerUI:
                         server_job_id = take_public_server_job_id()
                     elif randomize_jobs and not account_private_server:
                         server_job_id = take_public_server_job_id()
+                    elif pick_per_account and not account_private_server:
+                        server_job_id = take_public_server_job_id()
 
                     if randomize_jobs and account_private_server:
                         print(f"[INFO] Random Job ID setting ignored for {uname} because a private server link code is set.")
                     if prefer_small and account_private_server:
                         print(f"[INFO] Lowest-population server setting ignored for {uname} because a private server link code is set.")
+                    if pick_per_account and account_private_server:
+                        print(f"[INFO] Per-account server selection setting ignored for {uname} because a private server link code is set.")
 
                     before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
                     effective_auto_rejoin = self._get_effective_auto_rejoin_enabled(uname)
@@ -12270,7 +12282,7 @@ class AccountManagerUI:
                         active_launch_mode != "join_user"
                         and (not launched)
                         and server_job_id
-                        and (randomize_jobs or prefer_small)
+                        and public_server_selection_enabled
                         and not account_private_server
                         and not manual_job_id
                     ):
@@ -12379,6 +12391,7 @@ class AccountManagerUI:
             launch_delay,
             randomize_server_jobs,
             prefer_small_servers,
+            pick_server_per_account,
             launch_mode,
             join_input_override if join_input_override is not None else target_value,
         )
@@ -12625,6 +12638,7 @@ class AccountManagerUI:
         confirm_launch_var = tk.BooleanVar(value=self.settings.get("confirm_before_launch", False))
         randomize_job_id_var = tk.BooleanVar(value=self.settings.get("randomize_server_job_ids", False))
         prefer_small_servers_var = tk.BooleanVar(value=self.settings.get("prefer_small_public_servers", False))
+        pick_server_per_account_var = tk.BooleanVar(value=self.settings.get("pick_server_per_account", False))
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         multi_select_text_var = tk.StringVar(value=self._get_multi_select_label_text())
         active_client_indicator_var = tk.BooleanVar(value=self.settings.get("show_active_client_indicator", True))
@@ -13370,6 +13384,14 @@ class AccountManagerUI:
             variable=prefer_small_servers_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("prefer_small_public_servers", prefer_small_servers_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            server_selection_card,
+            text="Server For Each Account",
+            variable=pick_server_per_account_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("pick_server_per_account", pick_server_per_account_var)
         ).pack(anchor="w", pady=2)
 
         launch_delay_card = create_settings_card(
