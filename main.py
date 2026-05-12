@@ -258,20 +258,17 @@ def main():
     install_bug_issue_hooks(root, app)
 
     if not icon_path:
-        def _load_icon_async():
+        def _load_icon_async() -> None:
             downloaded_icon_path = setup_icon(data_folder, allow_network=True)
             if not downloaded_icon_path:
                 return
 
-            def _apply_icon():
-                try:
-                    root.iconbitmap(default=downloaded_icon_path)
-                except Exception:
-                    pass
+            def _apply_icon() -> None:
+                app.set_icon_path(downloaded_icon_path)
 
             try:
                 root.after(0, _apply_icon)
-            except Exception:
+            except (RuntimeError, tk.TclError):
                 pass
 
         threading.Thread(target=_load_icon_async, daemon=True, name="load-app-icon").start()

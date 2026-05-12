@@ -1383,7 +1383,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.5.2"
+        self.APP_VERSION = "2.5.3"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -1516,7 +1516,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.5.2 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.5.3 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -4034,24 +4034,75 @@ class AccountManagerUI:
             except tk.TclError:
                 pass
 
-    def register_toplevel(self, window):
+    def register_toplevel(self, window: Any) -> None:
         if window in self.themable_windows:
+            self._apply_window_icon(window)
             self._apply_title_bar_theme(window)
             return
 
         self.themable_windows.add(window)
 
-        def _cleanup(event, win=window):
+        def _cleanup(event: tk.Event, win: Any = window) -> None:
             self.themable_windows.discard(win)
             self._theme_refresh_callbacks.pop(win, None)
 
         try:
             window.bind("<Destroy>", _cleanup, add="+")
             window.bind("<Map>", self._handle_window_map, add="+")
-        except Exception:
+        except (AttributeError, RuntimeError, tk.TclError):
             pass
 
+        self._apply_window_icon(window)
         self._apply_title_bar_theme(window)
+
+    def set_icon_path(self, icon_path: Optional[str]) -> None:
+        if not icon_path:
+            return
+
+        try:
+            icon_file_path = Path(icon_path)
+            if not icon_file_path.is_file():
+                return
+        except (OSError, ValueError):
+            return
+
+        self.icon_path = str(icon_file_path)
+        self._apply_window_icon_all()
+
+    def _apply_window_icon_all(self) -> None:
+        stale_windows: list[Any] = []
+        for window in list(self.themable_windows):
+            try:
+                if window.winfo_exists():
+                    self._apply_window_icon(window)
+                else:
+                    stale_windows.append(window)
+            except (AttributeError, RuntimeError, tk.TclError):
+                stale_windows.append(window)
+
+        for window in stale_windows:
+            self.themable_windows.discard(window)
+
+    def _apply_window_icon(self, window: Any) -> None:
+        icon_path = str(self.icon_path or "").strip()
+        if not icon_path:
+            return
+
+        try:
+            if not Path(icon_path).is_file():
+                return
+        except (OSError, ValueError):
+            return
+
+        try:
+            window.iconbitmap(icon_path)
+        except tk.TclError:
+            pass
+
+        try:
+            window.iconbitmap(default=icon_path)
+        except tk.TclError:
+            pass
 
     def register_theme_refresh(self, window, callback):
         if window is None or callback is None:
