@@ -182,39 +182,6 @@ class FastFlagsManager:
             print(f"[ERROR] Failed to save FastFlags to {file_path}: {e}")
             return False
     
-    def apply_preset(self, preset_name):
-        """Apply a preset configuration"""
-        if preset_name not in self.presets:
-            print(f"[ERROR] Preset '{preset_name}' not found")
-            return False
-        
-        current_flags = self.load_fast_flags()
-        preset_flags = self.presets[preset_name]
-        
-        # Apply preset flags (merge with existing)
-        current_flags.update(preset_flags)
-        
-        return self.save_fast_flags(current_flags)
-    
-    def set_flag(self, flag_name, flag_value):
-        """Set a single FastFlag"""
-        current_flags = self.load_fast_flags()
-        current_flags[flag_name] = flag_value
-        return self.save_fast_flags(current_flags)
-    
-    def remove_flag(self, flag_name):
-        """Remove a FastFlag"""
-        current_flags = self.load_fast_flags()
-        if flag_name in current_flags:
-            del current_flags[flag_name]
-            return self.save_fast_flags(current_flags)
-        return True
-    
-    def get_flag_value(self, flag_name):
-        """Get the value of a specific FastFlag"""
-        current_flags = self.load_fast_flags()
-        return current_flags.get(flag_name)
-    
     def reset_to_default(self):
         """Reset all FastFlags to default (clear file)"""
         file_path = self.get_fast_flags_file()
@@ -287,33 +254,3 @@ class FastFlagsManager:
         
         return True, "Valid flag name format"
     
-    def validate_flag_value(self, flag_value):
-        """Validate FastFlag value"""
-        # FastFlags can be strings, numbers, or booleans
-        if not flag_value:
-            return False, "Flag value cannot be empty"
-        
-        try:
-            # Try to parse as JSON to validate format
-            parsed = json.loads(flag_value)
-            
-            # Check if it's a valid type
-            if isinstance(parsed, (str, int, float, bool)):
-                return True, f"Valid {type(parsed).__name__} value"
-            else:
-                return False, (
-                    "Invalid value type. FastFlags only support:\n"
-                    "• Strings: \"hello\" or 'hello'\n"
-                    "• Numbers: 60, 3.14\n"
-                    "• Booleans: true or false\n\n"
-                    f"Got: {type(parsed).__name__}"
-                )
-        except json.JSONDecodeError as e:
-            return False, (
-                f"Invalid JSON format: {str(e)}\n\n"
-                "Valid examples:\n"
-                "• String: \"enabled\" or 'enabled'\n"
-                "• Integer: 60\n"
-                "• Float: 3.14\n"
-                "• Boolean: true or false"
-            )
