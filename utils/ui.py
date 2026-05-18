@@ -14337,16 +14337,17 @@ class AccountManagerUI:
             self.save_settings()
 
             if browser_value_to_label:
-                browser_pref_label_var = tk.StringVar(
-                    value=browser_value_to_label.get(current_browser_pref, next(iter(browser_value_to_label.values())))
+                current_browser_label = browser_value_to_label.get(
+                    current_browser_pref,
+                    next(iter(browser_value_to_label.values())),
                 )
                 browser_combo = ttk.Combobox(
                     browser_selector_frame,
                     values=list(browser_value_to_label.values()),
-                    textvariable=browser_pref_label_var,
                     state="readonly",
                     style="Dark.TCombobox",
                 )
+                browser_combo.set(current_browser_label)
                 browser_combo.pack(fill="x", pady=(0, 4))
 
                 def on_browser_preference_change(_event: Optional[tk.Event] = None) -> None:
