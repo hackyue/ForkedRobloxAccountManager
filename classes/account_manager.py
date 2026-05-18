@@ -14,7 +14,7 @@ import subprocess
 import re
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from urllib.parse import urlparse, parse_qs
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -33,6 +33,7 @@ except Exception:
 
 from .encryption import HardwareEncryption, PasswordEncryption, EncryptionConfig
 from .roblox_api import RobloxAPI
+from .browser_extensions import BrowserExtensionError, BrowserExtensionManager
 
 
 class RobloxAccountManager:
@@ -72,6 +73,8 @@ class RobloxAccountManager:
         self.temp_profile_dirs = set()
         self._temp_profile_lock = threading.Lock()
         self.auto_rejoin_monitor = None
+        self.browser_extension_manager: BrowserExtensionManager = BrowserExtensionManager(Path(self.data_folder))
+        self.browser_extension_manager.ensure_storage()
         
     def load_accounts(self):
         """Load saved accounts from JSON file"""
@@ -236,6 +239,16 @@ class RobloxAccountManager:
     def get_managed_chromium_root(self) -> Path:
         return Path(self.data_folder) / "browser_automation" / "chromium"
 
+    def get_browser_extension_manager(self) -> BrowserExtensionManager:
+        return self.browser_extension_manager
+
+    def get_enabled_browser_extension_paths(self) -> list[Path]:
+        try:
+            return self.browser_extension_manager.get_enabled_extension_paths()
+        except BrowserExtensionError as exc:
+            print(f"[WARNING] Browser extensions could not be loaded: {exc}")
+            return []
+
     def get_managed_chromium_binary_path(self) -> Optional[Path]:
         root = self.get_managed_chromium_root()
         candidates = [
@@ -339,7 +352,13 @@ class RobloxAccountManager:
             return ["chromium", "chrome", "firefox"]
         return ["chrome", "firefox"]
 
-    def _create_chrome_options(self, profile_dir: str, headless: bool = False, binary_path: Optional[Path] = None) -> Options:
+    def _create_chrome_options(
+        self,
+        profile_dir: str,
+        headless: bool = False,
+        binary_path: Optional[Path] = None,
+        extension_paths: Optional[Sequence[Path]] = None,
+    ) -> Options:
         chrome_options = Options()
         if binary_path is not None:
             chrome_options.binary_location = str(binary_path)
@@ -362,7 +381,17 @@ class RobloxAccountManager:
         exclude_switches = {"enable-automation", "enable-logging"}
         chrome_options.add_experimental_option("excludeSwitches", sorted(exclude_switches))
 
-        chrome_options.add_argument("--disable-extensions")
+        resolved_extension_paths = [
+            str(Path(extension_path).resolve())
+            for extension_path in (extension_paths or [])
+            if Path(extension_path).is_dir()
+        ]
+        if resolved_extension_paths:
+            extension_arg = ",".join(resolved_extension_paths)
+            chrome_options.add_argument(f"--disable-extensions-except={extension_arg}")
+            chrome_options.add_argument(f"--load-extension={extension_arg}")
+        else:
+            chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--disable-plugins")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--no-sandbox")
@@ -418,6 +447,7 @@ class RobloxAccountManager:
                 profile_dir,
                 headless=headless,
                 binary_path=browser_binary_path,
+                extension_paths=self.get_enabled_browser_extension_paths(),
             )
             service = Service(
                 str(driver_binary_path),

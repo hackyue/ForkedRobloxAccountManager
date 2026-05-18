@@ -49,6 +49,7 @@ else:
 
 from classes.roblox_api import RobloxAPI
 from classes.fastflags import FastFlagsManager
+from classes.browser_extensions import BrowserExtension, BrowserExtensionError, BrowserExtensionManager
 
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
@@ -1517,6 +1518,7 @@ class AccountManagerUI:
         self.fastflags_window = None
         self.instance_manager_window = None
         self.addons_window = None
+        self.browser_extensions_window = None
         self.discord_log_mirror_window = None
 
         self.style = ttk.Style()
@@ -1542,6 +1544,12 @@ class AccountManagerUI:
             os.makedirs(self.data_folder)
         self.addons_folder = os.path.join(self.data_folder, "addons")
         self._ensure_addons_folder()
+        self.browser_extension_manager: BrowserExtensionManager
+        if hasattr(self.manager, "get_browser_extension_manager"):
+            self.browser_extension_manager = self.manager.get_browser_extension_manager()
+        else:
+            self.browser_extension_manager = BrowserExtensionManager(Path(self.data_folder))
+            self.browser_extension_manager.ensure_storage()
 
         self.settings_file = os.path.join(self.data_folder, "ui_settings.json")
         self.custom_themes_file = os.path.join(self.data_folder, "custom_themes.json")
@@ -6570,6 +6578,382 @@ class AccountManagerUI:
         final_width = min(window.winfo_reqwidth() + 20, max(window.winfo_screenwidth() - 80, 320))
         final_height = min(window.winfo_reqheight() + 20, max(window.winfo_screenheight() - 80, 240))
         self._center_window(window, final_width, final_height)
+        window.deiconify()
+
+    def open_browser_extensions_window(self) -> None:
+        manager: BrowserExtensionManager = self.browser_extension_manager
+        manager.ensure_storage()
+
+        existing_window = getattr(self, "browser_extensions_window", None)
+        if existing_window and existing_window.winfo_exists():
+            existing_window.deiconify()
+            existing_window.lift()
+            existing_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("Extension Manager")
+        window.configure(bg=self.BG_DARK)
+        window.withdraw()
+        window.transient(self.root)
+        window.resizable(True, True)
+        window.minsize(780, 500)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+        self.browser_extensions_window = window
+
+        main_frame = ttk.Frame(window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=16, pady=14)
+        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_rowconfigure(1, weight=1)
+
+        header_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        ttk.Label(
+            header_frame,
+            text="Extension Manager",
+            style="Dark.TLabel",
+            font=("Segoe UI", 14, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        ttk.Label(
+            header_frame,
+            text="This feature only works with Chromium.",
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        status_var = tk.StringVar()
+
+        content_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        content_frame.grid(row=1, column=0, sticky="nsew")
+        content_frame.grid_columnconfigure(0, weight=1)
+        content_frame.grid_rowconfigure(0, weight=1)
+
+        columns = ("enabled", "name", "source", "extension_id", "manifest")
+        tree = ttk.Treeview(
+            content_frame,
+            columns=columns,
+            show="headings",
+            selectmode="extended",
+            style="Dark.Treeview",
+        )
+        tree.heading("enabled", text="Enabled")
+        tree.heading("name", text="Name")
+        tree.heading("source", text="Source")
+        tree.heading("extension_id", text="Extension ID")
+        tree.heading("manifest", text="Manifest")
+        tree.column("enabled", width=80, anchor="center", stretch=False)
+        tree.column("name", width=220, anchor="w")
+        tree.column("source", width=120, anchor="w", stretch=False)
+        tree.column("extension_id", width=250, anchor="w")
+        tree.column("manifest", width=80, anchor="center", stretch=False)
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        tree_scroll = ttk.Scrollbar(content_frame, orient="vertical", command=tree.yview)
+        tree_scroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=tree_scroll.set)
+
+        action_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        action_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        for column_index in range(4):
+            action_frame.grid_columnconfigure(column_index, weight=1)
+
+        ttk.Label(
+            action_frame,
+            textvariable=status_var,
+            style="Dark.TLabel",
+            font=("Segoe UI", 9),
+            foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+
+        extension_cache: dict[str, BrowserExtension] = {}
+        task_buttons: list[ttk.Button] = []
+
+        def is_chromium_ready() -> bool:
+            try:
+                return "chromium" in self._get_available_browsers()
+            except (AttributeError, OSError, RuntimeError, TypeError):
+                return False
+
+        def refresh_status() -> None:
+            count = len(extension_cache)
+            enabled_count = len([extension for extension in extension_cache.values() if extension.enabled])
+            if is_chromium_ready():
+                status_var.set(
+                    f"{count} extension(s), {enabled_count} enabled. Enabled extensions load when Browser Automation uses Chromium."
+                )
+            else:
+                status_var.set(
+                    f"{count} extension(s), {enabled_count} enabled. Install Chromium before enabled extensions can load."
+                )
+
+        def refresh_tree(select_key: str = "") -> None:
+            extension_cache.clear()
+            for item in tree.get_children():
+                tree.delete(item)
+
+            try:
+                extensions = manager.list_extensions()
+            except BrowserExtensionError as exc:
+                status_var.set(str(exc))
+                messagebox.showerror("Extension Manager", str(exc), parent=window)
+                return
+
+            for extension in extensions:
+                extension_cache[extension.key] = extension
+                tree.insert(
+                    "",
+                    "end",
+                    iid=extension.key,
+                    values=(
+                        "Yes" if extension.enabled else "No",
+                        extension.name,
+                        extension.display_source,
+                        extension.extension_id,
+                        extension.manifest_version or "",
+                    ),
+                )
+
+            if select_key and tree.exists(select_key):
+                tree.selection_set(select_key)
+                tree.focus(select_key)
+            refresh_status()
+
+        def selected_extensions() -> list[BrowserExtension]:
+            selected: list[BrowserExtension] = []
+            for key in tree.selection():
+                extension = extension_cache.get(str(key))
+                if extension is not None:
+                    selected.append(extension)
+            return selected
+
+        def set_task_buttons_enabled(enabled: bool) -> None:
+            state = "normal" if enabled else "disabled"
+            for button in task_buttons:
+                try:
+                    button.configure(state=state)
+                except tk.TclError:
+                    pass
+
+        def schedule_ui(callback: Callable[[], None]) -> None:
+            def guarded_callback() -> None:
+                try:
+                    if window.winfo_exists():
+                        callback()
+                except tk.TclError:
+                    pass
+
+            try:
+                self.root.after(0, guarded_callback)
+            except tk.TclError:
+                pass
+
+        def run_manager_task(
+            status_text: str,
+            worker_func: Callable[[], Any],
+            success_callback: Callable[[Any], None],
+        ) -> None:
+            set_task_buttons_enabled(False)
+            status_var.set(status_text)
+
+            def worker() -> None:
+                try:
+                    result = worker_func()
+                except BrowserExtensionError as exc:
+                    error_message = str(exc)
+
+                    def apply_error() -> None:
+                        set_task_buttons_enabled(True)
+                        status_var.set(error_message)
+                        messagebox.showerror("Extension Manager", error_message, parent=window)
+
+                    schedule_ui(apply_error)
+                    return
+
+                def apply_success() -> None:
+                    set_task_buttons_enabled(True)
+                    success_callback(result)
+
+                schedule_ui(apply_success)
+
+            threading.Thread(target=worker, daemon=True, name="browser-extension-manager").start()
+
+        def add_extension_id() -> None:
+            extension_id = simpledialog.askstring(
+                "Add Extension",
+                "Extension ID or Chrome Web Store URL:",
+                parent=window,
+            )
+            if extension_id is None:
+                return
+            extension_id = extension_id.strip()
+            if not extension_id:
+                return
+
+            def on_success(result: Any) -> None:
+                extension = result if isinstance(result, BrowserExtension) else None
+                refresh_tree(extension.key if extension is not None else "")
+                status_var.set(f"Added {extension.name}." if extension is not None else "Extension added.")
+
+            run_manager_task(
+                "Downloading extension...",
+                lambda: manager.add_from_extension_id(extension_id),
+                on_success,
+            )
+
+        def import_crx() -> None:
+            file_path = filedialog.askopenfilename(
+                parent=window,
+                title="Import CRX Extension",
+                filetypes=(("CRX files", "*.crx"), ("All files", "*.*")),
+            )
+            if not file_path:
+                return
+
+            def on_success(result: Any) -> None:
+                extension = result if isinstance(result, BrowserExtension) else None
+                refresh_tree(extension.key if extension is not None else "")
+                status_var.set(f"Imported {extension.name}." if extension is not None else "CRX imported.")
+
+            run_manager_task(
+                "Importing CRX...",
+                lambda: manager.add_from_crx(file_path),
+                on_success,
+            )
+
+        def import_unpacked() -> None:
+            folder_path = filedialog.askdirectory(parent=window, title="Import Unpacked Extension")
+            if not folder_path:
+                return
+
+            def on_success(result: Any) -> None:
+                extension = result if isinstance(result, BrowserExtension) else None
+                refresh_tree(extension.key if extension is not None else "")
+                status_var.set(f"Imported {extension.name}." if extension is not None else "Folder imported.")
+
+            run_manager_task(
+                "Importing unpacked extension...",
+                lambda: manager.add_from_unpacked(folder_path),
+                on_success,
+            )
+
+        def toggle_selected() -> None:
+            extensions = selected_extensions()
+            if not extensions:
+                messagebox.showwarning("Extension Manager", "Select at least one extension first.", parent=window)
+                return
+            target_enabled = not all(extension.enabled for extension in extensions)
+            try:
+                for extension in extensions:
+                    manager.set_extension_enabled(extension.key, target_enabled)
+            except BrowserExtensionError as exc:
+                messagebox.showerror("Extension Manager", str(exc), parent=window)
+                return
+            selected_keys = [extension.key for extension in extensions]
+            refresh_tree(selected_keys[0] if selected_keys else "")
+            for key in selected_keys:
+                if tree.exists(key):
+                    tree.selection_add(key)
+            status_var.set("Selected extension(s) enabled." if target_enabled else "Selected extension(s) disabled.")
+
+        def remove_selected() -> None:
+            extensions = selected_extensions()
+            if not extensions:
+                messagebox.showwarning("Extension Manager", "Select at least one extension first.", parent=window)
+                return
+            confirmed = messagebox.askyesno(
+                "Remove Extension",
+                f"Remove {len(extensions)} selected extension(s)?",
+                parent=window,
+            )
+            if not confirmed:
+                return
+            try:
+                for extension in extensions:
+                    manager.remove_extension(extension.key)
+            except BrowserExtensionError as exc:
+                messagebox.showerror("Extension Manager", str(exc), parent=window)
+                return
+            refresh_tree()
+            status_var.set("Selected extension(s) removed.")
+
+        def use_chromium() -> None:
+            if not is_chromium_ready():
+                messagebox.showwarning(
+                    "Extension Manager",
+                    "Chromium is not installed. Use Browser Automation to download it first.",
+                    parent=window,
+                )
+                return
+            self.settings["browser_preference"] = "chromium"
+            self.save_settings()
+            refresh_status()
+            status_var.set("Browser Automation is set to Chromium.")
+
+        def open_extensions_folder() -> None:
+            target_path = manager.extensions_folder
+            try:
+                if hasattr(os, "startfile"):
+                    os.startfile(str(target_path))
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", str(target_path)], **subprocess_no_window_kwargs())
+                else:
+                    subprocess.Popen(["xdg-open", str(target_path)], **subprocess_no_window_kwargs())
+            except OSError as exc:
+                messagebox.showerror("Extension Manager", f"Failed to open folder:\n{exc}", parent=window)
+
+        def close_window() -> None:
+            self.browser_extensions_window = None
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+
+        add_id_button = ttk.Button(action_frame, text="Add ID", style="Dark.TButton", command=add_extension_id)
+        add_id_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=3)
+        task_buttons.append(add_id_button)
+
+        import_crx_button = ttk.Button(action_frame, text="Import CRX", style="Dark.TButton", command=import_crx)
+        import_crx_button.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
+        task_buttons.append(import_crx_button)
+
+        import_folder_button = ttk.Button(
+            action_frame,
+            text="Import Folder",
+            style="Dark.TButton",
+            command=import_unpacked,
+        )
+        import_folder_button.grid(row=0, column=2, sticky="ew", padx=4, pady=3)
+        task_buttons.append(import_folder_button)
+
+        toggle_button = ttk.Button(action_frame, text="Enable / Disable", style="Dark.TButton", command=toggle_selected)
+        toggle_button.grid(row=0, column=3, sticky="ew", padx=(4, 0), pady=3)
+        task_buttons.append(toggle_button)
+
+        remove_button = ttk.Button(action_frame, text="Remove", style="Dark.TButton", command=remove_selected)
+        remove_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=3)
+        task_buttons.append(remove_button)
+
+        use_chromium_button = ttk.Button(action_frame, text="Use Chromium", style="Dark.TButton", command=use_chromium)
+        use_chromium_button.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+
+        open_folder_button = ttk.Button(action_frame, text="Open Folder", style="Dark.TButton", command=open_extensions_folder)
+        open_folder_button.grid(row=1, column=2, sticky="ew", padx=4, pady=3)
+
+        close_button = ttk.Button(action_frame, text="Close", style="Dark.TButton", command=close_window)
+        close_button.grid(row=1, column=3, sticky="ew", padx=(4, 0), pady=3)
+
+        tree.bind("<Double-Button-1>", lambda _event: toggle_selected())
+        window.protocol("WM_DELETE_WINDOW", close_window)
+        refresh_tree()
+        window.update_idletasks()
+        width = max(780, min(window.winfo_reqwidth() + 20, max(window.winfo_screenwidth() - 80, 360)))
+        height = max(500, min(window.winfo_reqheight() + 20, max(window.winfo_screenheight() - 80, 320)))
+        self._center_window(window, width, height)
         window.deiconify()
 
     def refresh_installer_menu(self):
@@ -14668,6 +15052,10 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_addons_window()
 
+        def open_extensions_and_close_settings() -> None:
+            settings_window.destroy()
+            self.open_browser_extensions_window()
+
         fastflags_card = create_settings_card(
             roblox_tab,
             "Fast Flags",
@@ -14679,6 +15067,19 @@ class AccountManagerUI:
             text="Fast Flags Editor",
             style="Dark.TButton",
             command=open_fastflags_and_close_settings
+        ).pack(fill="x")
+
+        extensions_card = create_settings_card(
+            advanced_tab,
+            "Extension Manager",
+            "Manage Chromium browser automation extensions",
+        )
+
+        ttk.Button(
+            extensions_card,
+            text="Extension Manager",
+            style="Dark.TButton",
+            command=open_extensions_and_close_settings
         ).pack(fill="x")
 
         addons_card = create_settings_card(
