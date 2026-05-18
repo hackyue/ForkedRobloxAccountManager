@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import re
 import threading
+from pathlib import Path
+from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -231,11 +233,52 @@ class RobloxAccountManager:
                     if self.temp_profile_dir == target:
                         self.temp_profile_dir = None
 
+    def get_managed_chromium_root(self) -> Path:
+        return Path(self.data_folder) / "browser_automation" / "chromium"
+
+    def get_managed_chromium_binary_path(self) -> Optional[Path]:
+        root = self.get_managed_chromium_root()
+        candidates = [
+            root / "chrome-win64" / "chrome.exe",
+            root / "chrome-win32" / "chrome.exe",
+            root / "chrome-win" / "chrome.exe",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        try:
+            for candidate in sorted(root.glob("chrome-*/chrome.exe")):
+                if candidate.is_file():
+                    return candidate
+        except OSError:
+            return None
+        return None
+
+    def get_managed_chromium_driver_path(self) -> Optional[Path]:
+        root = self.get_managed_chromium_root()
+        candidates = [
+            root / "chromedriver-win64" / "chromedriver.exe",
+            root / "chromedriver-win32" / "chromedriver.exe",
+            root / "chromedriver-win" / "chromedriver.exe",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        try:
+            for candidate in sorted(root.glob("chromedriver-*/chromedriver.exe")):
+                if candidate.is_file():
+                    return candidate
+        except OSError:
+            return None
+        return None
+
     def _is_browser_installed(self, browser_name):
         """Best-effort check for local browser executable presence."""
         name = (browser_name or "").strip().lower()
-        if name not in {"chrome", "firefox"}:
+        if name not in {"chrome", "firefox", "chromium"}:
             return False
+        if name == "chromium":
+            return self.get_managed_chromium_binary_path() is not None and self.get_managed_chromium_driver_path() is not None
         if name == "firefox" and (FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None):
             return False
 
@@ -271,7 +314,11 @@ class RobloxAccountManager:
         return False
 
     def has_supported_browser(self):
-        return self._is_browser_installed("chrome") or self._is_browser_installed("firefox")
+        return (
+            self._is_browser_installed("chrome")
+            or self._is_browser_installed("firefox")
+            or self._is_browser_installed("chromium")
+        )
 
     def get_available_browsers(self):
         available = []
@@ -279,61 +326,69 @@ class RobloxAccountManager:
             available.append("chrome")
         if self._is_browser_installed("firefox"):
             available.append("firefox")
+        if self._is_browser_installed("chromium"):
+            available.append("chromium")
         return available
 
     def _get_browser_preference_order(self, preferred_browser=None):
         preferred = (preferred_browser or "").strip().lower()
-        if preferred in {"chrome", "firefox"}:
-            if preferred == "firefox":
-                return ["firefox", "chrome"]
-            return ["chrome", "firefox"]
+        supported_browsers = ["chrome", "firefox", "chromium"]
+        if preferred in supported_browsers:
+            return [preferred] + [browser_name for browser_name in supported_browsers if browser_name != preferred]
+        if self._is_browser_installed("chromium"):
+            return ["chromium", "chrome", "firefox"]
         return ["chrome", "firefox"]
+
+    def _create_chrome_options(self, profile_dir: str, headless: bool = False, binary_path: Optional[Path] = None) -> Options:
+        chrome_options = Options()
+        if binary_path is not None:
+            chrome_options.binary_location = str(binary_path)
+        chrome_options.add_argument(f"--user-data-dir={profile_dir}")
+        chrome_options.add_argument("--no-first-run")
+        chrome_options.add_argument("--no-default-browser-check")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+
+        chrome_options.add_argument("--log-level=3")
+        chrome_options.add_argument("--silent")
+        chrome_options.add_argument("--disable-logging")
+        chrome_options.add_argument("--disable-gpu-logging")
+        chrome_options.add_argument("--disable-dev-tools")
+        chrome_options.add_argument("--no-default-browser-check")
+        chrome_options.add_argument("--disable-default-apps")
+        chrome_options.add_argument("--disable-web-security")
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+
+        exclude_switches = {"enable-automation", "enable-logging"}
+        chrome_options.add_experimental_option("excludeSwitches", sorted(exclude_switches))
+
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-plugins")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees")
+        chrome_options.add_argument("--disable-background-timer-throttling")
+        chrome_options.add_argument("--disable-renderer-backgrounding")
+        chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+        chrome_options.add_argument("--disable-component-extensions-with-background-pages")
+        chrome_options.add_argument("--disable-ipc-flooding-protection")
+        chrome_options.add_argument("--disable-hang-monitor")
+        chrome_options.add_argument("--disable-prompt-on-repost")
+        chrome_options.add_argument("--disable-domain-reliability")
+        chrome_options.add_argument("--disable-component-update")
+        chrome_options.add_argument("--disable-background-networking")
+        chrome_options.add_argument("--aggressive-cache-discard")
+        if headless:
+            chrome_options.add_argument("--headless=new")
+            chrome_options.add_argument("--window-size=520,700")
+        return chrome_options
 
     def _setup_chrome_driver(self, headless=False):
         """Setup Chrome driver with speed-oriented options."""
         profile_dir = self.create_temp_profile()
         try:
-            chrome_options = Options()
-            chrome_options.add_argument(f"--user-data-dir={profile_dir}")
-            chrome_options.add_argument("--no-first-run")
-            chrome_options.add_argument("--no-default-browser-check")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-
-            chrome_options.add_argument("--log-level=3")
-            chrome_options.add_argument("--silent")
-            chrome_options.add_argument("--disable-logging")
-            chrome_options.add_argument("--disable-gpu-logging")
-            chrome_options.add_argument("--disable-dev-tools")
-            chrome_options.add_argument("--no-default-browser-check")
-            chrome_options.add_argument("--disable-default-apps")
-            chrome_options.add_argument("--disable-web-security")
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-
-            exclude_switches = {"enable-automation", "enable-logging"}
-            chrome_options.add_experimental_option("excludeSwitches", sorted(exclude_switches))
-
-            chrome_options.add_argument("--disable-extensions")
-            chrome_options.add_argument("--disable-plugins")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees")
-            chrome_options.add_argument("--disable-background-timer-throttling")
-            chrome_options.add_argument("--disable-renderer-backgrounding")
-            chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-            chrome_options.add_argument("--disable-component-extensions-with-background-pages")
-            chrome_options.add_argument("--disable-ipc-flooding-protection")
-            chrome_options.add_argument("--disable-hang-monitor")
-            chrome_options.add_argument("--disable-prompt-on-repost")
-            chrome_options.add_argument("--disable-domain-reliability")
-            chrome_options.add_argument("--disable-component-update")
-            chrome_options.add_argument("--disable-background-networking")
-            chrome_options.add_argument("--aggressive-cache-discard")
-            if headless:
-                chrome_options.add_argument("--headless=new")
-                chrome_options.add_argument("--window-size=520,700")
-
+            chrome_options = self._create_chrome_options(profile_dir, headless=headless)
             service = Service(
                 ChromeDriverManager().install(),
                 log_path=os.devnull,
@@ -347,6 +402,36 @@ class RobloxAccountManager:
                 pass
             return driver
         except Exception:
+            self.cleanup_temp_profile(profile_dir)
+            raise
+
+    def _setup_chromium_driver(self, headless: bool = False) -> Any:
+        """Setup downloaded Chromium with its matching bundled driver."""
+        browser_binary_path = self.get_managed_chromium_binary_path()
+        driver_binary_path = self.get_managed_chromium_driver_path()
+        if browser_binary_path is None or driver_binary_path is None:
+            raise RuntimeError("Downloaded Chromium is not installed.")
+
+        profile_dir = self.create_temp_profile()
+        try:
+            chrome_options = self._create_chrome_options(
+                profile_dir,
+                headless=headless,
+                binary_path=browser_binary_path,
+            )
+            service = Service(
+                str(driver_binary_path),
+                log_path=os.devnull,
+                popen_kw=self._SELENIUM_POPEN_KW.copy(),
+            )
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            setattr(driver, "_ram_temp_profile_dir", profile_dir)
+            try:
+                driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            except WebDriverException:
+                pass
+            return driver
+        except (OSError, RuntimeError, WebDriverException):
             self.cleanup_temp_profile(profile_dir)
             raise
 
@@ -401,6 +486,8 @@ class RobloxAccountManager:
                         continue
                     if browser_name == "chrome":
                         driver = self._setup_chrome_driver(headless=headless)
+                    elif browser_name == "chromium":
+                        driver = self._setup_chromium_driver(headless=headless)
                     else:
                         driver = self._setup_firefox_driver(headless=headless)
                     return driver, browser_name
@@ -411,6 +498,8 @@ class RobloxAccountManager:
                 try:
                     if browser_name == "chrome":
                         driver = self._setup_chrome_driver(headless=headless)
+                    elif browser_name == "chromium":
+                        driver = self._setup_chromium_driver(headless=headless)
                     else:
                         driver = self._setup_firefox_driver(headless=headless)
                     return driver, browser_name
@@ -429,12 +518,12 @@ class RobloxAccountManager:
             print(f"Error setting up browser driver: {details}")
         else:
             print("Error setting up browser driver: no supported browser available.")
-        print("Please make sure Google Chrome or Mozilla Firefox is installed.")
+        print("Please make sure Google Chrome, Mozilla Firefox, or downloaded Chromium is installed.")
         return None, None
 
     def setup_chrome_driver(self):
         """
-        Backward-compatible wrapper that now supports fallback to Firefox.
+        Backward-compatible wrapper that supports fallback to Firefox or downloaded Chromium.
         """
         driver, _browser = self.setup_browser_driver(preferred_browser="chrome")
         return driver
@@ -1337,7 +1426,7 @@ class RobloxAccountManager:
         return bool(monitor.mark_intentionally_stopped(username=username, pid=pid))
 
     def launch_home(self, username, preferred_browser="auto"):
-        """Launch browser to Roblox home with account logged in (Chrome/Firefox)."""
+        """Launch browser to Roblox home with account logged in."""
         if username not in self.accounts:
             print(f"[ERROR] Account '{username}' not found")
             return False

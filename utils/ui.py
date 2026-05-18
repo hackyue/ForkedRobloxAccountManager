@@ -71,6 +71,7 @@ ADDITIONAL_THEMES_URL = (
 )
 FRAM_ASSETS_ADDONS_WEB_URL = "https://github.com/hackyue/FRAMAssets/tree/main/Addons"
 FRAM_ASSETS_ADDONS_API_URL = "https://api.github.com/repos/hackyue/FRAMAssets/contents/Addons"
+CHROME_FOR_TESTING_DOWNLOADS_URL = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
 
 
 
@@ -326,6 +327,20 @@ class RemoteAddonListing:
     file_name: str
     download_url: str
     html_url: str
+
+
+@dataclass(frozen=True)
+class ManagedChromiumDownload:
+    version: str
+    platform_key: str
+    chrome_url: str
+    chromedriver_url: str
+
+
+@dataclass(frozen=True)
+class ManagedChromiumInstallation:
+    version: str
+    binary_path: Path
 
 
 @dataclass(frozen=True)
@@ -1952,7 +1967,7 @@ class AccountManagerUI:
             True,
         )
         browser_pref = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
-        if browser_pref not in {"auto", "chrome", "firefox"}:
+        if browser_pref not in {"auto", "chrome", "firefox", "chromium"}:
             browser_pref = "auto"
         self.settings["browser_preference"] = browser_pref
 
@@ -2328,10 +2343,50 @@ class AccountManagerUI:
         """Return the current launch delay, clamped to the supported range."""
         return clamp_multi_launch_delay(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS))
 
-    def _get_preferred_browser(self):
-        """Return browser automation preference: auto, chrome, or firefox."""
+    def _get_managed_chromium_root(self) -> Path:
+        if hasattr(self, "manager") and hasattr(self.manager, "get_managed_chromium_root"):
+            return Path(self.manager.get_managed_chromium_root())
+        return Path(self.data_folder) / "browser" / "chromium"
+
+    def _get_managed_chromium_installation(self) -> Optional[ManagedChromiumInstallation]:
+        binary_path = None
+        if hasattr(self, "manager") and hasattr(self.manager, "get_managed_chromium_binary_path"):
+            binary_path = self.manager.get_managed_chromium_binary_path()
+
+        root = self._get_managed_chromium_root()
+        if binary_path is None:
+            candidates = [
+                root / "chrome-win64" / "chrome.exe",
+                root / "chrome-win32" / "chrome.exe",
+                root / "chrome-win" / "chrome.exe",
+            ]
+            for candidate in candidates:
+                if candidate.is_file():
+                    binary_path = candidate
+                    break
+
+        if binary_path is None:
+            return None
+
+        resolved_binary_path = Path(binary_path)
+        if not resolved_binary_path.is_file():
+            return None
+
+        version = ""
+        manifest_path = root / "managed_chromium.json"
+        try:
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(manifest_data, dict):
+                version = str(manifest_data.get("version") or "").strip()
+        except (OSError, json.JSONDecodeError):
+            version = ""
+
+        return ManagedChromiumInstallation(version=version, binary_path=resolved_binary_path)
+
+    def _get_preferred_browser(self) -> str:
+        """Return browser automation preference: auto, chrome, firefox, or chromium."""
         value = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
-        if value not in {"auto", "chrome", "firefox"}:
+        if value not in {"auto", "chrome", "firefox", "chromium"}:
             value = "auto"
 
         available = self._get_available_browsers()
@@ -2339,20 +2394,31 @@ class AccountManagerUI:
             return value
         if len(available) == 1:
             return available[0]
-        if value in {"auto", "chrome", "firefox"} and (value == "auto" or value in available):
+        if value in {"auto", "chrome", "firefox", "chromium"} and (value == "auto" or value in available):
             return value
         return "auto"
 
-    def _is_browser_installed_locally(self, browser_name):
+    def _is_browser_installed_locally(self, browser_name: Any) -> bool:
         name = str(browser_name or "").strip().lower()
-        if name not in {"chrome", "firefox"}:
+        if name not in {"chrome", "firefox", "chromium"}:
             return False
 
         try:
             if hasattr(self, "manager") and hasattr(self.manager, "_is_browser_installed"):
                 return bool(self.manager._is_browser_installed(name))
-        except Exception:
+        except (AttributeError, OSError, RuntimeError, TypeError):
             pass
+
+        if name == "chromium":
+            installation = self._get_managed_chromium_installation()
+            if installation is None:
+                return False
+            driver_candidates = [
+                self._get_managed_chromium_root() / "chromedriver-win64" / "chromedriver.exe",
+                self._get_managed_chromium_root() / "chromedriver-win32" / "chromedriver.exe",
+                self._get_managed_chromium_root() / "chromedriver-win" / "chromedriver.exe",
+            ]
+            return any(candidate.is_file() for candidate in driver_candidates)
 
         try:
             candidates = []
@@ -2381,11 +2447,11 @@ class AccountManagerUI:
             for path in candidates:
                 if path and os.path.exists(path):
                     return True
-        except Exception:
+        except OSError:
             pass
         return False
 
-    def _get_available_browsers(self):
+    def _get_available_browsers(self) -> list[str]:
         available = []
         try:
             if hasattr(self, "manager") and hasattr(self.manager, "get_available_browsers"):
@@ -2393,18 +2459,219 @@ class AccountManagerUI:
                 if isinstance(manager_available, (list, tuple, set)):
                     for name in manager_available:
                         normalized = str(name or "").strip().lower()
-                        if normalized in {"chrome", "firefox"} and normalized not in available:
+                        if normalized in {"chrome", "firefox", "chromium"} and normalized not in available:
                             available.append(normalized)
                     if available:
                         return available
-        except Exception:
+        except (AttributeError, OSError, RuntimeError, TypeError):
             pass
 
         if self._is_browser_installed_locally("chrome"):
             available.append("chrome")
         if self._is_browser_installed_locally("firefox"):
             available.append("firefox")
+        if self._is_browser_installed_locally("chromium"):
+            available.append("chromium")
         return available
+
+    def _get_managed_chromium_platform_key(self) -> str:
+        if platform.system() != "Windows":
+            raise RuntimeError("The managed Chromium download is only available for Windows in this app.")
+
+        machine = platform.machine().strip().lower()
+        if machine in {"x86", "i386", "i686"}:
+            return "win32"
+        return "win64"
+
+    def _select_managed_chromium_download_url(self, downloads: Any, asset_name: str, platform_key: str) -> str:
+        if not isinstance(downloads, dict):
+            raise RuntimeError("The Chromium download manifest is missing download entries.")
+
+        entries = downloads.get(asset_name)
+        if not isinstance(entries, list):
+            raise RuntimeError(f"The Chromium download manifest is missing {asset_name}.")
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("platform") or "").strip().lower() != platform_key:
+                continue
+            url = str(entry.get("url") or "").strip()
+            if url:
+                return url
+
+        raise RuntimeError(f"No {asset_name} download was found for {platform_key}.")
+
+    def _get_managed_chromium_download(self) -> ManagedChromiumDownload:
+        platform_key = self._get_managed_chromium_platform_key()
+        try:
+            response = self._get_http_session().get(CHROME_FOR_TESTING_DOWNLOADS_URL, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Failed to fetch the Chromium download manifest: {exc}") from exc
+
+        try:
+            manifest = response.json()
+        except ValueError as exc:
+            raise RuntimeError("The Chromium download manifest was not valid JSON.") from exc
+
+        if not isinstance(manifest, dict):
+            raise RuntimeError("The Chromium download manifest was not a JSON object.")
+
+        channels = manifest.get("channels")
+        if not isinstance(channels, dict):
+            raise RuntimeError("The Chromium download manifest is missing channels.")
+
+        stable_channel = channels.get("Stable")
+        if not isinstance(stable_channel, dict):
+            raise RuntimeError("The Chromium download manifest is missing the Stable channel.")
+
+        version = str(stable_channel.get("version") or "").strip()
+        downloads = stable_channel.get("downloads")
+        if not version:
+            raise RuntimeError("The Chromium download manifest is missing a Stable version.")
+
+        return ManagedChromiumDownload(
+            version=version,
+            platform_key=platform_key,
+            chrome_url=self._select_managed_chromium_download_url(downloads, "chrome", platform_key),
+            chromedriver_url=self._select_managed_chromium_download_url(downloads, "chromedriver", platform_key),
+        )
+
+    def _download_managed_chromium_archive(
+        self,
+        url: str,
+        target_path: Path,
+        description: str,
+        status_callback: Callable[[str], None],
+    ) -> None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target_path.with_name(f"{target_path.name}.tmp")
+        last_status_update = 0.0
+
+        try:
+            with self._get_http_session().get(url, stream=True, timeout=90) as response:
+                response.raise_for_status()
+                total_bytes = int(response.headers.get("Content-Length") or 0)
+                downloaded_bytes = 0
+                status_callback(f"Downloading {description}...")
+                with temp_path.open("wb") as target_fp:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        target_fp.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        now = time.time()
+                        if now - last_status_update < 0.35:
+                            continue
+                        last_status_update = now
+                        if total_bytes:
+                            status_callback(
+                                f"Downloading {description} {downloaded_bytes / (1024 * 1024):.1f} / "
+                                f"{total_bytes / (1024 * 1024):.1f} MB"
+                            )
+                        else:
+                            status_callback(f"Downloading {description} {downloaded_bytes / (1024 * 1024):.1f} MB")
+                temp_path.replace(target_path)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Failed to download {description}: {exc}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Failed to save {description}: {exc}") from exc
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+
+    def _extract_managed_chromium_archive(self, archive_path: Path, target_dir: Path, description: str) -> None:
+        try:
+            resolved_target_dir = target_dir.resolve()
+            with zipfile.ZipFile(archive_path) as archive:
+                for member in archive.infolist():
+                    resolved_member_path = (target_dir / member.filename).resolve()
+                    try:
+                        resolved_member_path.relative_to(resolved_target_dir)
+                    except ValueError as exc:
+                        raise RuntimeError(f"The {description} archive contains an unsafe path.") from exc
+                archive.extractall(target_dir)
+        except zipfile.BadZipFile as exc:
+            raise RuntimeError(f"The {description} archive was not a valid zip file.") from exc
+        except OSError as exc:
+            raise RuntimeError(f"Failed to extract {description}: {exc}") from exc
+
+    def _install_managed_chromium(self, status_callback: Callable[[str], None]) -> ManagedChromiumInstallation:
+        root = self._get_managed_chromium_root()
+        parent_dir = root.parent
+        staging_dir = parent_dir / "chromium_staging"
+        download_dir = parent_dir / "downloads"
+        download = self._get_managed_chromium_download()
+        chrome_archive_path = download_dir / f"chrome-{download.version}-{download.platform_key}.zip"
+        driver_archive_path = download_dir / f"chromedriver-{download.version}-{download.platform_key}.zip"
+
+        try:
+            parent_dir.mkdir(parents=True, exist_ok=True)
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir)
+            staging_dir.mkdir(parents=True, exist_ok=True)
+
+            self._download_managed_chromium_archive(
+                download.chrome_url,
+                chrome_archive_path,
+                "Chromium",
+                status_callback,
+            )
+            self._download_managed_chromium_archive(
+                download.chromedriver_url,
+                driver_archive_path,
+                "Chromium driver",
+                status_callback,
+            )
+
+            status_callback("Extracting Chromium...")
+            self._extract_managed_chromium_archive(chrome_archive_path, staging_dir, "Chromium")
+            status_callback("Extracting Chromium driver...")
+            self._extract_managed_chromium_archive(driver_archive_path, staging_dir, "Chromium driver")
+
+            expected_binary_path = staging_dir / f"chrome-{download.platform_key}" / "chrome.exe"
+            expected_driver_path = staging_dir / f"chromedriver-{download.platform_key}" / "chromedriver.exe"
+            if not expected_binary_path.is_file() or not expected_driver_path.is_file():
+                raise RuntimeError("The Chromium download did not contain the expected browser and driver files.")
+
+            manifest = {
+                "version": download.version,
+                "platform": download.platform_key,
+                "downloaded_at": f"{datetime.utcnow().isoformat(timespec='seconds')}Z",
+                "source": CHROME_FOR_TESTING_DOWNLOADS_URL,
+            }
+            (staging_dir / "managed_chromium.json").write_text(
+                json.dumps(manifest, indent=2),
+                encoding="utf-8",
+            )
+
+            if root.exists():
+                shutil.rmtree(root)
+            staging_dir.rename(root)
+
+            installation = self._get_managed_chromium_installation()
+            if installation is None:
+                raise RuntimeError("Chromium was downloaded but could not be detected.")
+            status_callback(f"Chromium {installation.version or download.version} is ready.")
+            return installation
+        except OSError as exc:
+            raise RuntimeError(f"Failed to install Chromium: {exc}") from exc
+        finally:
+            for archive_path in (chrome_archive_path, driver_archive_path):
+                if archive_path.exists():
+                    try:
+                        archive_path.unlink()
+                    except OSError:
+                        pass
+            if staging_dir.exists():
+                try:
+                    shutil.rmtree(staging_dir)
+                except OSError:
+                    pass
 
     def _focus_main_window(self):
         try:
@@ -8160,7 +8427,7 @@ class AccountManagerUI:
     def is_chrome_installed(self):
         """
         Backward-compatible wrapper.
-        Returns True when at least one supported browser (Chrome/Firefox) is available.
+        Returns True when at least one supported browser is available.
         """
         try:
             if hasattr(self, "manager") and hasattr(self.manager, "has_supported_browser"):
@@ -8188,6 +8455,7 @@ class AccountManagerUI:
             for path in candidates:
                 if path and os.path.exists(path):
                     return True
+            return self._is_browser_installed_locally("chromium")
         except Exception:
             pass
         return False
@@ -9216,8 +9484,8 @@ class AccountManagerUI:
         if not self.is_chrome_installed():
             messagebox.showwarning(
                 "Browser Required",
-                "Quick Sign-In requires Google Chrome or Mozilla Firefox to be installed.\n"
-                "Please install one of them and try again."
+                "Quick Sign-In requires Google Chrome, Mozilla Firefox, or Chromium.\n"
+                "Install a browser or use Settings to download Chromium, then try again."
             )
             return
 
@@ -9365,8 +9633,8 @@ class AccountManagerUI:
         if not self.is_chrome_installed():
             messagebox.showwarning(
                 "Browser Required",
-                "Add Account requires Google Chrome or Mozilla Firefox to be installed.\n"
-                "Please install one of them and try again."
+                "Add Account requires Google Chrome, Mozilla Firefox, or Chromium.\n"
+                "Install a browser or use Settings to download Chromium, then try again."
             )
             return
 
@@ -10936,8 +11204,8 @@ class AccountManagerUI:
         if not self.is_chrome_installed():
             messagebox.showwarning(
                 "Browser Required",
-                "Launching browser requires Google Chrome or Mozilla Firefox to be installed.\n"
-                "Please install one and try again."
+                "Launching browser requires Google Chrome, Mozilla Firefox, Chromium.\n"
+                "Install a browser or use Settings to download Chromium, then try again."
             )
             return
 
@@ -13611,57 +13879,222 @@ class AccountManagerUI:
             "Choose which browser Roblox web launches should use",
         )
 
-        available_browsers = self._get_available_browsers()
-        browser_value_to_label = {}
-        if len(available_browsers) >= 2:
-            browser_value_to_label["auto"] = "Auto (Chrome first, then Firefox)"
-        if "chrome" in available_browsers:
-            browser_value_to_label["chrome"] = "Chrome only"
-        if "firefox" in available_browsers:
-            browser_value_to_label["firefox"] = "Firefox only"
-        browser_label_to_value = {label: value for value, label in browser_value_to_label.items()}
-        current_browser_pref = browser_preference_var.get()
-        if len(available_browsers) == 1:
-            current_browser_pref = available_browsers[0]
-        elif current_browser_pref not in browser_value_to_label:
-            current_browser_pref = "auto" if "auto" in browser_value_to_label else available_browsers[0] if available_browsers else "auto"
+        browser_selector_frame = ttk.Frame(automation_browser_card, style="Dark.TFrame")
+        browser_selector_frame.pack(fill="x", pady=(0, 4))
+        browser_status_var = tk.StringVar()
+        browser_download_state = {"thread": None}
+        browser_download_button_holder = {"button": None}
+        browser_status_label_holder = {"label": None}
+        browser_display_names = {
+            "chrome": "Chrome",
+            "firefox": "Firefox",
+            "chromium": "Chromium",
+        }
 
-        browser_preference_var.set(current_browser_pref)
-        self.settings["browser_preference"] = current_browser_pref
-        self.save_settings()
-
-        if browser_value_to_label:
-            browser_pref_label_var = tk.StringVar(
-                value=browser_value_to_label.get(current_browser_pref, next(iter(browser_value_to_label.values())))
+        def get_browser_value_to_label() -> dict[str, str]:
+            available_browsers = self._get_available_browsers()
+            value_to_label = {}
+            auto_browser_order = (
+                ("chromium", "chrome", "firefox")
+                if "chromium" in available_browsers
+                else ("chrome", "firefox")
             )
-            browser_combo = ttk.Combobox(
-                automation_browser_card,
-                values=list(browser_value_to_label.values()),
-                textvariable=browser_pref_label_var,
-                state="readonly",
-                style="Dark.TCombobox",
-            )
-            browser_combo.pack(fill="x", pady=(0, 4))
+            ordered_available = [
+                browser_name
+                for browser_name in auto_browser_order
+                if browser_name in available_browsers
+            ]
+            if len(ordered_available) >= 2:
+                auto_label = ", ".join(browser_display_names[browser_name] for browser_name in ordered_available)
+                value_to_label["auto"] = f"Auto ({auto_label})"
+            if "chrome" in available_browsers:
+                value_to_label["chrome"] = "Chrome only"
+            if "firefox" in available_browsers:
+                value_to_label["firefox"] = "Firefox only"
+            if "chromium" in available_browsers:
+                value_to_label["chromium"] = "Chromium only"
+            return value_to_label
 
-            def on_browser_preference_change(_=None):
-                selected_label = (browser_combo.get() or "").strip()
-                selected_value = browser_label_to_value.get(selected_label, current_browser_pref)
-                browser_preference_var.set(selected_value)
-                self.settings["browser_preference"] = selected_value
-                self.save_settings()
+        def update_browser_status(message: str) -> None:
+            browser_status_var.set(message)
+            status_label = browser_status_label_holder.get("label")
+            if status_label is None:
+                return
+            try:
+                if message:
+                    if not status_label.winfo_manager():
+                        status_label.pack(fill="x", pady=(0, 4))
+                else:
+                    status_label.pack_forget()
+            except tk.TclError:
+                pass
 
-            browser_combo.bind("<<ComboboxSelected>>", on_browser_preference_change)
-        else:
-            ttk.Label(
-                automation_browser_card,
-                text=(
-                    "No supported browser detected.\n"
-                    "Please download Google Chrome or Mozilla Firefox."
-                ),
-                style="Dark.TLabel",
-                wraplength=340,
-                justify="left",
-            ).pack(fill="x", pady=(0, 4))
+        def refresh_browser_controls() -> None:
+            for child in browser_selector_frame.winfo_children():
+                child.destroy()
+
+            available_browsers = self._get_available_browsers()
+            browser_value_to_label = get_browser_value_to_label()
+            browser_label_to_value = {label: value for value, label in browser_value_to_label.items()}
+            current_browser_pref = browser_preference_var.get()
+            if len(available_browsers) == 1:
+                current_browser_pref = available_browsers[0]
+            elif current_browser_pref not in browser_value_to_label:
+                current_browser_pref = (
+                    "auto"
+                    if "auto" in browser_value_to_label
+                    else available_browsers[0]
+                    if available_browsers
+                    else "auto"
+                )
+
+            browser_preference_var.set(current_browser_pref)
+            self.settings["browser_preference"] = current_browser_pref
+            self.save_settings()
+
+            if browser_value_to_label:
+                browser_pref_label_var = tk.StringVar(
+                    value=browser_value_to_label.get(current_browser_pref, next(iter(browser_value_to_label.values())))
+                )
+                browser_combo = ttk.Combobox(
+                    browser_selector_frame,
+                    values=list(browser_value_to_label.values()),
+                    textvariable=browser_pref_label_var,
+                    state="readonly",
+                    style="Dark.TCombobox",
+                )
+                browser_combo.pack(fill="x", pady=(0, 4))
+
+                def on_browser_preference_change(_event: Optional[tk.Event] = None) -> None:
+                    selected_label = (browser_combo.get() or "").strip()
+                    selected_value = browser_label_to_value.get(selected_label, current_browser_pref)
+                    browser_preference_var.set(selected_value)
+                    self.settings["browser_preference"] = selected_value
+                    self.save_settings()
+
+                browser_combo.bind("<<ComboboxSelected>>", on_browser_preference_change)
+            else:
+                ttk.Label(
+                    browser_selector_frame,
+                    text="No supported browser detected.",
+                    style="Dark.TLabel",
+                    wraplength=340,
+                    justify="left",
+                ).pack(fill="x", pady=(0, 4))
+
+            installation = self._get_managed_chromium_installation()
+            chromium_button = browser_download_button_holder.get("button")
+            if chromium_button is not None:
+                chromium_button.configure(
+                    text="Update Chromium" if installation else "Download Chromium",
+                    state="normal",
+                )
+            if installation and installation.version:
+                update_browser_status(f"Chromium {installation.version} is installed.")
+            elif installation:
+                update_browser_status("Chromium is installed.")
+            else:
+                update_browser_status("")
+
+        def set_browser_download_status(message: str) -> None:
+            def apply_status() -> None:
+                update_browser_status(message)
+
+            try:
+                self.root.after(0, apply_status)
+            except tk.TclError:
+                pass
+
+        def begin_chromium_download() -> None:
+            active_thread = browser_download_state.get("thread")
+            if active_thread is not None and active_thread.is_alive():
+                return
+
+            if self._get_managed_chromium_installation() is not None:
+                should_update = messagebox.askyesno(
+                    "Download Chromium",
+                    "Chromium is already installed.\n\nDo you want to replace it with the latest Stable build?",
+                    parent=settings_window,
+                )
+                if not should_update:
+                    return
+
+            chromium_button = browser_download_button_holder.get("button")
+            if chromium_button is not None:
+                chromium_button.configure(state="disabled")
+            update_browser_status("Starting Chromium download...")
+
+            def worker() -> None:
+                try:
+                    installation = self._install_managed_chromium(set_browser_download_status)
+                except RuntimeError as exc:
+                    error_message = str(exc)
+
+                    def apply_error() -> None:
+                        try:
+                            if not settings_window.winfo_exists():
+                                return
+                        except tk.TclError:
+                            return
+                        browser_download_state["thread"] = None
+                        chromium_button = browser_download_button_holder.get("button")
+                        if chromium_button is not None:
+                            chromium_button.configure(state="normal")
+                        update_browser_status(error_message)
+                        messagebox.showerror("Download Chromium", error_message, parent=settings_window)
+
+                    try:
+                        self.root.after(0, apply_error)
+                    except tk.TclError:
+                        pass
+                    return
+
+                def apply_success() -> None:
+                    self.settings["browser_preference"] = "chromium"
+                    self.save_settings()
+                    try:
+                        if not settings_window.winfo_exists():
+                            return
+                    except tk.TclError:
+                        return
+                    browser_download_state["thread"] = None
+                    browser_preference_var.set("chromium")
+                    refresh_browser_controls()
+                    version_text = f" {installation.version}" if installation.version else ""
+                    messagebox.showinfo(
+                        "Download Chromium",
+                        f"Chromium{version_text} is ready to use.",
+                        parent=settings_window,
+                    )
+
+                try:
+                    self.root.after(0, apply_success)
+                except tk.TclError:
+                    pass
+
+            thread = threading.Thread(target=worker, daemon=True, name="download-managed-chromium")
+            browser_download_state["thread"] = thread
+            thread.start()
+
+        browser_download_button = ttk.Button(
+            automation_browser_card,
+            text="Download Chromium",
+            style="Dark.TButton",
+            command=begin_chromium_download,
+        )
+        browser_download_button.pack(fill="x", pady=(2, 4))
+        browser_download_button_holder["button"] = browser_download_button
+
+        browser_status_label = ttk.Label(
+            automation_browser_card,
+            textvariable=browser_status_var,
+            style="Dark.TLabel",
+            wraplength=340,
+            justify="left",
+        )
+        browser_status_label_holder["label"] = browser_status_label
+
+        refresh_browser_controls()
 
         updates_card = create_settings_card(general_tab, "App Updates", "Automatic update checks")
 
