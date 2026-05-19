@@ -370,6 +370,14 @@ class AntiAfkPassSummary:
 
 
 @dataclass(frozen=True)
+class AutoMemoryKillTarget:
+    pid: int
+    image_name: str
+    working_set_bytes: int
+    usage_percent: float
+
+
+@dataclass(frozen=True)
 class DiscordLogFilterPreset:
     key: str
     label: str
@@ -1409,6 +1417,8 @@ class AccountManagerUI:
         self._auto_relaunch_in_progress = False
         self._auto_memory_trim_after_id = None
         self._auto_memory_trim_in_progress = False
+        self._auto_memory_kill_after_id: Optional[str] = None
+        self._auto_memory_kill_in_progress: bool = False
         self._anti_afk_after_id: Optional[str] = None
         self._anti_afk_in_progress: bool = False
         self._anti_afk_last_result: Optional[AntiAfkPassSummary] = None
@@ -1856,6 +1866,7 @@ class AccountManagerUI:
 
         self.root.after(500, self._auto_relaunch_maybe_start)
         self.root.after(500, self._auto_memory_trim_maybe_start)
+        self.root.after(500, self._auto_memory_kill_maybe_start)
         self.root.after(500, self._anti_afk_maybe_start)
         self.root.after(700, self._roblox_headless_maybe_start)
         self.root.after(900, self._discord_log_mirror_maybe_start)
@@ -1904,6 +1915,8 @@ class AccountManagerUI:
             "auto_relaunch_group": "",
             "auto_memory_trim_enabled": False,
             "auto_memory_trim_interval_minutes": 5,
+            "auto_memory_kill_enabled": False,
+            "auto_memory_kill_limit_percent": 90,
             "anti_afk_enabled": False,
             "anti_afk_interval_minutes": self.ANTI_AFK_DEFAULT_INTERVAL_MINUTES,
             "anti_afk_key_name": self.ANTI_AFK_DEFAULT_KEY_NAME,
@@ -2005,6 +2018,14 @@ class AccountManagerUI:
         except (TypeError, ValueError):
             mm = 5
         self.settings["auto_memory_trim_interval_minutes"] = max(1, min(120, mm))
+        if platform.system() != "Windows":
+            self.settings["auto_memory_kill_enabled"] = False
+        self.settings["auto_memory_kill_enabled"] = bool(
+            self.settings.get("auto_memory_kill_enabled", False)
+        )
+        self.settings["auto_memory_kill_limit_percent"] = self._normalize_auto_memory_kill_limit_percent(
+            self.settings.get("auto_memory_kill_limit_percent", 90)
+        )
         if platform.system() != "Windows":
             self.settings["anti_afk_enabled"] = False
         self.settings["anti_afk_enabled"] = bool(self.settings.get("anti_afk_enabled", False))
@@ -2879,6 +2900,154 @@ class AccountManagerUI:
                     self._auto_memory_trim_in_progress = False
 
         threading.Thread(target=worker, daemon=True, name="auto-memory-trim").start()
+
+    def _normalize_auto_memory_kill_limit_percent(self, value: Any) -> int:
+        try:
+            percent = int(value or 90)
+        except (TypeError, ValueError, tk.TclError):
+            percent = 90
+        return max(1, min(100, percent))
+
+    def _get_auto_memory_kill_limit_percent(self) -> int:
+        percent = self._normalize_auto_memory_kill_limit_percent(
+            self.settings.get("auto_memory_kill_limit_percent", 90)
+        )
+        self.settings["auto_memory_kill_limit_percent"] = percent
+        return percent
+
+    def _auto_memory_kill_maybe_start(self) -> None:
+        if self.settings.get("auto_memory_kill_enabled", False):
+            self._auto_memory_kill_start()
+
+    def _auto_memory_kill_stop(self) -> None:
+        after_id = getattr(self, "_auto_memory_kill_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.root.after_cancel(after_id)
+        except Exception:
+            pass
+        self._auto_memory_kill_after_id = None
+
+    def _auto_memory_kill_config_valid(self) -> bool:
+        if platform.system() != "Windows":
+            return False
+        if not bool(self.settings.get("auto_memory_kill_enabled", False)):
+            return False
+        return self._get_auto_memory_kill_limit_percent() >= 1
+
+    def _auto_memory_kill_start(self) -> None:
+        self._auto_memory_kill_stop()
+        if not self._auto_memory_kill_config_valid():
+            return
+        self._auto_memory_kill_after_id = self.root.after(
+            5 * 1000,
+            self._auto_memory_kill_tick,
+        )
+
+    def _auto_memory_kill_tick(self) -> None:
+        self._auto_memory_kill_after_id = None
+        self._auto_memory_kill_run_once()
+
+    def _get_auto_memory_kill_targets(self) -> list[AutoMemoryKillTarget]:
+        total_memory_bytes = self._get_total_physical_memory_bytes()
+        if not total_memory_bytes:
+            return []
+
+        pid_to_image = self._query_tracked_process_pid_map(
+            {"robloxplayerbeta.exe"},
+            use_cache=False,
+        )
+        targets: list[AutoMemoryKillTarget] = []
+        for pid, image_name in sorted(pid_to_image.items()):
+            working_set_bytes = self._memtrim_get_working_set(pid)
+            if not working_set_bytes:
+                continue
+            usage_percent = (float(working_set_bytes) / float(total_memory_bytes)) * 100.0
+            targets.append(
+                AutoMemoryKillTarget(
+                    pid=int(pid),
+                    image_name=str(image_name or "RobloxPlayerBeta.exe"),
+                    working_set_bytes=int(working_set_bytes),
+                    usage_percent=usage_percent,
+                )
+            )
+        return targets
+
+    def _auto_memory_kill_run_pass(self) -> list[AutoMemoryKillTarget]:
+        limit_percent = self._get_auto_memory_kill_limit_percent()
+        over_limit_targets = [
+            target
+            for target in self._get_auto_memory_kill_targets()
+            if target.usage_percent >= float(limit_percent)
+        ]
+        if not over_limit_targets:
+            return []
+
+        killed_targets: list[AutoMemoryKillTarget] = []
+        for target in over_limit_targets:
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(target.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=12,
+                    **subprocess_no_window_kwargs(),
+                )
+            except Exception as exc:
+                print(f"[WARNING] Auto RAM kill failed for Roblox PID {target.pid}: {exc}")
+                continue
+
+            if result.returncode == 0:
+                self._mark_active_sessions_manually_stopped(pids=[target.pid])
+                killed_targets.append(target)
+                print(
+                    (
+                        "[INFO] Auto RAM kill closed Roblox "
+                        f"PID {target.pid} at {target.usage_percent:.1f}% "
+                        f"of system RAM (limit {limit_percent}%)."
+                    )
+                )
+            else:
+                combined_output = ((result.stdout or "") + (result.stderr or "")).strip()
+                print(
+                    (
+                        "[WARNING] Auto RAM kill failed for Roblox "
+                        f"PID {target.pid}: {combined_output or 'taskkill failed'}"
+                    )
+                )
+
+        if killed_targets:
+            self._invalidate_tracked_process_caches()
+            self._invalidate_active_client_indicator_cache()
+        return killed_targets
+
+    def _auto_memory_kill_run_once(self) -> None:
+        if not self._auto_memory_kill_config_valid():
+            return
+        if getattr(self, "_auto_memory_kill_in_progress", False):
+            self._auto_memory_kill_start()
+            return
+
+        self._auto_memory_kill_in_progress = True
+
+        def worker() -> None:
+            try:
+                self._auto_memory_kill_run_pass()
+            finally:
+                def finish() -> None:
+                    self._auto_memory_kill_in_progress = False
+                    if self._auto_memory_kill_config_valid():
+                        self._auto_memory_kill_start()
+
+                try:
+                    self.root.after(0, finish)
+                except Exception:
+                    self._auto_memory_kill_in_progress = False
+
+        threading.Thread(target=worker, daemon=True, name="auto-memory-kill").start()
 
     def _normalize_anti_afk_interval_minutes(self, value: Any) -> int:
         try:
@@ -10394,6 +10563,21 @@ class AccountManagerUI:
             ("PeakPagefileUsage", ctypes.c_size_t),
         ]
 
+    class _MemoryStatusEx(ctypes.Structure):
+        """Layout for kernel32.GlobalMemoryStatusEx."""
+
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
     @classmethod
     def _memtrim_find_roblox_windows(cls):
         """Return [(hwnd, title, pid)] for visible Roblox client windows (memory trim)."""
@@ -10449,6 +10633,24 @@ class AccountManagerUI:
             )
             ctypes.windll.kernel32.CloseHandle(handle)
             return pmc.WorkingSetSize if ok else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _get_total_physical_memory_bytes(cls) -> Optional[int]:
+        if platform.system() != "Windows":
+            return None
+
+        try:
+            memory_status = cls._MemoryStatusEx()
+            memory_status.dwLength = ctypes.sizeof(memory_status)
+            ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status))
+            if not ok:
+                return None
+            total_physical_bytes = int(memory_status.ullTotalPhys)
+            if total_physical_bytes <= 0:
+                return None
+            return total_physical_bytes
         except Exception:
             return None
 
@@ -14966,6 +15168,29 @@ class AccountManagerUI:
             else:
                 self._auto_memory_trim_stop()
 
+        def on_auto_memory_kill_update(*_):
+            if not _auto_trim_win:
+                return
+            try:
+                current_limit_percent = int(auto_memory_kill_limit_spin.get())
+            except (tk.TclError, ValueError):
+                current_limit_percent = 90
+            limit_percent = self._normalize_auto_memory_kill_limit_percent(
+                current_limit_percent
+            )
+            if current_limit_percent != limit_percent:
+                auto_memory_kill_limit_spin.delete(0, tk.END)
+                auto_memory_kill_limit_spin.insert(0, str(limit_percent))
+
+            self.settings["auto_memory_kill_enabled"] = bool(auto_memory_kill_check.instate(["selected"]))
+            self.settings["auto_memory_kill_limit_percent"] = int(limit_percent)
+            self.save_settings()
+
+            if self._auto_memory_kill_config_valid():
+                self._auto_memory_kill_start()
+            else:
+                self._auto_memory_kill_stop()
+
         auto_trim_card = create_settings_card(
             automation_tab,
             "Auto Trim Roblox Memory",
@@ -15009,6 +15234,57 @@ class AccountManagerUI:
         if not _auto_trim_win:
             ttk.Label(
                 auto_trim_card,
+                text="Windows only.",
+                style="Dark.TLabel",
+                foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
+            ).pack(anchor="w", pady=(6, 0))
+
+        auto_memory_kill_card = create_settings_card(
+            automation_tab,
+            "Auto Kill Roblox Based On Ram Usage",
+            "Closes Roblox When It Reaches A Ram Usage Past The Limit",
+        )
+
+        auto_memory_kill_check = ttk.Checkbutton(
+            auto_memory_kill_card,
+            text="Enable Auto Kill",
+            style="Dark.TCheckbutton",
+            command=on_auto_memory_kill_update,
+            state=auto_trim_ctrl_state,
+        )
+        auto_memory_kill_check.pack(anchor="w", pady=2)
+        if bool(self.settings.get("auto_memory_kill_enabled", False)):
+            auto_memory_kill_check.state(["selected"])
+        else:
+            auto_memory_kill_check.state(["!selected"])
+
+        auto_memory_kill_limit_frame = ttk.Frame(auto_memory_kill_card, style="Dark.TFrame")
+        auto_memory_kill_limit_frame.pack(fill="x", pady=(4, 0))
+        ttk.Label(
+            auto_memory_kill_limit_frame,
+            text="Limit (% of system RAM)",
+            style="Dark.TLabel",
+        ).pack(side="left")
+
+        auto_memory_kill_limit_spin = ttk.Spinbox(
+            auto_memory_kill_limit_frame,
+            from_=1,
+            to=100,
+            increment=1,
+            width=8,
+            style="Dark.TSpinbox",
+            justify="center",
+            command=on_auto_memory_kill_update,
+            state=auto_trim_ctrl_state,
+        )
+        auto_memory_kill_limit_spin.insert(0, str(self._get_auto_memory_kill_limit_percent()))
+        auto_memory_kill_limit_spin.pack(side="right")
+        auto_memory_kill_limit_spin.bind("<FocusOut>", lambda _: on_auto_memory_kill_update())
+        auto_memory_kill_limit_spin.bind("<Return>", lambda _: on_auto_memory_kill_update())
+
+        if not _auto_trim_win:
+            ttk.Label(
+                auto_memory_kill_card,
                 text="Windows only.",
                 style="Dark.TLabel",
                 foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
@@ -17893,6 +18169,7 @@ class AccountManagerUI:
                     (
                         f"NoClient: **{'On' if self.settings.get('roblox_headless_mode_enabled', False) else 'Off'}**\n"
                         f"Memory Trim: **{'On' if self.settings.get('auto_memory_trim_enabled', False) else 'Off'}**\n"
+                        f"Memory Kill: **{'On' if self.settings.get('auto_memory_kill_enabled', False) else 'Off'}**\n"
                         f"Anti-AFK: **{'On' if self.settings.get('anti_afk_enabled', False) else 'Off'}**\n"
                         f"Title Rename: **{'On' if self._get_rename_client_titles_enabled() else 'Off'}**"
                     )
@@ -18203,6 +18480,11 @@ class AccountManagerUI:
 
         try:
             self._auto_memory_trim_stop()
+        except Exception:
+            pass
+
+        try:
+            self._auto_memory_kill_stop()
         except Exception:
             pass
 
