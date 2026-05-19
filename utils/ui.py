@@ -10064,13 +10064,13 @@ class AccountManagerUI:
         """
         messagebox.showerror("Error", f"Failed to add account: {str(error_msg)}")
     
-    def import_cookie(self):
+    def import_cookie(self) -> None:
         """
-        Import an account using a .ROBLOSECURITY cookie
+        Import accounts using .ROBLOSECURITY cookies.
         """
         import_window = tk.Toplevel(self.root)
-        import_window.title("Import Cookie")
-        import_window.geometry("450x250")
+        import_window.title("Import Cookies")
+        import_window.geometry("450x320")
         import_window.configure(bg=self.BG_DARK)
         import_window.resizable(False, False)
         
@@ -10081,8 +10081,8 @@ class AccountManagerUI:
         main_height = self.root.winfo_height()
         
         x = main_x + (main_width - 450) // 2
-        y = main_y + (main_height - 250) // 2
-        import_window.geometry(f"450x250+{x}+{y}")
+        y = main_y + (main_height - 320) // 2
+        import_window.geometry(f"450x320+{x}+{y}")
         
         if self.settings.get("enable_topmost", False):
             import_window.attributes("-topmost", True)
@@ -10096,12 +10096,16 @@ class AccountManagerUI:
         
         ttk.Label(
             main_frame,
-            text="Import Account from Cookie",
+            text="Import Accounts from Cookies",
             style="Dark.TLabel",
             font=("Segoe UI", 12, "bold")
         ).pack(anchor="w", pady=(0, 15))
         
-        ttk.Label(main_frame, text="Cookie (.ROBLOSECURITY):", style="Dark.TLabel").pack(anchor="w", pady=(0, 5))
+        ttk.Label(
+            main_frame,
+            text="Paste one .ROBLOSECURITY cookie per line:",
+            style="Dark.TLabel"
+        ).pack(anchor="w", pady=(0, 5))
         
         cookie_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         cookie_frame.pack(fill="both", expand=True, pady=(0, 15))
@@ -10111,8 +10115,8 @@ class AccountManagerUI:
             bg=self.BG_MID,
             fg=self.FG_TEXT,
             font=("Segoe UI", 9),
-            height=5,
-            wrap="word"
+            height=8,
+            wrap="none"
         )
         cookie_text.pack(side="left", fill="both", expand=True)
         self.register_themable_text_widget(cookie_text)
@@ -10121,23 +10125,63 @@ class AccountManagerUI:
         cookie_scrollbar.pack(side="right", fill="y")
         cookie_text.config(yscrollcommand=cookie_scrollbar.set)
         
-        def do_import():
-            cookie = cookie_text.get("1.0", "end-1c").strip()
+        def parse_cookies(raw_text: str) -> list[str]:
+            cookies: list[str] = []
+            for line in (raw_text or "").splitlines():
+                cookie = line.strip()
+                if cookie:
+                    cookies.append(cookie)
+            return cookies
+
+        def complete_import(imported_usernames: list[str], failed_count: int) -> None:
+            imported_count = len(imported_usernames)
+            if imported_count > 0:
+                self.refresh_accounts()
+
+            if imported_count == 1 and failed_count == 0:
+                self.show_success_message(f"Account '{imported_usernames[0]}' imported successfully!")
+                return
+
+            if imported_count > 0 and failed_count == 0:
+                self.show_success_message(f"Imported {imported_count} account(s) successfully!")
+                return
+
+            if imported_count > 0:
+                messagebox.showwarning(
+                    "Import Complete",
+                    f"Imported {imported_count} account(s). Failed to import {failed_count} cookie(s)."
+                )
+                return
+
+            messagebox.showerror("Error", "No accounts were imported. Please check the cookie values.")
+
+        def worker(cookies: list[str]) -> None:
+            imported_usernames: list[str] = []
+            failed_count = 0
+            try:
+                for cookie in cookies:
+                    success, username = self.manager.import_cookie_account(cookie)
+                    if success:
+                        imported_usernames.append(str(username or "").strip() or "Unknown")
+                    else:
+                        failed_count += 1
+                self.root.after(0, lambda: complete_import(imported_usernames, failed_count))
+            except Exception as e:
+                error_message = str(e)
+                self.root.after(
+                    0,
+                    lambda: messagebox.showerror("Error", f"Failed to import accounts: {error_message}")
+                )
+
+        def do_import() -> None:
+            cookies = parse_cookies(cookie_text.get("1.0", "end-1c"))
             
-            if not cookie:
-                messagebox.showwarning("Missing Information", "Please enter the cookie.")
+            if not cookies:
+                messagebox.showwarning("Missing Information", "Please paste at least one cookie.")
                 return
             
-            try:
-                success, username = self.manager.import_cookie_account(cookie)
-                if success:
-                    self.refresh_accounts()
-                    self.show_success_message(f"Account '{username}' imported successfully!")
-                    import_window.destroy()
-                else:
-                    messagebox.showerror("Error", "Failed to import account. Please check the cookie.")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to import account: {str(e)}")
+            threading.Thread(target=worker, args=(cookies,), daemon=True).start()
+            import_window.destroy()
         
         button_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         button_frame.pack(fill="x")
