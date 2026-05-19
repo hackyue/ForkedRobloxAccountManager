@@ -175,6 +175,28 @@ class RobloxAccountManager:
             else:
                 json.dump(self.accounts, f, indent=2, ensure_ascii=False)
 
+    def _build_account_record(self, username: str, cookie: str, password: Optional[str] = None) -> dict[str, Any]:
+        """Build an account record while preserving existing per-account metadata."""
+        existing_account = self.accounts.get(username)
+        if isinstance(existing_account, dict):
+            account_record: dict[str, Any] = dict(existing_account)
+        else:
+            account_record = {}
+
+        account_record.setdefault('added_date', time.strftime('%Y-%m-%d %H:%M:%S'))
+        account_record.setdefault('note', '')
+        account_record.setdefault('group', '')
+        account_record.setdefault('vip_server', '')
+        account_record.setdefault('auto_rejoin_enabled', False)
+        account_record.setdefault('user_id', '')
+        if password is None:
+            account_record.setdefault('password', '')
+        else:
+            account_record['password'] = str(password)
+        account_record['username'] = str(username)
+        account_record['cookie'] = str(cookie)
+        return account_record
+
     def reorder_accounts(self, ordered_usernames):
         """Reorder accounts to match the provided username list and persist the change."""
         if ordered_usernames is None:
@@ -1011,17 +1033,7 @@ class RobloxAccountManager:
                 if has_cookie or self._is_likely_logged_in_url(current_url):
                     username, cookie = self.extract_user_info(driver)
                     if username and cookie:
-                        self.accounts[username] = {
-                            "username": username,
-                            "cookie": cookie,
-                            "password": "",
-                            "added_date": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "note": "",
-                            "group": "",
-                            "vip_server": "",
-                            "auto_rejoin_enabled": False,
-                            "user_id": "",
-                        }
+                        self.accounts[username] = self._build_account_record(username, cookie)
                         self.save_accounts()
                         return {
                             "success": True,
@@ -1128,17 +1140,7 @@ class RobloxAccountManager:
                         captured_password = extracted_password or wait_captured_password
                          
                         if username and cookie:
-                            self.accounts[username] = {
-                                'username': username,
-                                'cookie': cookie,
-                                'password': captured_password,
-                                'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                'note': '',
-                                'group': '',
-                                'vip_server': '',
-                                'auto_rejoin_enabled': False,
-                                'user_id': '',
-                            }
+                            self.accounts[username] = self._build_account_record(username, cookie, captured_password)
                             self.save_accounts()
                             
                             print(f"[SUCCESS] Successfully added account: {username}")
@@ -1269,17 +1271,7 @@ class RobloxAccountManager:
                     print(f"[ERROR] Failed to extract account info for credential {idx}")
                     continue
 
-                self.accounts[username] = {
-                    'username': username,
-                    'cookie': cookie,
-                    'password': str(input_password),
-                    'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-                    'note': '',
-                    'group': '',
-                    'vip_server': '',
-                    'auto_rejoin_enabled': False,
-                    'user_id': '',
-                }
+                self.accounts[username] = self._build_account_record(username, cookie, str(input_password))
                 self.save_accounts()
                 success_count += 1
                 print(f"[SUCCESS] Successfully added account: {username}")
@@ -1317,17 +1309,7 @@ class RobloxAccountManager:
                 print("[ERROR] Cookie is invalid or expired")
                 return False, None
             
-            self.accounts[username] = {
-                'username': username,
-                'cookie': cookie,
-                'password': '',
-                'added_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'note': '',
-                'group': '',
-                'vip_server': '',
-                'auto_rejoin_enabled': False,
-                'user_id': '',
-            }
+            self.accounts[username] = self._build_account_record(username, cookie)
             self.save_accounts()
             
             print(f"[SUCCESS] Successfully imported account: {username}")
