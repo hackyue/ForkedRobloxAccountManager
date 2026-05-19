@@ -13150,6 +13150,9 @@ class AccountManagerUI:
             show_feedback
             or update_recent_history
             or on_done_callback is not None
+            or self._get_rename_client_titles_enabled()
+            or self.settings.get("roblox_headless_mode_enabled", False)
+            or self.settings.get("anti_afk_enabled", False)
             or self.settings.get("keep_roblox_clients_arranged", False)
         ):
             if threading.current_thread() is threading.main_thread():
