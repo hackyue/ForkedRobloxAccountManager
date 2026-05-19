@@ -825,34 +825,6 @@ class RobloxAPI:
         return versions
         
     @staticmethod
-    def select_roblox_version():
-        """Prompt user to select a Roblox version"""
-        versions = RobloxAPI.get_installed_versions()
-        
-        if not versions:
-            print("[WARNING] No Roblox versions found in Bloxstrap/Fishstrap Versions folders")
-            return None
-            
-        print("\nAvailable Roblox versions:")
-        for i, version in enumerate(versions, 1):
-            source = version.get('source', 'Bloxstrap')
-            print(f"{i}. {version['version']} [{source}]")
-            
-        while True:
-            try:
-                selection = input("\nSelect a version number (or press Enter to use default): ").strip()
-                if not selection:
-                    return None
-                    
-                index = int(selection) - 1
-                if 0 <= index < len(versions):
-                    return versions[index]['path']
-                print("Invalid selection. Please try again.")
-                
-            except ValueError:
-                print("Please enter a valid number.")
-
-    @staticmethod
     def _get_default_roblox_path():
         """Best-effort attempt to locate the default Roblox installation directory."""
         local_appdata = os.getenv('LOCALAPPDATA')

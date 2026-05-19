@@ -2361,13 +2361,6 @@ class AccountManagerUI:
         except Exception:
             pass
 
-    def _format_delay_value(self, value):
-        """Return a user-friendly string for the launch delay value."""
-        clamped_value = clamp_multi_launch_delay(value)
-        if math.isclose(clamped_value, round(clamped_value)):
-            return str(int(round(clamped_value)))
-        return f"{clamped_value:.1f}".rstrip("0").rstrip(".")
-
     def _get_multi_launch_delay(self):
         """Return the current launch delay, clamped to the supported range."""
         return clamp_multi_launch_delay(self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS))
@@ -9872,9 +9865,6 @@ class AccountManagerUI:
         self._reset_drag_data()
         return "break"
 
-    def on_account_ctrl_click(self, event: tk.Event) -> Optional[str]:
-        return self.on_account_multi_select_click(event)
-
     def on_account_multi_select_click(self, event: tk.Event) -> Optional[str]:
         if not self.settings.get("enable_multi_select", False):
             return
@@ -9895,15 +9885,6 @@ class AccountManagerUI:
             self.account_list.selection_set(index)
         self.account_list.activate(index)
         return "break"
-
-    @staticmethod
-    def _drag_modifiers_active(event):
-        modifiers_mask = 0x1 | 0x4 | 0x8
-        return bool(event.state & modifiers_mask)
-
-    @staticmethod
-    def _ctrl_modifier_active(event):
-        return bool(event.state & 0x4)
 
     def _on_multi_select_key_press(self, event: tk.Event) -> None:
         key = normalize_multi_select_event_key(event)
@@ -11048,23 +11029,6 @@ class AccountManagerUI:
         positioned.sort(key=lambda item: (item[0], item[1], item[2]))
         return [item[2] for item in positioned]
 
-    def _get_min_window_size(self, hwnd):
-        """Probe the minimum resizable Roblox window size enforced by Windows/client."""
-        fallback = (320, 240)
-        if not win32gui or not hwnd:
-            return fallback
-
-        try:
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            left, top, _, _ = win32gui.GetWindowRect(hwnd)
-            win32gui.MoveWindow(hwnd, left, top, 1, 1, True)
-            min_left, min_top, min_right, min_bottom = win32gui.GetWindowRect(hwnd)
-            min_width = max(1, min_right - min_left)
-            min_height = max(1, min_bottom - min_top)
-            return min_width, min_height
-        except Exception:
-            return fallback
-
     def _arrange_windows_within_area(self, hwnds, work_area):
         """Tile the given HWNDs inside a single monitor work area."""
         work_left, work_top, work_right, work_bottom = work_area
@@ -11555,44 +11519,6 @@ class AccountManagerUI:
                 mapping[username] = vip_value
 
         return mapping
-
-    def import_vip_servers_csv(self):
-        file_path = filedialog.askopenfilename(
-            title="Import VIP Server CSV",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-        )
-        if not file_path:
-            return
-
-        try:
-            mapping = self._read_vip_server_csv_mapping(file_path)
-        except Exception as exc:
-            messagebox.showerror("Import VIP CSV", f"Failed to read CSV: {exc}")
-            return
-
-        if not mapping:
-            messagebox.showwarning(
-                "Import VIP CSV",
-                "No rows found. Expected CSV columns like username,private_server_link."
-            )
-            return
-
-        result = self.manager.bulk_set_account_vip_servers(mapping)
-        self.refresh_accounts(selected_usernames=list(mapping.keys()))
-
-        missing = result.get("missing", [])
-        summary = [
-            f"Rows parsed: {len(mapping)}",
-            f"Matched accounts: {result.get('matched', 0)}",
-            f"Changed mappings: {result.get('changed', 0)}",
-            f"Missing accounts: {len(missing)}",
-        ]
-        if missing:
-            preview = ", ".join(missing[:8])
-            suffix = "..." if len(missing) > 8 else ""
-            summary.append("")
-            summary.append(f"Missing usernames: {preview}{suffix}")
-        self.show_success_message("\n".join(summary), title="Import VIP CSV")
 
     def open_vip_server_manager(self):
         window = tk.Toplevel(self.root)

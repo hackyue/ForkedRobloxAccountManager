@@ -235,10 +235,6 @@ class EncryptionConfig:
         self.config['no_encryption_chosen'] = False  
         self.save_config()
     
-    def is_password_verified(self):
-        """Check if password has been verified with actual data"""
-        return self.config.get('password_verified', False)
-    
     def is_no_encryption_chosen(self):
         """Check if user has explicitly chosen no encryption"""
         return self.config.get('no_encryption_chosen', False)

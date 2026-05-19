@@ -262,14 +262,6 @@ class AutoRejoinMonitor:
                 session.rejoin_in_progress = False
             return True
 
-    def clear_session(self, username):
-        username = str(username or "").strip()
-        if not username:
-            return False
-        with self._lock:
-            removed = self.active_sessions.pop(username, None)
-        return removed is not None
-
     def get_session_snapshot(self, username):
         username = str(username or "").strip()
         if not username:
@@ -296,10 +288,6 @@ class AutoRejoinMonitor:
                 except Exception as exc:
                     self._log(f"[AUTO REJOIN] Monitor error for {username}: {exc}")
             self._stop_event.wait(self.LOOP_INTERVAL_SECONDS)
-
-    def _get_usernames(self):
-        with self._lock:
-            return list(self.active_sessions.keys())
 
     def _build_monitor_snapshot(self):
         with self._lock:

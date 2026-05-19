@@ -1611,19 +1611,6 @@ class RobloxAccountManager:
                 usernames.append(username)
         return usernames
 
-    def set_account_vip_server(self, username, vip_server):
-        if username not in self.accounts:
-            print(f"[ERROR] Account '{username}' not found")
-            return False
-
-        normalized = self.normalize_private_server(
-            vip_server,
-            roblosecurity_cookie=self.get_account_cookie(username),
-        )
-        self.accounts[username]['vip_server'] = normalized
-        self.save_accounts()
-        return True
-
     def get_account_vip_server(self, username):
         if username in self.accounts and isinstance(self.accounts[username], dict):
             stored = self.accounts[username].get('vip_server', '')
