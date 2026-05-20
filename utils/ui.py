@@ -1533,7 +1533,8 @@ class AccountManagerUI:
         self._user_icon_fetch_retry_after_id: Optional[str] = None
         self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
         self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
-        self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
+        self._roblox_command_line_cache: dict[str, dict[int, str]] = {"pid_to_commandline": {}}
+        self._roblox_command_line_cache_lock: Any = threading.Lock()
         self._recent_place_id_log_cache = {"ts": 0.0, "values": []}
 
         self.global_settings_window = None
@@ -12113,7 +12114,11 @@ class AccountManagerUI:
     def _invalidate_tracked_process_caches(self):
         self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
         self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
-        self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
+        try:
+            with self._roblox_command_line_cache_lock:
+                self._roblox_command_line_cache = {"pid_to_commandline": {}}
+        except Exception:
+            self._roblox_command_line_cache = {"pid_to_commandline": {}}
 
     def _get_running_tracked_roblox_pid_set(self, use_cache: bool = True) -> set[int]:
         return set(
@@ -12336,67 +12341,95 @@ class AccountManagerUI:
         }
         return snapshot
 
-    def _query_roblox_process_command_lines(self, executables, pid_values: Optional[set[int]] = None, use_cache=True):
+    def _prune_roblox_command_line_cache(
+        self,
+        running_pid_to_image: dict[int, str],
+        target_exes: set[str],
+    ) -> dict[int, str]:
+        running_pids = set(running_pid_to_image.keys())
+        with self._roblox_command_line_cache_lock:
+            cache = getattr(self, "_roblox_command_line_cache", None)
+            cached_pid_to_commandline = dict(
+                (cache.get("pid_to_commandline", {}) or {}) if isinstance(cache, dict) else {}
+            )
+            pruned_pid_to_commandline: dict[int, str] = {}
+            for raw_pid, command_line in cached_pid_to_commandline.items():
+                try:
+                    pid_value = int(raw_pid)
+                except (TypeError, ValueError):
+                    continue
+                image_name = str(running_pid_to_image.get(pid_value, "") or "").strip().lower()
+                if pid_value in running_pids and image_name in target_exes:
+                    pruned_pid_to_commandline[pid_value] = str(command_line or "")
+            self._roblox_command_line_cache = {
+                "pid_to_commandline": dict(pruned_pid_to_commandline),
+            }
+        return pruned_pid_to_commandline
+
+    def _store_roblox_command_line_cache_entries(self, pid_to_commandline: dict[int, str]) -> None:
+        if not pid_to_commandline:
+            return
+        with self._roblox_command_line_cache_lock:
+            cache = getattr(self, "_roblox_command_line_cache", None)
+            cached_pid_to_commandline = dict(
+                (cache.get("pid_to_commandline", {}) or {}) if isinstance(cache, dict) else {}
+            )
+            cached_pid_to_commandline.update(pid_to_commandline)
+            self._roblox_command_line_cache = {
+                "pid_to_commandline": cached_pid_to_commandline,
+            }
+
+    def _query_roblox_process_command_lines(
+        self,
+        executables: Any,
+        pid_values: Optional[set[int]] = None,
+        use_cache: bool = True,
+    ) -> dict[int, str]:
         """Return pid->commandline for tracked Roblox executables via CIM."""
         pid_to_commandline = {}
         target_exes = {str(item).strip().lower() for item in (executables or set()) if item}
         if not target_exes:
             return pid_to_commandline
 
-        target_pids = None
-        if pid_values is not None:
-            target_pids = set()
-            for raw_pid in pid_values:
-                try:
-                    pid_value = int(raw_pid)
-                except Exception:
-                    continue
-                if pid_value > 0:
-                    target_pids.add(pid_value)
-            if not target_pids:
-                return pid_to_commandline
+        target_pids = self._normalize_pid_set(pid_values) if pid_values is not None else None
+        if pid_values is not None and not target_pids:
+            return pid_to_commandline
 
-        cache_ttl_seconds = 10.0
-        cache = getattr(self, "_roblox_command_line_cache", None)
-        cache_key = tuple(sorted(target_exes))
-        now = time.monotonic()
-        if (
-            use_cache
-            and isinstance(cache, dict)
-            and tuple(cache.get("key", ())) == cache_key
-            and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
-        ):
-            cached_pid_to_commandline = dict(cache.get("pid_to_commandline", {}) or {})
-            if target_pids is None:
-                return cached_pid_to_commandline
-            return {
-                pid_value: command_line
-                for pid_value, command_line in cached_pid_to_commandline.items()
-                if int(pid_value) in target_pids
-            }
+        running_pid_to_image = self._query_tracked_process_pid_map(target_exes, use_cache=use_cache)
+        running_pids = set(running_pid_to_image.keys())
+        requested_pids = set(running_pids)
+        if target_pids is not None:
+            requested_pids = target_pids & running_pids
+        if not requested_pids:
+            self._prune_roblox_command_line_cache(running_pid_to_image, target_exes)
+            return pid_to_commandline
+
+        pruned_pid_to_commandline = self._prune_roblox_command_line_cache(
+            running_pid_to_image,
+            target_exes,
+        )
+
+        for pid_value in requested_pids:
+            if pid_value in pruned_pid_to_commandline:
+                pid_to_commandline[pid_value] = pruned_pid_to_commandline[pid_value]
+
+        missing_pids = requested_pids - set(pid_to_commandline.keys())
+        if not missing_pids:
+            return pid_to_commandline
 
         process_names = sorted({name[:-4] if name.endswith(".exe") else name for name in target_exes})
         if not process_names:
             return pid_to_commandline
 
         escaped_names = ", ".join([f"'{name}'" for name in process_names])
-        if target_pids:
-            pid_filter = " OR ".join([f"ProcessId={pid_value}" for pid_value in sorted(target_pids)])
-            ps_script = (
-                f"$names=@({escaped_names}); "
-                f"Get-CimInstance Win32_Process -Filter \"{pid_filter}\" | "
-                "Where-Object { $names -contains (($_.Name -replace '\\.exe$','').ToLower()) } | "
-                "Select-Object ProcessId,Name,CommandLine | "
-                "ConvertTo-Json -Compress"
-            )
-        else:
-            ps_script = (
-                f"$names=@({escaped_names}); "
-                "Get-CimInstance Win32_Process | "
-                "Where-Object { $names -contains (($_.Name -replace '\\.exe$','').ToLower()) } | "
-                "Select-Object ProcessId,Name,CommandLine | "
-                "ConvertTo-Json -Compress"
-            )
+        pid_filter = " OR ".join([f"ProcessId={pid_value}" for pid_value in sorted(missing_pids)])
+        ps_script = (
+            f"$names=@({escaped_names}); "
+            f"Get-CimInstance Win32_Process -Filter \"{pid_filter}\" | "
+            "Where-Object { $names -contains (($_.Name -replace '\\.exe$','').ToLower()) } | "
+            "Select-Object ProcessId,Name,CommandLine | "
+            "ConvertTo-Json -Compress"
+        )
 
         try:
             result = subprocess.run(
@@ -12413,6 +12446,13 @@ class AccountManagerUI:
 
         stdout = str(result.stdout or "").strip()
         if not stdout:
+            if result.returncode == 0:
+                missing_pid_to_commandline = {
+                    int(pid_value): ""
+                    for pid_value in missing_pids
+                }
+                self._store_roblox_command_line_cache_entries(missing_pid_to_commandline)
+                pid_to_commandline.update(missing_pid_to_commandline)
             return pid_to_commandline
 
         try:
@@ -12421,33 +12461,32 @@ class AccountManagerUI:
             return pid_to_commandline
 
         rows = payload if isinstance(payload, list) else [payload]
+        fetched_pid_to_commandline = {}
         for row in rows:
             if not isinstance(row, dict):
                 continue
             try:
                 pid_value = int(row.get("ProcessId", 0) or 0)
-            except Exception:
+            except (TypeError, ValueError):
                 pid_value = 0
-            if pid_value <= 0:
+            if pid_value <= 0 or pid_value not in missing_pids:
+                continue
+            row_image_name = str(row.get("Name", "") or "").strip().lower()
+            if row_image_name and not row_image_name.endswith(".exe"):
+                row_image_name = f"{row_image_name}.exe"
+            if row_image_name and row_image_name not in target_exes:
                 continue
             command_line = str(row.get("CommandLine", "") or "").strip()
-            pid_to_commandline[pid_value] = command_line
+            fetched_pid_to_commandline[pid_value] = command_line
 
-        if pid_to_commandline:
-            cached_pid_to_commandline = {}
-            if (
-                use_cache
-                and isinstance(cache, dict)
-                and tuple(cache.get("key", ())) == cache_key
-                and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
-            ):
-                cached_pid_to_commandline = dict(cache.get("pid_to_commandline", {}) or {})
-            cached_pid_to_commandline.update(pid_to_commandline)
-            self._roblox_command_line_cache = {
-                "ts": now,
-                "key": cache_key,
-                "pid_to_commandline": cached_pid_to_commandline,
-            }
+        known_missing_pids = set(missing_pids)
+        known_missing_pids.difference_update(fetched_pid_to_commandline.keys())
+        for pid_value in known_missing_pids:
+            fetched_pid_to_commandline[int(pid_value)] = ""
+
+        if fetched_pid_to_commandline:
+            self._store_roblox_command_line_cache_entries(fetched_pid_to_commandline)
+            pid_to_commandline.update(fetched_pid_to_commandline)
 
         return pid_to_commandline
 
