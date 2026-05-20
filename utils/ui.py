@@ -1672,6 +1672,8 @@ class AccountManagerUI:
         self.account_context_menu.add_command(label="Copy Username", command=self.copy_selected_account_usernames)
         self.account_context_menu.add_command(label="Copy Password", command=self.copy_selected_account_passwords)
         self.account_context_menu.add_command(label="Copy Cookie", command=self.copy_selected_account_cookies)
+        self.account_context_menu.add_command(label="Copy User:Pass", command=self.copy_selected_account_username_passwords)
+        self.account_context_menu.add_command(label="Copy User:Pass:Cookie", command=self.copy_selected_account_username_password_cookies)
         self.account_context_menu.add_separator()
         self.account_context_menu.add_command(label="Validate Account", command=self.validate_account)
         self.account_context_menu.add_command(label="Edit Note", command=self.edit_account_note)
@@ -9774,6 +9776,57 @@ class AccountManagerUI:
         unique_cookies = list(dict.fromkeys(cookies))
         if self._copy_text_to_clipboard("\n".join(unique_cookies)):
             self.show_success_message("Cookie copied." if len(unique_cookies) == 1 else "Cookies copied.")
+
+    def _get_selected_account_username_password_rows(self, include_cookie: bool) -> list[str]:
+        usernames = self._get_selected_usernames_silent()
+        rows: list[str] = []
+        for username in usernames:
+            account_data = self.manager.accounts.get(username)
+            if not isinstance(account_data, dict):
+                continue
+            password_value = str(account_data.get("password", "") or "").strip()
+            if not password_value:
+                continue
+            if include_cookie:
+                cookie_value = str(self.manager.get_account_cookie(username) or "").strip()
+                if not cookie_value:
+                    continue
+                rows.append(f"{username}:{password_value}:{cookie_value}")
+            else:
+                rows.append(f"{username}:{password_value}")
+        return list(dict.fromkeys(rows))
+
+    def copy_selected_account_username_passwords(self) -> None:
+        usernames = self._get_selected_usernames_silent()
+        if not usernames:
+            messagebox.showwarning("Copy user:pass", "Please select at least one account first.")
+            return
+
+        rows = self._get_selected_account_username_password_rows(include_cookie=False)
+        if not rows:
+            messagebox.showinfo("Copy user:pass", "No saved username:password found for the selected account(s).")
+            return
+
+        if self._copy_text_to_clipboard("\n".join(rows)):
+            self.show_success_message("user:pass copied." if len(rows) == 1 else "user:pass entries copied.")
+
+    def copy_selected_account_username_password_cookies(self) -> None:
+        usernames = self._get_selected_usernames_silent()
+        if not usernames:
+            messagebox.showwarning("Copy user:pass:cookie", "Please select at least one account first.")
+            return
+
+        rows = self._get_selected_account_username_password_rows(include_cookie=True)
+        if not rows:
+            messagebox.showinfo(
+                "Copy user:pass:cookie", "No saved username:password:cookie found for the selected account(s)."
+            )
+            return
+
+        if self._copy_text_to_clipboard("\n".join(rows)):
+            self.show_success_message(
+                "user:pass:cookie copied." if len(rows) == 1 else "user:pass:cookie entries copied."
+            )
 
     def show_account_context_menu(self, event):
         if not self.account_list or self.account_list.size() <= 0:
