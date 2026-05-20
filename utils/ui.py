@@ -22,6 +22,7 @@ import atexit
 import platform
 import time
 import subprocess
+import queue
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -206,6 +207,10 @@ CLIENT_TITLE_RENAME_PID_POLL_SECONDS = 0.4
 CLIENT_TITLE_RENAME_MAX_ATTEMPTS = 2
 CLIENT_TITLE_RENAME_DELAY_SECONDS = 0.5
 CLIENT_TITLE_RENAME_STABLE_ATTEMPTS = 1
+ICON_FETCH_QUEUE_MAXSIZE = 512
+ICON_FETCH_BATCH_SIZE = 50
+ICON_FETCH_BATCH_WAIT_SECONDS = 0.12
+ICON_FETCH_RETRY_MS = 250
 PYWIN32_ERROR_TYPES: tuple[type[BaseException], ...] = (
     (pywintypes.error,)
     if pywintypes is not None
@@ -1512,10 +1517,18 @@ class AccountManagerUI:
         self._place_icon_fetch_pending: set[str] = set()
         self._place_icon_fetch_callbacks: dict[str, list[Callable[[str], None]]] = {}
         self._place_icon_fetch_lock = threading.Lock()
+        self._place_icon_fetch_queue: queue.Queue[str] = queue.Queue(maxsize=ICON_FETCH_QUEUE_MAXSIZE)
+        self._place_icon_fetch_worker_started = False
+        self._place_icon_fetch_deferred: set[str] = set()
+        self._place_icon_fetch_retry_after_id: Optional[str] = None
         self._user_icon_images: dict[str, tk.PhotoImage] = {}
         self._user_icon_fetch_pending: set[str] = set()
         self._user_icon_fetch_callbacks: dict[str, list[Callable[[str], None]]] = {}
         self._user_icon_fetch_lock = threading.Lock()
+        self._user_icon_fetch_queue: queue.Queue[str] = queue.Queue(maxsize=ICON_FETCH_QUEUE_MAXSIZE)
+        self._user_icon_fetch_worker_started = False
+        self._user_icon_fetch_deferred: set[str] = set()
+        self._user_icon_fetch_retry_after_id: Optional[str] = None
         self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
         self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
         self._roblox_command_line_cache = {"ts": 0.0, "key": (), "pid_to_commandline": {}}
@@ -8127,18 +8140,89 @@ class AccountManagerUI:
                 pass
             return None
 
-    def _fetch_place_icon_to_cache(self, place_id: str) -> bool:
-        normalized_place_id = str(place_id or "").strip()
-        if not normalized_place_id.isdigit():
-            return False
+    def _collect_icon_fetch_batch(self, fetch_queue: queue.Queue[str], first_icon_id: str) -> list[str]:
+        icon_ids = [first_icon_id]
+        deadline = time.monotonic() + ICON_FETCH_BATCH_WAIT_SECONDS
+        while len(icon_ids) < ICON_FETCH_BATCH_SIZE:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                break
+            try:
+                icon_ids.append(fetch_queue.get(timeout=remaining_seconds))
+            except queue.Empty:
+                break
+        return icon_ids
 
-        cache_path = self._get_place_icon_cache_path(normalized_place_id)
+    def _extract_thumbnail_icon_urls(self, thumbnail_rows: Any, target_ids: set[str]) -> dict[str, str]:
+        if not isinstance(thumbnail_rows, list):
+            return {}
+
+        icon_urls: dict[str, str] = {}
+        for thumbnail_row in thumbnail_rows:
+            if not isinstance(thumbnail_row, dict):
+                continue
+            target_id = str(
+                thumbnail_row.get("targetId")
+                or thumbnail_row.get("id")
+                or thumbnail_row.get("placeId")
+                or thumbnail_row.get("userId")
+                or ""
+            ).strip()
+            image_url = str(thumbnail_row.get("imageUrl") or "").strip()
+            if target_id in target_ids and image_url:
+                icon_urls[target_id] = image_url
+        return icon_urls
+
+    def _download_icon_images_to_cache(
+        self,
+        icon_urls: dict[str, str],
+        cache_path_resolver: Callable[[str], Path],
+    ) -> set[str]:
+        fetched_icon_ids: set[str] = set()
+        if not icon_urls:
+            return fetched_icon_ids
+
+        session = self._get_http_session()
+        for icon_id, image_url in icon_urls.items():
+            normalized_icon_id = str(icon_id or "").strip()
+            normalized_image_url = str(image_url or "").strip()
+            if not normalized_icon_id or not normalized_image_url:
+                continue
+            try:
+                cache_path = cache_path_resolver(normalized_icon_id)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                image_response = session.get(normalized_image_url, timeout=12)
+                image_response.raise_for_status()
+                if not image_response.content.startswith(b"\x89PNG\r\n\x1a\n"):
+                    continue
+                cache_path.write_bytes(image_response.content)
+                fetched_icon_ids.add(normalized_icon_id)
+            except (OSError, ValueError, requests.exceptions.RequestException):
+                continue
+        return fetched_icon_ids
+
+    def _discard_icon_image_cache_entries(self, image_cache: dict[str, tk.PhotoImage], icon_ids: set[str]) -> None:
+        if not icon_ids:
+            return
+        for image_key in list(image_cache.keys()):
+            icon_id = image_key.split(":", 1)[0]
+            if icon_id in icon_ids:
+                image_cache.pop(image_key, None)
+
+    def _fetch_place_icons_to_cache(self, place_ids: list[str]) -> set[str]:
+        normalized_place_ids = list(dict.fromkeys(
+            str(place_id or "").strip()
+            for place_id in place_ids
+            if str(place_id or "").strip().isdigit()
+        ))
+        if not normalized_place_ids:
+            return set()
+
         try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
             thumbnail_response = self._get_http_session().get(
                 "https://thumbnails.roblox.com/v1/places/gameicons",
                 params={
-                    "placeIds": normalized_place_id,
+                    "placeIds": ",".join(normalized_place_ids),
                     "returnPolicy": "PlaceHolder",
                     "size": "150x150",
                     "format": "Png",
@@ -8149,70 +8233,119 @@ class AccountManagerUI:
             thumbnail_response.raise_for_status()
             thumbnail_payload = thumbnail_response.json() if thumbnail_response.content else {}
             thumbnail_rows = thumbnail_payload.get("data") if isinstance(thumbnail_payload, dict) else []
-            if not isinstance(thumbnail_rows, list) or not thumbnail_rows:
-                return False
-
-            first_row = thumbnail_rows[0]
-            if not isinstance(first_row, dict):
-                return False
-
-            image_url = str(first_row.get("imageUrl") or "").strip()
-            if not image_url:
-                return False
-
-            image_response = self._get_http_session().get(image_url, timeout=12)
-            image_response.raise_for_status()
-            if not image_response.content.startswith(b"\x89PNG\r\n\x1a\n"):
-                return False
-
-            cache_path.write_bytes(image_response.content)
-            for image_key in list(self._place_icon_images.keys()):
-                if image_key.startswith(f"{normalized_place_id}:"):
-                    self._place_icon_images.pop(image_key, None)
-            return True
+            icon_urls = self._extract_thumbnail_icon_urls(
+                thumbnail_rows,
+                set(normalized_place_ids),
+            )
+            fetched_place_ids = self._download_icon_images_to_cache(icon_urls, self._get_place_icon_cache_path)
+            self._discard_icon_image_cache_entries(self._place_icon_images, fetched_place_ids)
+            return fetched_place_ids
         except (OSError, ValueError, requests.exceptions.RequestException):
+            return set()
+
+    def _fetch_place_icon_to_cache(self, place_id: str) -> bool:
+        normalized_place_id = str(place_id or "").strip()
+        if not normalized_place_id.isdigit():
             return False
+        return normalized_place_id in self._fetch_place_icons_to_cache([normalized_place_id])
+
+    def _ensure_place_icon_fetch_worker(self) -> None:
+        with self._place_icon_fetch_lock:
+            if self._place_icon_fetch_worker_started:
+                return
+            self._place_icon_fetch_worker_started = True
+
+        threading.Thread(
+            target=self._place_icon_fetch_worker,
+            daemon=True,
+            name="fetch-place-icons",
+        ).start()
+
+    def _place_icon_fetch_worker(self) -> None:
+        while True:
+            first_place_id = self._place_icon_fetch_queue.get()
+            place_ids = [first_place_id]
+            try:
+                place_ids = self._collect_icon_fetch_batch(self._place_icon_fetch_queue, first_place_id)
+                fetched_place_ids = self._fetch_place_icons_to_cache(place_ids)
+                self._complete_place_icon_fetch_batch(place_ids, fetched_place_ids)
+            finally:
+                for _place_id in place_ids:
+                    self._place_icon_fetch_queue.task_done()
+
+    def _enqueue_place_icon_fetch_id(self, place_id: str) -> None:
+        normalized_place_id = str(place_id or "").strip()
+        with self._place_icon_fetch_lock:
+            if normalized_place_id not in self._place_icon_fetch_pending:
+                self._place_icon_fetch_deferred.discard(normalized_place_id)
+                return
+
+        try:
+            self._place_icon_fetch_queue.put_nowait(normalized_place_id)
+        except queue.Full:
+            with self._place_icon_fetch_lock:
+                self._place_icon_fetch_deferred.add(normalized_place_id)
+            self._schedule_deferred_place_icon_fetches()
+
+    def _schedule_deferred_place_icon_fetches(self) -> None:
+        with self._place_icon_fetch_lock:
+            if self._place_icon_fetch_retry_after_id is not None:
+                return
+        try:
+            after_id = self.root.after(ICON_FETCH_RETRY_MS, self._drain_deferred_place_icon_fetches)
+        except (RuntimeError, tk.TclError):
+            return
+        with self._place_icon_fetch_lock:
+            self._place_icon_fetch_retry_after_id = after_id
+
+    def _drain_deferred_place_icon_fetches(self) -> None:
+        with self._place_icon_fetch_lock:
+            self._place_icon_fetch_retry_after_id = None
+            deferred_place_ids = list(self._place_icon_fetch_deferred)
+            self._place_icon_fetch_deferred.clear()
+
+        for place_id in deferred_place_ids:
+            self._enqueue_place_icon_fetch_id(place_id)
+
+    def _complete_place_icon_fetch_batch(self, place_ids: list[str], fetched_place_ids: set[str]) -> None:
+        callbacks_by_place_id: dict[str, list[Callable[[str], None]]] = {}
+        with self._place_icon_fetch_lock:
+            for place_id in place_ids:
+                self._place_icon_fetch_pending.discard(place_id)
+                callbacks = list(self._place_icon_fetch_callbacks.pop(place_id, []))
+                if place_id in fetched_place_ids and callbacks:
+                    callbacks_by_place_id[place_id] = callbacks
+
+        if not callbacks_by_place_id:
+            return
+
+        def apply_callbacks() -> None:
+            for fetched_place_id, callbacks in callbacks_by_place_id.items():
+                for place_icon_callback in callbacks:
+                    place_icon_callback(fetched_place_id)
+
+        try:
+            self.root.after(0, apply_callbacks)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _queue_place_icon_fetch(self, place_id: str, callback: Callable[[str], None]) -> None:
         normalized_place_id = str(place_id or "").strip()
-        if not normalized_place_id.isdigit():
+        if not normalized_place_id.isdigit() or not callable(callback):
             return
         if self._get_place_icon_cache_path(normalized_place_id).is_file():
             return
 
-        should_start = False
+        self._ensure_place_icon_fetch_worker()
+        should_enqueue = False
         with self._place_icon_fetch_lock:
             self._place_icon_fetch_callbacks.setdefault(normalized_place_id, []).append(callback)
             if normalized_place_id not in self._place_icon_fetch_pending:
                 self._place_icon_fetch_pending.add(normalized_place_id)
-                should_start = True
+                should_enqueue = True
 
-        if not should_start:
-            return
-
-        def fetch_icon() -> None:
-            fetched = self._fetch_place_icon_to_cache(normalized_place_id)
-            with self._place_icon_fetch_lock:
-                self._place_icon_fetch_pending.discard(normalized_place_id)
-                callbacks = list(self._place_icon_fetch_callbacks.pop(normalized_place_id, []))
-
-            if not fetched:
-                return
-
-            def apply_callbacks() -> None:
-                for place_icon_callback in callbacks:
-                    place_icon_callback(normalized_place_id)
-
-            try:
-                self.root.after(0, apply_callbacks)
-            except (RuntimeError, tk.TclError):
-                pass
-
-        threading.Thread(
-            target=fetch_icon,
-            daemon=True,
-            name=f"fetch-place-icon-{normalized_place_id}",
-        ).start()
+        if should_enqueue:
+            self._enqueue_place_icon_fetch_id(normalized_place_id)
 
     def _get_user_icon_cache_dir(self) -> Path:
         data_folder = str(getattr(self, "data_folder", "AccountManagerData") or "AccountManagerData")
@@ -8254,18 +8387,20 @@ class AccountManagerUI:
                 pass
             return None
 
-    def _fetch_user_icon_to_cache(self, user_id: str) -> bool:
-        normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id.isdigit():
-            return False
+    def _fetch_user_icons_to_cache(self, user_ids: list[str]) -> set[str]:
+        normalized_user_ids = list(dict.fromkeys(
+            str(user_id or "").strip()
+            for user_id in user_ids
+            if str(user_id or "").strip().isdigit()
+        ))
+        if not normalized_user_ids:
+            return set()
 
-        cache_path = self._get_user_icon_cache_path(normalized_user_id)
         try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
             thumbnail_response = self._get_http_session().get(
                 "https://thumbnails.roblox.com/v1/users/avatar-headshot",
                 params={
-                    "userIds": normalized_user_id,
+                    "userIds": ",".join(normalized_user_ids),
                     "size": "48x48",
                     "format": "Png",
                     "isCircular": "false",
@@ -8275,70 +8410,119 @@ class AccountManagerUI:
             thumbnail_response.raise_for_status()
             thumbnail_payload = thumbnail_response.json() if thumbnail_response.content else {}
             thumbnail_rows = thumbnail_payload.get("data") if isinstance(thumbnail_payload, dict) else []
-            if not isinstance(thumbnail_rows, list) or not thumbnail_rows:
-                return False
-
-            first_row = thumbnail_rows[0]
-            if not isinstance(first_row, dict):
-                return False
-
-            image_url = str(first_row.get("imageUrl") or "").strip()
-            if not image_url:
-                return False
-
-            image_response = self._get_http_session().get(image_url, timeout=12)
-            image_response.raise_for_status()
-            if not image_response.content.startswith(b"\x89PNG\r\n\x1a\n"):
-                return False
-
-            cache_path.write_bytes(image_response.content)
-            for image_key in list(self._user_icon_images.keys()):
-                if image_key.startswith(f"{normalized_user_id}:"):
-                    self._user_icon_images.pop(image_key, None)
-            return True
+            icon_urls = self._extract_thumbnail_icon_urls(
+                thumbnail_rows,
+                set(normalized_user_ids),
+            )
+            fetched_user_ids = self._download_icon_images_to_cache(icon_urls, self._get_user_icon_cache_path)
+            self._discard_icon_image_cache_entries(self._user_icon_images, fetched_user_ids)
+            return fetched_user_ids
         except (OSError, ValueError, requests.exceptions.RequestException):
+            return set()
+
+    def _fetch_user_icon_to_cache(self, user_id: str) -> bool:
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id.isdigit():
             return False
+        return normalized_user_id in self._fetch_user_icons_to_cache([normalized_user_id])
+
+    def _ensure_user_icon_fetch_worker(self) -> None:
+        with self._user_icon_fetch_lock:
+            if self._user_icon_fetch_worker_started:
+                return
+            self._user_icon_fetch_worker_started = True
+
+        threading.Thread(
+            target=self._user_icon_fetch_worker,
+            daemon=True,
+            name="fetch-user-icons",
+        ).start()
+
+    def _user_icon_fetch_worker(self) -> None:
+        while True:
+            first_user_id = self._user_icon_fetch_queue.get()
+            user_ids = [first_user_id]
+            try:
+                user_ids = self._collect_icon_fetch_batch(self._user_icon_fetch_queue, first_user_id)
+                fetched_user_ids = self._fetch_user_icons_to_cache(user_ids)
+                self._complete_user_icon_fetch_batch(user_ids, fetched_user_ids)
+            finally:
+                for _user_id in user_ids:
+                    self._user_icon_fetch_queue.task_done()
+
+    def _enqueue_user_icon_fetch_id(self, user_id: str) -> None:
+        normalized_user_id = str(user_id or "").strip()
+        with self._user_icon_fetch_lock:
+            if normalized_user_id not in self._user_icon_fetch_pending:
+                self._user_icon_fetch_deferred.discard(normalized_user_id)
+                return
+
+        try:
+            self._user_icon_fetch_queue.put_nowait(normalized_user_id)
+        except queue.Full:
+            with self._user_icon_fetch_lock:
+                self._user_icon_fetch_deferred.add(normalized_user_id)
+            self._schedule_deferred_user_icon_fetches()
+
+    def _schedule_deferred_user_icon_fetches(self) -> None:
+        with self._user_icon_fetch_lock:
+            if self._user_icon_fetch_retry_after_id is not None:
+                return
+        try:
+            after_id = self.root.after(ICON_FETCH_RETRY_MS, self._drain_deferred_user_icon_fetches)
+        except (RuntimeError, tk.TclError):
+            return
+        with self._user_icon_fetch_lock:
+            self._user_icon_fetch_retry_after_id = after_id
+
+    def _drain_deferred_user_icon_fetches(self) -> None:
+        with self._user_icon_fetch_lock:
+            self._user_icon_fetch_retry_after_id = None
+            deferred_user_ids = list(self._user_icon_fetch_deferred)
+            self._user_icon_fetch_deferred.clear()
+
+        for user_id in deferred_user_ids:
+            self._enqueue_user_icon_fetch_id(user_id)
+
+    def _complete_user_icon_fetch_batch(self, user_ids: list[str], fetched_user_ids: set[str]) -> None:
+        callbacks_by_user_id: dict[str, list[Callable[[str], None]]] = {}
+        with self._user_icon_fetch_lock:
+            for user_id in user_ids:
+                self._user_icon_fetch_pending.discard(user_id)
+                callbacks = list(self._user_icon_fetch_callbacks.pop(user_id, []))
+                if user_id in fetched_user_ids and callbacks:
+                    callbacks_by_user_id[user_id] = callbacks
+
+        if not callbacks_by_user_id:
+            return
+
+        def apply_callbacks() -> None:
+            for fetched_user_id, callbacks in callbacks_by_user_id.items():
+                for user_icon_callback in callbacks:
+                    user_icon_callback(fetched_user_id)
+
+        try:
+            self.root.after(0, apply_callbacks)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _queue_user_icon_fetch(self, user_id: str, callback: Callable[[str], None]) -> None:
         normalized_user_id = str(user_id or "").strip()
-        if not normalized_user_id.isdigit():
+        if not normalized_user_id.isdigit() or not callable(callback):
             return
         if self._get_user_icon_cache_path(normalized_user_id).is_file():
             return
 
-        should_start = False
+        self._ensure_user_icon_fetch_worker()
+        should_enqueue = False
         with self._user_icon_fetch_lock:
             self._user_icon_fetch_callbacks.setdefault(normalized_user_id, []).append(callback)
             if normalized_user_id not in self._user_icon_fetch_pending:
                 self._user_icon_fetch_pending.add(normalized_user_id)
-                should_start = True
+                should_enqueue = True
 
-        if not should_start:
-            return
-
-        def fetch_icon() -> None:
-            fetched = self._fetch_user_icon_to_cache(normalized_user_id)
-            with self._user_icon_fetch_lock:
-                self._user_icon_fetch_pending.discard(normalized_user_id)
-                callbacks = list(self._user_icon_fetch_callbacks.pop(normalized_user_id, []))
-
-            if not fetched:
-                return
-
-            def apply_callbacks() -> None:
-                for user_icon_callback in callbacks:
-                    user_icon_callback(normalized_user_id)
-
-            try:
-                self.root.after(0, apply_callbacks)
-            except (RuntimeError, tk.TclError):
-                pass
-
-        threading.Thread(
-            target=fetch_icon,
-            daemon=True,
-            name=f"fetch-user-icon-{normalized_user_id}",
-        ).start()
+        if should_enqueue:
+            self._enqueue_user_icon_fetch_id(normalized_user_id)
 
     def _sanitize_issue_report_text(self, text):
         """Best-effort redaction for issue drafts to avoid exposing secrets."""
