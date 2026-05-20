@@ -1511,6 +1511,8 @@ class AccountManagerUI:
         self._installer_versions_cache = None
         self._http_session = None
         self._http_session_lock = threading.Lock()
+        self._discord_webhook_session: Optional[requests.Session] = None
+        self._discord_webhook_session_lock = threading.RLock()
         self._settings_save_after_ids = {}
         self._discord_button_image = None
         self._place_icon_images: dict[str, tk.PhotoImage] = {}
@@ -17314,6 +17316,30 @@ class AccountManagerUI:
 
         return messages
 
+    def _get_discord_webhook_session(self) -> requests.Session:
+        if self._discord_webhook_session is not None:
+            return self._discord_webhook_session
+
+        with self._discord_webhook_session_lock:
+            if self._discord_webhook_session is None:
+                session = requests.Session()
+                adapter = HTTPAdapter(pool_connections=2, pool_maxsize=4, max_retries=0)
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+                session.headers.update({"User-Agent": "FRAM"})
+                self._discord_webhook_session = session
+
+        session = self._discord_webhook_session
+        if session is None:
+            raise RuntimeError("Discord webhook session was not initialized.")
+        return session
+
+    def _close_discord_webhook_session(self) -> None:
+        with self._discord_webhook_session_lock:
+            if self._discord_webhook_session is not None:
+                self._discord_webhook_session.close()
+            self._discord_webhook_session = None
+
     def _post_discord_webhook_message(
         self,
         webhook_url: str,
@@ -17338,7 +17364,12 @@ class AccountManagerUI:
         if "content" not in payload and "embeds" not in payload:
             payload["content"] = "FRAM"
         try:
-            response = requests.post(webhook_url, json=payload, timeout=10)
+            with self._discord_webhook_session_lock:
+                response = self._get_discord_webhook_session().post(
+                    webhook_url,
+                    json=payload,
+                    timeout=10,
+                )
             if response.status_code in (200, 204):
                 return True, ""
             return False, f"Discord returned HTTP {response.status_code}."
@@ -17360,12 +17391,13 @@ class AccountManagerUI:
         content_type = "image/png" if file_name.lower().endswith(".png") else "application/octet-stream"
         try:
             with file_path.open("rb") as file_handle:
-                response = requests.post(
-                    webhook_url,
-                    data={"payload_json": json.dumps(payload)},
-                    files={"file": (file_name, file_handle, content_type)},
-                    timeout=20,
-                )
+                with self._discord_webhook_session_lock:
+                    response = self._get_discord_webhook_session().post(
+                        webhook_url,
+                        data={"payload_json": json.dumps(payload)},
+                        files={"file": (file_name, file_handle, content_type)},
+                        timeout=20,
+                    )
             if response.status_code in (200, 204):
                 return True, ""
             return False, f"Discord returned HTTP {response.status_code}."
@@ -17527,6 +17559,11 @@ class AccountManagerUI:
         except Exception:
             pass
         self._http_session = None
+
+        try:
+            self._close_discord_webhook_session()
+        except Exception:
+            pass
 
         try:
             RobloxAPI.close_http_session()
