@@ -7,7 +7,7 @@ import platform
 import threading
 import time
 from dataclasses import asdict, dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import requests
 
@@ -50,6 +50,14 @@ class SessionEntry:
     has_seen_window: bool = False
     last_game_location: str = ""
     disabled_reason: str = ""
+
+
+@dataclass(frozen=True)
+class PresenceCheckCandidate:
+    username: str
+    cookie: str
+    user_id: int
+    process_running: bool
 
 
 class AutoRejoinMonitor:
@@ -272,24 +280,32 @@ class AutoRejoinMonitor:
                 return None
             return asdict(session)
 
-    def _run(self):
+    def _run(self) -> None:
         while not self._stop_event.is_set():
             self._expire_manual_stop_grace()
             usernames, process_states, visible_window_pids = self._build_monitor_snapshot()
+            presence_candidates: List[PresenceCheckCandidate] = []
             for username in usernames:
                 if self._stop_event.is_set():
                     return
                 try:
-                    self._monitor_session(
+                    presence_candidate = self._monitor_session(
                         username,
                         process_states=process_states,
                         visible_window_pids=visible_window_pids,
                     )
+                    if presence_candidate is not None:
+                        presence_candidates.append(presence_candidate)
                 except Exception as exc:
                     self._log(f"[AUTO REJOIN] Monitor error for {username}: {exc}")
+            if presence_candidates and not self._stop_event.is_set():
+                try:
+                    self._run_presence_check_batch(presence_candidates)
+                except Exception as exc:
+                    self._log(f"[AUTO REJOIN] Presence batch error: {exc}")
             self._stop_event.wait(self.LOOP_INTERVAL_SECONDS)
 
-    def _build_monitor_snapshot(self):
+    def _build_monitor_snapshot(self) -> Tuple[List[str], Dict[int, bool], Set[int]]:
         with self._lock:
             usernames = list(self.active_sessions.keys())
             pid_values = {
@@ -316,11 +332,16 @@ class AutoRejoinMonitor:
             for username in expired:
                 self._manual_stop_grace.pop(username, None)
 
-    def _monitor_session(self, username, process_states=None, visible_window_pids=None):
+    def _monitor_session(
+        self,
+        username: str,
+        process_states: Optional[Dict[int, bool]] = None,
+        visible_window_pids: Optional[Set[int]] = None,
+    ) -> Optional[PresenceCheckCandidate]:
         with self._lock:
             session = self.active_sessions.get(username)
             if session is None:
-                return
+                return None
             pid_value = int(session.pid or 0)
             process_seen = bool(session.has_seen_process_alive)
             window_seen = bool(session.has_seen_window)
@@ -348,14 +369,14 @@ class AutoRejoinMonitor:
         with self._lock:
             session = self.active_sessions.get(username)
             if session is None:
-                return
+                return None
             if process_running:
                 session.has_seen_process_alive = True
             if window_exists:
                 session.has_seen_window = True
 
         if rejoin_in_progress:
-            return
+            return None
 
         if pid_value and process_seen and not process_running:
             if auto_rejoin and not self._is_manual_stop_active(username):
@@ -363,7 +384,7 @@ class AutoRejoinMonitor:
             else:
                 with self._lock:
                     self.active_sessions.pop(username, None)
-            return
+            return None
 
         if pid_value and window_seen and not window_exists and not process_running:
             if auto_rejoin and not self._is_manual_stop_active(username):
@@ -371,14 +392,14 @@ class AutoRejoinMonitor:
             else:
                 with self._lock:
                     self.active_sessions.pop(username, None)
-            return
+            return None
 
         if not auto_rejoin:
-            return
+            return None
 
         now = time.monotonic()
         if (now - last_presence_check_at) < self.POLL_INTERVAL_SECONDS:
-            return
+            return None
 
         if not user_id.isdigit():
             self._disable_session(
@@ -389,47 +410,122 @@ class AutoRejoinMonitor:
                     f"[AUTO REJOIN] {username}: unable to monitor presence because no user ID was resolved."
                 ),
             )
-            return
+            return None
 
-        presence_result = {}
-        try:
-            presence_result = self.presence_lookup(
-                cookie,
-                [int(user_id)],
-                session=self._presence_session,
-            ) or {}
-        except Exception as exc:
-            self._log(f"[AUTO REJOIN] Presence lookup failed for {username}: {exc}")
-            with self._lock:
-                session = self.active_sessions.get(username)
-                if session is not None:
-                    session.last_presence_check_at = now
-            return
+        return PresenceCheckCandidate(
+            username=username,
+            cookie=cookie,
+            user_id=int(user_id),
+            process_running=process_running,
+        )
 
-        with self._lock:
-            session = self.active_sessions.get(username)
-            if session is None:
+    def _run_presence_check_batch(self, candidates: List[PresenceCheckCandidate]) -> None:
+        grouped_candidates = self._group_presence_candidates_by_cookie(candidates)
+        for cookie, cookie_candidates in grouped_candidates.items():
+            if self._stop_event.is_set():
                 return
-            session.last_presence_check_at = now
+            checked_at = time.monotonic()
+            user_ids = list(dict.fromkeys(candidate.user_id for candidate in cookie_candidates))
+            try:
+                presence_result: Dict[str, object] = self.presence_lookup(
+                    cookie,
+                    user_ids,
+                    session=self._presence_session,
+                ) or {}
+            except Exception as exc:
+                self._handle_presence_lookup_failure(cookie_candidates, checked_at, exc)
+                continue
+            self._handle_presence_lookup_result(cookie_candidates, presence_result, checked_at)
+
+    def _group_presence_candidates_by_cookie(
+        self,
+        candidates: List[PresenceCheckCandidate],
+    ) -> Dict[str, List[PresenceCheckCandidate]]:
+        grouped_candidates: Dict[str, List[PresenceCheckCandidate]] = {}
+        for candidate in candidates:
+            grouped_candidates.setdefault(candidate.cookie, []).append(candidate)
+        return grouped_candidates
+
+    def _handle_presence_lookup_failure(
+        self,
+        candidates: List[PresenceCheckCandidate],
+        checked_at: float,
+        error: Exception,
+    ) -> None:
+        usernames = ", ".join(candidate.username for candidate in candidates)
+        self._log(f"[AUTO REJOIN] Presence lookup failed for {usernames}: {error}")
+        self._update_presence_check_timestamps(candidates, checked_at)
+
+    def _handle_presence_lookup_result(
+        self,
+        candidates: List[PresenceCheckCandidate],
+        presence_result: Dict[str, object],
+        checked_at: float,
+    ) -> None:
+        self._update_presence_check_timestamps(candidates, checked_at)
 
         if not presence_result.get("ok", False):
-            if presence_result.get("auth_error", False) or self._account_is_invalid(username):
-                self._disable_session(
-                    username,
-                    reason="cookie_invalid",
-                    status_text="Auto-Rejoin disabled",
-                    log_message=(
-                        f"[AUTO REJOIN] {username}: cookie appears invalid or expired; "
-                        "auto-rejoin has been disabled for this session."
-                    ),
-                )
+            auth_error = bool(presence_result.get("auth_error", False))
+            for candidate in candidates:
+                if auth_error or self._account_is_invalid(candidate.username):
+                    self._disable_session(
+                        candidate.username,
+                        reason="cookie_invalid",
+                        status_text="Auto-Rejoin disabled",
+                        log_message=(
+                            f"[AUTO REJOIN] {candidate.username}: cookie appears invalid or expired; "
+                            "auto-rejoin has been disabled for this session."
+                        ),
+                    )
             return
 
-        user_presences = presence_result.get("user_presences") or []
-        if not user_presences:
+        raw_user_presences = presence_result.get("user_presences") or []
+        if not isinstance(raw_user_presences, list):
             return
 
-        presence = user_presences[0] or {}
+        presence_by_user_id = self._build_presence_by_user_id(raw_user_presences)
+        if not presence_by_user_id:
+            return
+
+        for candidate in candidates:
+            presence = presence_by_user_id.get(candidate.user_id)
+            if presence is not None:
+                self._handle_presence_entry(candidate, presence)
+
+    def _update_presence_check_timestamps(
+        self,
+        candidates: List[PresenceCheckCandidate],
+        checked_at: float,
+    ) -> None:
+        with self._lock:
+            for candidate in candidates:
+                session = self.active_sessions.get(candidate.username)
+                if session is not None:
+                    session.last_presence_check_at = checked_at
+
+    def _build_presence_by_user_id(
+        self,
+        user_presences: Iterable[object],
+    ) -> Dict[int, Dict[str, object]]:
+        presence_by_user_id: Dict[int, Dict[str, object]] = {}
+        for presence in user_presences:
+            if not isinstance(presence, dict):
+                continue
+            presence_user_id = self._normalize_int(
+                presence.get("userId"),
+                default=0,
+                minimum=0,
+            )
+            if presence_user_id > 0:
+                presence_by_user_id[presence_user_id] = presence
+        return presence_by_user_id
+
+    def _handle_presence_entry(
+        self,
+        candidate: PresenceCheckCandidate,
+        presence: Dict[str, object],
+    ) -> None:
+        username = candidate.username
         current_presence_type = self._normalize_int(
             presence.get("userPresenceType"),
             default=0,
@@ -442,6 +538,10 @@ class AutoRejoinMonitor:
         with self._lock:
             session = self.active_sessions.get(username)
             if session is None:
+                return
+            if str(session.cookie or "").strip() != candidate.cookie:
+                return
+            if self._normalize_int(session.user_id, default=0, minimum=0) != candidate.user_id:
                 return
             previous_presence_type = session.last_presence_type
             if place_id:
@@ -463,7 +563,11 @@ class AutoRejoinMonitor:
             else:
                 should_rejoin = False
 
-            should_clear = bool(session.has_seen_in_game and current_presence_type != 2 and not process_running)
+            should_clear = bool(
+                session.has_seen_in_game
+                and current_presence_type != 2
+                and not candidate.process_running
+            )
 
         if should_rejoin:
             self._queue_rejoin(username, reason="presence transition")
