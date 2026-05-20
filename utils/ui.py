@@ -224,6 +224,54 @@ WINDOWS_API_ERROR_TYPES: tuple[type[BaseException], ...] = (
     TypeError,
     ValueError,
 ) + PYWIN32_ERROR_TYPES
+SENSITIVE_CONSOLE_TEXT_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r'(?i)(\"(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\"\s*:\s*\")([^\"]*)(\")'
+        ),
+        r"\1[REDACTED]\3",
+    ),
+    (
+        re.compile(
+            r"(?i)('(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)'\s*:\s*')([^']*)(')"
+        ),
+        r"\1[REDACTED]\3",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+        ),
+        r"\1\2[REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)([?&](?:password|pass|token|cookie|auth|authorization)=)([^&\s]+)"),
+        r"\1[REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)(\.ROBLOSECURITY\s*=\s*)([^;\s]+)"),
+        r"\1[REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)(\.ROBLOSECURITY\s*[:=]\s*)([^;\s]+)"),
+        r"\1[REDACTED]",
+    ),
+    (
+        re.compile(r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[^\s\"'<>)]*"),
+        "[DISCORD_WEBHOOK_REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n\"']+)"),
+        r"\1<user>",
+    ),
+    (
+        re.compile(r"(?i)([\\/]+Users[\\/]+)([^\\/\r\n\"']+)"),
+        r"\1<user>",
+    ),
+    (
+        re.compile(r"(?i)([\\/]+home[\\/]+)([^\\/\r\n\"']+)"),
+        r"\1<user>",
+    ),
+)
 
 
 class Guid(ctypes.Structure):
@@ -537,56 +585,8 @@ def normalize_multi_select_event_key(event: tk.Event) -> Optional[str]:
 
 def redact_sensitive_console_text(text: str) -> str:
     redacted = text
-    redacted = re.sub(
-        r'(?i)(\"(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\"\s*:\s*\")([^\"]*)(\")',
-        r"\1[REDACTED]\3",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)('(?:password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)'\s*:\s*')([^']*)(')",
-        r"\1[REDACTED]\3",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)\b(password|pass|passwd|pwd|cookie|token|authorization|access_token|refresh_token)\b(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
-        r"\1\2[REDACTED]",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)([?&](?:password|pass|token|cookie|auth|authorization)=)([^&\s]+)",
-        r"\1[REDACTED]",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)(\.ROBLOSECURITY\s*=\s*)([^;\s]+)",
-        r"\1[REDACTED]",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)(\.ROBLOSECURITY\s*[:=]\s*)([^;\s]+)",
-        r"\1[REDACTED]",
-        redacted,
-    )
-    redacted = re.sub(
-        r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[^\s\"'<>)]*",
-        "[DISCORD_WEBHOOK_REDACTED]",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)([A-Za-z]:[\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
-        r"\1<user>",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)([\\/]+Users[\\/]+)([^\\/\r\n\"']+)",
-        r"\1<user>",
-        redacted,
-    )
-    redacted = re.sub(
-        r"(?i)([\\/]+home[\\/]+)([^\\/\r\n\"']+)",
-        r"\1<user>",
-        redacted,
-    )
+    for pattern, replacement in SENSITIVE_CONSOLE_TEXT_REDACTIONS:
+        redacted = pattern.sub(replacement, redacted)
     return redacted
 
 
