@@ -416,6 +416,24 @@ class AntiAfkWindow:
 
 
 @dataclass(frozen=True)
+class TrackedWindowRecord:
+    hwnd: int
+    pid: int
+    title: str
+    class_name: str
+    is_visible: bool
+    is_hung: bool
+
+
+@dataclass(frozen=True)
+class TrackedProcessWindowSnapshot:
+    created_at: float
+    pid_to_image: dict[int, str]
+    window_records: tuple[TrackedWindowRecord, ...]
+    includes_windows: bool
+
+
+@dataclass(frozen=True)
 class AntiAfkPassSummary:
     total_windows: int
     successful_windows: int
@@ -1531,8 +1549,9 @@ class AccountManagerUI:
         self._user_icon_fetch_worker_started = False
         self._user_icon_fetch_deferred: set[str] = set()
         self._user_icon_fetch_retry_after_id: Optional[str] = None
-        self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
-        self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
+        self._tracked_process_window_snapshot: Optional[TrackedProcessWindowSnapshot] = None
+        self._tracked_process_window_snapshot_lock = threading.RLock()
+        self._tracked_process_window_snapshot_ttl_seconds: float = 0.75
         self._roblox_command_line_cache: dict[str, dict[int, str]] = {"pid_to_commandline": {}}
         self._roblox_command_line_cache_lock: Any = threading.Lock()
         self._recent_place_id_log_cache = {"ts": 0.0, "values": []}
@@ -3498,28 +3517,31 @@ class AccountManagerUI:
             self._anti_afk_next_label_after_id = None
 
     def _anti_afk_find_roblox_windows(self, use_cache: bool = False) -> list[AntiAfkWindow]:
-        if platform.system() != "Windows" or win32gui is None or win32process is None or win32con is None:
+        if platform.system() != "Windows":
             return []
 
-        pid_to_image = self._query_tracked_process_pid_map(
-            self.ANTI_AFK_TARGET_EXECUTABLES,
-            use_cache=use_cache,
-        )
+        target_exes = self._normalize_tracked_executable_names(self.ANTI_AFK_TARGET_EXECUTABLES)
+        snapshot = self._get_tracked_process_window_snapshot(use_cache=use_cache, include_windows=True)
+        pid_to_image = {
+            int(pid_value): str(image_name or "").strip()
+            for pid_value, image_name in snapshot.pid_to_image.items()
+            if str(image_name or "").strip().lower() in target_exes
+        }
+        records_by_pid: dict[int, TrackedWindowRecord] = {}
+        for record in snapshot.window_records:
+            if record.pid in pid_to_image and record.pid not in records_by_pid:
+                records_by_pid[record.pid] = record
+
         windows: list[AntiAfkWindow] = []
         for pid_value in sorted(pid_to_image.keys()):
-            hwnd = self._find_main_window_for_pid(pid_value, include_hidden=True)
-            if hwnd is None:
+            record = records_by_pid.get(pid_value)
+            if record is None:
                 continue
-            title_text = ""
-            try:
-                title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
-            except WINDOWS_API_ERROR_TYPES:
-                title_text = ""
             windows.append(
                 AntiAfkWindow(
-                    hwnd=int(hwnd),
+                    hwnd=int(record.hwnd),
                     pid=int(pid_value),
-                    title=title_text or str(pid_to_image.get(pid_value, "") or "Roblox"),
+                    title=record.title or str(pid_to_image.get(pid_value, "") or "Roblox"),
                 )
             )
         return windows
@@ -3795,54 +3817,39 @@ class AccountManagerUI:
                 except Exception:
                     pass
 
-    def _get_roblox_headless_pid_map(self):
-        return self._query_tracked_process_pid_map(
-            self.ROBLOX_HEADLESS_TARGET_EXECUTABLES,
-            use_cache=False,
-        )
+    def _get_roblox_headless_pid_map(self) -> dict[int, str]:
+        target_exes = self._normalize_tracked_executable_names(self.ROBLOX_HEADLESS_TARGET_EXECUTABLES)
+        snapshot = self._get_tracked_process_window_snapshot(use_cache=False, include_windows=True)
+        return {
+            int(pid_value): str(image_name or "").strip()
+            for pid_value, image_name in snapshot.pid_to_image.items()
+            if str(image_name or "").strip().lower() in target_exes
+        }
 
-    def _get_roblox_headless_windows(self, target_pids=None, include_hidden=False):
-        if platform.system() != "Windows" or win32gui is None or win32process is None:
+    def _get_roblox_headless_windows(
+        self,
+        target_pids: Any = None,
+        include_hidden: bool = False,
+    ) -> list[int]:
+        if platform.system() != "Windows":
             return []
 
         if target_pids is None:
             target_pids = set(self._get_roblox_headless_pid_map().keys())
         else:
-            normalized_pids = set()
-            for raw_pid in target_pids:
-                try:
-                    pid_value = int(raw_pid)
-                except Exception:
-                    continue
-                if pid_value > 0:
-                    normalized_pids.add(pid_value)
-            target_pids = normalized_pids
+            target_pids = self._normalize_pid_set(target_pids)
         if not target_pids:
             return []
 
-        windows = []
-
-        def enum_handler(hwnd, _):
-            try:
-                if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
-                    return True
-                if not include_hidden and not win32gui.IsWindowVisible(hwnd):
-                    return True
-                _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
-                title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
-                class_name = str(win32gui.GetClassName(hwnd) or "").strip()
-            except Exception:
-                return True
-
-            if int(pid_value) in target_pids and (title_text or class_name == "WINDOWSCLIENT"):
-                windows.append(hwnd)
-            return True
-
-        try:
-            win32gui.EnumWindows(enum_handler, None)
-        except Exception:
-            return []
-
+        snapshot = self._get_tracked_process_window_snapshot(use_cache=True, include_windows=True)
+        windows: list[int] = []
+        for record in snapshot.window_records:
+            if record.pid not in target_pids:
+                continue
+            if not include_hidden and not record.is_visible:
+                continue
+            if record.title or record.class_name == "WINDOWSCLIENT":
+                windows.append(record.hwnd)
         return windows
 
     def _hide_roblox_headless_window(self, hwnd):
@@ -10752,6 +10759,8 @@ class AccountManagerUI:
             messagebox.showerror("Force Quit Roblox", f"Failed to run taskkill: {exc}")
             return
 
+        self._invalidate_tracked_process_caches()
+        self._invalidate_active_client_indicator_cache()
         combined_output = (result.stdout or "") + (result.stderr or "")
         if result.returncode == 0:
             messagebox.showinfo("Force Quit Roblox", "All Roblox instances have been closed.")
@@ -10799,40 +10808,25 @@ class AccountManagerUI:
             ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
         ]
 
-    @classmethod
-    def _memtrim_find_roblox_windows(cls):
+    def _memtrim_find_roblox_windows(self, use_cache: bool = False) -> list[tuple[int, str, int]]:
         """Return [(hwnd, title, pid)] for visible Roblox client windows (memory trim)."""
-        if platform.system() != "Windows" or win32gui is None or win32process is None:
+        if platform.system() != "Windows":
             return []
 
-        results = []
-
-        def enum_handler(hwnd, _):
-            if not win32gui.IsWindowVisible(hwnd):
-                return True
-
-            title = win32gui.GetWindowText(hwnd)
-            window_class = win32gui.GetClassName(hwnd)
-            if "Roblox" not in title and window_class != "WINDOWSCLIENT":
-                return True
-
-            try:
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                try:
-                    import psutil
-
-                    if "roblox" in psutil.Process(pid).name().lower():
-                        results.append((hwnd, title, pid))
-                except ImportError:
-                    if "Roblox" in title:
-                        results.append((hwnd, title, pid))
-            except Exception:
-                if "Roblox" in title:
-                    results.append((hwnd, title, 0))
-
-            return True
-
-        win32gui.EnumWindows(enum_handler, None)
+        snapshot = self._get_tracked_process_window_snapshot(use_cache=use_cache, include_windows=True)
+        results: list[tuple[int, str, int]] = []
+        for record in snapshot.window_records:
+            if not record.is_visible:
+                continue
+            image_name = str(snapshot.pid_to_image.get(record.pid, "") or "").strip().lower()
+            has_roblox_title = "Roblox" in record.title
+            has_roblox_window_class = record.class_name == "WINDOWSCLIENT"
+            has_roblox_process = "roblox" in image_name
+            if not (has_roblox_title or has_roblox_window_class):
+                continue
+            if not (has_roblox_process or has_roblox_title):
+                continue
+            results.append((record.hwnd, record.title, record.pid))
         return results
 
     @classmethod
@@ -12111,13 +12105,16 @@ class AccountManagerUI:
 
         threading.Thread(target=worker, args=(usernames, launch_delay, on_done_callback), daemon=True).start()
 
-    def _invalidate_tracked_process_caches(self):
-        self._tasklist_pid_cache = {"ts": 0.0, "pid_to_image": {}}
-        self._tracked_window_snapshot_cache = {"ts": 0.0, "key": (), "snapshot": {}}
+    def _invalidate_tracked_process_caches(self) -> None:
+        try:
+            with self._tracked_process_window_snapshot_lock:
+                self._tracked_process_window_snapshot = None
+        except (AttributeError, RuntimeError):
+            self._tracked_process_window_snapshot = None
         try:
             with self._roblox_command_line_cache_lock:
                 self._roblox_command_line_cache = {"pid_to_commandline": {}}
-        except Exception:
+        except (AttributeError, RuntimeError):
             self._roblox_command_line_cache = {"pid_to_commandline": {}}
 
     def _get_running_tracked_roblox_pid_set(self, use_cache: bool = True) -> set[int]:
@@ -12177,41 +12174,42 @@ class AccountManagerUI:
         )
         return last_seen
 
-    def _query_tasklist_pid_map(self, executables, use_cache=True):
+    def _query_tasklist_pid_map(self, executables: Any, use_cache: bool = True) -> dict[int, str]:
         """Return pid->image_name for the provided executable names."""
         return self._query_tracked_process_pid_map(executables, use_cache=use_cache)
 
-    def _query_tracked_process_pid_map(self, executables, use_cache=True):
-        """Return pid->image_name from a native Windows process snapshot."""
-        pid_to_image = {}
-        if not executables:
-            return pid_to_image
+    def _normalize_tracked_executable_names(self, executables: Any) -> set[str]:
+        if isinstance(executables, (str, bytes)):
+            raw_values = [executables]
+        else:
+            try:
+                raw_values = list(executables or [])
+            except TypeError:
+                raw_values = [executables]
+        return {
+            str(item or "").strip().lower()
+            for item in raw_values
+            if str(item or "").strip()
+        }
 
-        target_exes = {str(item).strip().lower() for item in executables if item}
-        if not target_exes:
-            return pid_to_image
+    def _empty_tracked_process_window_snapshot(
+        self,
+        created_at: Optional[float] = None,
+    ) -> TrackedProcessWindowSnapshot:
+        timestamp = time.monotonic() if created_at is None else float(created_at)
+        return TrackedProcessWindowSnapshot(
+            created_at=timestamp,
+            pid_to_image={},
+            window_records=(),
+            includes_windows=False,
+        )
 
-        cache_ttl_seconds = 1.0
-        cache = getattr(self, "_tasklist_pid_cache", None)
-        now = time.monotonic()
-        if (
-            use_cache
-            and isinstance(cache, dict)
-            and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
-        ):
-            cached_pid_to_image = cache.get("pid_to_image", {})
-            if isinstance(cached_pid_to_image, dict):
-                return {
-                    int(pid_value): image_name
-                    for pid_value, image_name in cached_pid_to_image.items()
-                    if str(image_name or "").strip().lower() in target_exes
-                }
-
+    def _query_windows_process_image_map(self) -> dict[int, str]:
         if platform.system() != "Windows":
-            return pid_to_image
+            return {}
 
-        snapshot_handle = None
-        all_pid_to_image = {}
+        snapshot_handle: Any = None
+        pid_to_image: dict[int, str] = {}
         try:
             kernel32 = ctypes.windll.kernel32
             create_snapshot = kernel32.CreateToolhelp32Snapshot
@@ -12228,7 +12226,7 @@ class AccountManagerUI:
 
             snapshot_handle = create_snapshot(TH32CS_SNAPPROCESS, 0)
             if not snapshot_handle or snapshot_handle == INVALID_HANDLE_VALUE:
-                return pid_to_image
+                return {}
 
             entry = ProcessEntry32W()
             entry.dwSize = ctypes.sizeof(ProcessEntry32W)
@@ -12237,36 +12235,123 @@ class AccountManagerUI:
                 pid_value = int(entry.th32ProcessID)
                 image_name = str(entry.szExeFile or "").strip()
                 if pid_value > 0 and image_name:
-                    all_pid_to_image[pid_value] = image_name
-                    if image_name.lower() in target_exes:
-                        pid_to_image[pid_value] = image_name
+                    pid_to_image[pid_value] = image_name
 
                 entry = ProcessEntry32W()
                 entry.dwSize = ctypes.sizeof(ProcessEntry32W)
                 has_entry = bool(process_next(snapshot_handle, ctypes.byref(entry)))
-        except Exception:
-            return pid_to_image
+        except WINDOWS_API_ERROR_TYPES:
+            return {}
         finally:
             if snapshot_handle and snapshot_handle != INVALID_HANDLE_VALUE:
                 try:
                     ctypes.windll.kernel32.CloseHandle(snapshot_handle)
-                except Exception:
+                except WINDOWS_API_ERROR_TYPES:
                     pass
-
-        if all_pid_to_image:
-            self._tasklist_pid_cache = {
-                "ts": now,
-                "pid_to_image": all_pid_to_image,
-            }
 
         return pid_to_image
 
-    def _get_tracked_window_snapshot(self, executables, use_cache=True):
-        target_exes = tuple(sorted({
-            str(item).strip().lower()
-            for item in (executables or set())
-            if item
-        }))
+    def _query_windows_window_records(self) -> tuple[TrackedWindowRecord, ...]:
+        if platform.system() != "Windows" or win32gui is None or win32process is None or win32con is None:
+            return ()
+
+        records: list[TrackedWindowRecord] = []
+
+        def enum_handler(hwnd: int, _: Any) -> bool:
+            try:
+                if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
+                    return True
+                _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
+                normalized_pid = int(pid_value)
+                if normalized_pid <= 0:
+                    return True
+                title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
+                class_name = str(win32gui.GetClassName(hwnd) or "").strip()
+                is_visible = bool(win32gui.IsWindowVisible(hwnd))
+            except WINDOWS_API_ERROR_TYPES:
+                return True
+
+            is_hung = False
+            try:
+                is_hung = bool(ctypes.windll.user32.IsHungAppWindow(int(hwnd)))
+            except WINDOWS_API_ERROR_TYPES:
+                is_hung = False
+
+            records.append(
+                TrackedWindowRecord(
+                    hwnd=int(hwnd),
+                    pid=normalized_pid,
+                    title=title_text,
+                    class_name=class_name,
+                    is_visible=is_visible,
+                    is_hung=is_hung,
+                )
+            )
+            return True
+
+        try:
+            win32gui.EnumWindows(enum_handler, None)
+        except WINDOWS_API_ERROR_TYPES:
+            return ()
+
+        return tuple(records)
+
+    def _build_tracked_process_window_snapshot(
+        self,
+        include_windows: bool,
+    ) -> TrackedProcessWindowSnapshot:
+        created_at = time.monotonic()
+        return TrackedProcessWindowSnapshot(
+            created_at=created_at,
+            pid_to_image=self._query_windows_process_image_map(),
+            window_records=self._query_windows_window_records() if include_windows else (),
+            includes_windows=include_windows,
+        )
+
+    def _get_tracked_process_window_snapshot(
+        self,
+        use_cache: bool = True,
+        include_windows: bool = True,
+    ) -> TrackedProcessWindowSnapshot:
+        if platform.system() != "Windows":
+            return self._empty_tracked_process_window_snapshot()
+
+        lock = getattr(self, "_tracked_process_window_snapshot_lock", None)
+        if lock is None:
+            snapshot = self._build_tracked_process_window_snapshot(include_windows=include_windows)
+            self._tracked_process_window_snapshot = snapshot
+            return snapshot
+
+        with lock:
+            cached_snapshot = getattr(self, "_tracked_process_window_snapshot", None)
+            ttl_seconds = float(getattr(self, "_tracked_process_window_snapshot_ttl_seconds", 0.75) or 0.75)
+            if (
+                use_cache
+                and isinstance(cached_snapshot, TrackedProcessWindowSnapshot)
+                and (time.monotonic() - cached_snapshot.created_at) < ttl_seconds
+                and (cached_snapshot.includes_windows or not include_windows)
+            ):
+                return cached_snapshot
+
+            snapshot = self._build_tracked_process_window_snapshot(include_windows=include_windows)
+            self._tracked_process_window_snapshot = snapshot
+            return snapshot
+
+    def _query_tracked_process_pid_map(self, executables: Any, use_cache: bool = True) -> dict[int, str]:
+        """Return pid->image_name from a native Windows process snapshot."""
+        target_exes = self._normalize_tracked_executable_names(executables)
+        if not target_exes:
+            return {}
+
+        snapshot = self._get_tracked_process_window_snapshot(use_cache=use_cache, include_windows=False)
+        return {
+            int(pid_value): str(image_name or "").strip()
+            for pid_value, image_name in snapshot.pid_to_image.items()
+            if str(image_name or "").strip().lower() in target_exes
+        }
+
+    def _get_tracked_window_snapshot(self, executables: Any, use_cache: bool = True) -> dict[str, dict[int, Any]]:
+        target_exes = self._normalize_tracked_executable_names(executables)
         if not target_exes:
             return {
                 "pid_to_image": {},
@@ -12275,71 +12360,32 @@ class AccountManagerUI:
                 "pid_to_hung": {},
             }
 
-        cache_ttl_seconds = 0.75
-        cache = getattr(self, "_tracked_window_snapshot_cache", None)
-        now = time.monotonic()
-        if (
-            use_cache
-            and isinstance(cache, dict)
-            and tuple(cache.get("key", ())) == target_exes
-            and (now - float(cache.get("ts", 0.0) or 0.0)) < cache_ttl_seconds
-        ):
-            snapshot = dict(cache.get("snapshot", {}) or {})
-            return {
-                "pid_to_image": dict(snapshot.get("pid_to_image", {}) or {}),
-                "pid_to_hwnd": dict(snapshot.get("pid_to_hwnd", {}) or {}),
-                "pid_to_title": dict(snapshot.get("pid_to_title", {}) or {}),
-                "pid_to_hung": dict(snapshot.get("pid_to_hung", {}) or {}),
-            }
-
-        pid_to_image = self._query_tracked_process_pid_map(target_exes, use_cache=use_cache)
-        pid_to_hwnd = {}
-        pid_to_title = {}
-        pid_to_hung = {}
+        snapshot = self._get_tracked_process_window_snapshot(use_cache=use_cache, include_windows=True)
+        pid_to_image: dict[int, str] = {
+            int(pid_value): str(image_name or "").strip()
+            for pid_value, image_name in snapshot.pid_to_image.items()
+            if str(image_name or "").strip().lower() in target_exes
+        }
+        pid_to_hwnd: dict[int, int] = {}
+        pid_to_title: dict[int, str] = {}
+        pid_to_hung: dict[int, bool] = {}
         target_pids = {int(pid_value) for pid_value in pid_to_image.keys()}
 
-        if target_pids and win32gui and win32process:
-            def enum_handler(hwnd, _):
-                if not win32gui.IsWindowVisible(hwnd) or win32gui.GetWindow(hwnd, win32con.GW_OWNER):
-                    return True
-                try:
-                    _, pid_value = win32process.GetWindowThreadProcessId(hwnd)
-                except Exception:
-                    return True
-                normalized_pid = int(pid_value)
-                if normalized_pid not in target_pids:
-                    return True
-                pid_to_hwnd.setdefault(normalized_pid, hwnd)
-                try:
-                    title_text = str(win32gui.GetWindowText(hwnd) or "").strip()
-                except Exception:
-                    title_text = ""
-                if title_text:
-                    pid_to_title.setdefault(normalized_pid, title_text)
-                try:
-                    if bool(ctypes.windll.user32.IsHungAppWindow(int(hwnd))):
-                        pid_to_hung[normalized_pid] = True
-                except Exception:
-                    pass
-                return True
+        for record in snapshot.window_records:
+            if record.pid not in target_pids or not record.is_visible:
+                continue
+            pid_to_hwnd.setdefault(record.pid, record.hwnd)
+            if record.title:
+                pid_to_title.setdefault(record.pid, record.title)
+            if record.is_hung:
+                pid_to_hung[record.pid] = True
 
-            try:
-                win32gui.EnumWindows(enum_handler, None)
-            except Exception:
-                pass
-
-        snapshot = {
+        return {
             "pid_to_image": dict(pid_to_image),
             "pid_to_hwnd": dict(pid_to_hwnd),
             "pid_to_title": dict(pid_to_title),
             "pid_to_hung": dict(pid_to_hung),
         }
-        self._tracked_window_snapshot_cache = {
-            "ts": now,
-            "key": target_exes,
-            "snapshot": snapshot,
-        }
-        return snapshot
 
     def _prune_roblox_command_line_cache(
         self,
@@ -12824,7 +12870,7 @@ class AccountManagerUI:
                         )
                         return
 
-                    hwnd = self._find_main_window_for_pid(target_pid, include_hidden=True)
+                    hwnd = self._find_main_window_for_pid(target_pid, include_hidden=True, use_cache=False)
                     if not hwnd:
                         if attempt in {1, CLIENT_TITLE_RENAME_MAX_ATTEMPTS}:
                             self._log_client_title_rename(
@@ -12896,37 +12942,27 @@ class AccountManagerUI:
             name=f"rename-client-title-{normalized_pid}",
         ).start()
 
-    def _find_main_window_for_pid(self, pid_value: Any, include_hidden: bool = False) -> Optional[int]:
+    def _find_main_window_for_pid(
+        self,
+        pid_value: Any,
+        include_hidden: bool = False,
+        use_cache: bool = True,
+    ) -> Optional[int]:
         if platform.system() != "Windows":
             return None
 
-        found_hwnd: dict[str, Optional[int]] = {"value": None}
         try:
             normalized_pid = int(pid_value)
         except (TypeError, ValueError):
             return None
 
-        def _enum_handler(hwnd: int, _: Any) -> bool:
-            if found_hwnd["value"] is not None:
-                return False
-            if not include_hidden and not win32gui.IsWindowVisible(hwnd):
-                return True
-            if win32gui.GetWindow(hwnd, win32con.GW_OWNER):
-                return True
-            try:
-                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
-            except WINDOWS_API_ERROR_TYPES:
-                return True
-            if int(window_pid) != normalized_pid:
-                return True
-            found_hwnd["value"] = hwnd
-            return False
-
-        try:
-            win32gui.EnumWindows(_enum_handler, None)
-        except WINDOWS_API_ERROR_TYPES:
-            return None
-        return found_hwnd["value"]
+        snapshot = self._get_tracked_process_window_snapshot(use_cache=use_cache, include_windows=True)
+        for record in snapshot.window_records:
+            if record.pid != normalized_pid:
+                continue
+            if include_hidden or record.is_visible:
+                return record.hwnd
+        return None
 
     def launch_game(
         self,
