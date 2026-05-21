@@ -1,4 +1,4 @@
-"""Managed unpacked browser extensions for Chromium automation."""
+"""Managed unpacked browser extensions for browser automation."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 
@@ -24,6 +24,12 @@ CRX_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
+)
+FIREFOX_ADDONS_API_BASE_URL = "https://addons.mozilla.org/api/v5/addons/addon"
+FIREFOX_ADDONS_BASE_URL = "https://addons.mozilla.org"
+FIREFOX_ADDONS_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) "
+    "Gecko/20100101 Firefox/120.0"
 )
 
 
@@ -47,8 +53,12 @@ class BrowserExtension:
     def display_source(self) -> str:
         if self.source == "web_store":
             return "Chrome Web Store"
+        if self.source == "firefox_addons":
+            return "Firefox Add-ons"
         if self.source == "crx":
             return "CRX"
+        if self.source == "xpi":
+            return "XPI"
         if self.source == "unpacked":
             return "Unpacked"
         return self.source or "Managed"
@@ -178,6 +188,20 @@ class BrowserExtensionManager:
             extractor=lambda target_dir: self._extract_crx(crx_bytes, target_dir),
         )
 
+    def add_from_firefox_addon(self, addon_id_or_url: str) -> BrowserExtension:
+        addon_identifier = self.normalize_firefox_addon_id(addon_id_or_url)
+        addon_payload = self._fetch_firefox_addon_metadata(addon_identifier)
+        file_url = self._resolve_firefox_addon_file_url(addon_payload)
+        xpi_bytes = self._download_xpi(file_url)
+        addon_slug = self._coerce_text(addon_payload.get("slug")) or addon_identifier
+        addon_guid = self._coerce_text(addon_payload.get("guid")) or addon_slug
+        return self._install_from_extractor(
+            desired_key=self._sanitize_key(f"firefox-{addon_slug}"),
+            source="firefox_addons",
+            extension_id=addon_guid,
+            extractor=lambda target_dir: self._extract_xpi(xpi_bytes, target_dir),
+        )
+
     def add_from_crx(self, crx_path: Path | str) -> BrowserExtension:
         source_path = Path(crx_path).expanduser().resolve()
         if not source_path.is_file():
@@ -194,6 +218,24 @@ class BrowserExtensionManager:
             source="crx",
             extension_id="",
             extractor=lambda target_dir: self._extract_crx(crx_bytes, target_dir),
+        )
+
+    def add_from_xpi(self, xpi_path: Path | str) -> BrowserExtension:
+        source_path = Path(xpi_path).expanduser().resolve()
+        if not source_path.is_file():
+            raise BrowserExtensionError(f"XPI file was not found: {source_path}")
+        try:
+            xpi_bytes = source_path.read_bytes()
+        except OSError as exc:
+            raise BrowserExtensionError(f"Failed to read XPI file: {exc}") from exc
+
+        digest = hashlib.sha1(xpi_bytes).hexdigest()[:10]
+        desired_key = self._sanitize_key(f"{source_path.stem}-{digest}")
+        return self._install_from_extractor(
+            desired_key=desired_key,
+            source="xpi",
+            extension_id="",
+            extractor=lambda target_dir: self._extract_xpi(xpi_bytes, target_dir),
         )
 
     def add_from_unpacked(self, source_dir: Path | str) -> BrowserExtension:
@@ -219,6 +261,44 @@ class BrowserExtensionManager:
         if not CHROME_WEB_STORE_EXTENSION_ID_PATTERN.fullmatch(normalized_id):
             raise BrowserExtensionError("Enter a valid 32-character Chrome Web Store extension ID.")
         return normalized_id
+
+    @classmethod
+    def normalize_firefox_addon_id(cls, addon_id_or_url: str) -> str:
+        raw_value = str(addon_id_or_url or "").strip()
+        if not raw_value:
+            raise BrowserExtensionError("Enter a Firefox Add-ons slug, GUID, numeric ID, or URL.")
+
+        extracted_identifier = cls._extract_firefox_addon_id_from_url(raw_value)
+        normalized_identifier = unquote(extracted_identifier or raw_value).strip().strip("/")
+        if (
+            not normalized_identifier
+            or "/" in normalized_identifier
+            or "\\" in normalized_identifier
+            or any(character.isspace() for character in normalized_identifier)
+        ):
+            raise BrowserExtensionError("Enter a Firefox Add-ons slug, GUID, numeric ID, or URL.")
+        return normalized_identifier
+
+    @classmethod
+    def _extract_firefox_addon_id_from_url(cls, value: str) -> str:
+        parsed_value = value
+        if "://" not in parsed_value and parsed_value.lower().startswith("addons.mozilla.org/"):
+            parsed_value = f"https://{parsed_value}"
+
+        parsed_url = urlparse(parsed_value)
+        host = parsed_url.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host != "addons.mozilla.org":
+            return ""
+
+        path_parts = [unquote(part).strip() for part in parsed_url.path.split("/") if part.strip()]
+        for index, part in enumerate(path_parts):
+            if part == "firefox" and index + 2 < len(path_parts) and path_parts[index + 1] == "addon":
+                return path_parts[index + 2]
+            if part == "downloads" and index + 2 < len(path_parts) and path_parts[index + 1] == "latest":
+                return path_parts[index + 2]
+        return ""
 
     def _install_from_extractor(
         self,
@@ -285,6 +365,67 @@ class BrowserExtensionManager:
             raise BrowserExtensionError("The Chrome Web Store did not return a CRX package.")
         return crx_bytes
 
+    def _fetch_firefox_addon_metadata(self, addon_identifier: str) -> dict[str, Any]:
+        encoded_identifier = quote(addon_identifier, safe="")
+        url = f"{FIREFOX_ADDONS_API_BASE_URL}/{encoded_identifier}/"
+        try:
+            response = requests.get(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": FIREFOX_ADDONS_USER_AGENT,
+                },
+                timeout=60,
+            )
+            if response.status_code == 404:
+                raise BrowserExtensionError("Firefox Add-ons could not find that add-on.")
+            response.raise_for_status()
+        except BrowserExtensionError:
+            raise
+        except requests.RequestException as exc:
+            raise BrowserExtensionError(f"Failed to fetch Firefox add-on metadata: {exc}") from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise BrowserExtensionError("Firefox Add-ons returned invalid metadata JSON.") from exc
+        if not isinstance(payload, dict):
+            raise BrowserExtensionError("Firefox Add-ons returned invalid metadata.")
+        return payload
+
+    def _resolve_firefox_addon_file_url(self, addon_payload: dict[str, Any]) -> str:
+        current_version = addon_payload.get("current_version")
+        if not isinstance(current_version, dict):
+            raise BrowserExtensionError("Firefox Add-ons did not return a current extension version.")
+
+        file_payload = current_version.get("file")
+        if not isinstance(file_payload, dict):
+            raise BrowserExtensionError("Firefox Add-ons did not return an extension download.")
+
+        file_url = self._coerce_text(file_payload.get("url"))
+        if not file_url:
+            raise BrowserExtensionError("Firefox Add-ons did not return an extension download URL.")
+        return urljoin(FIREFOX_ADDONS_BASE_URL, file_url)
+
+    def _download_xpi(self, file_url: str) -> bytes:
+        try:
+            response = requests.get(
+                file_url,
+                headers={
+                    "Accept": "application/x-xpinstall,application/octet-stream,*/*",
+                    "User-Agent": FIREFOX_ADDONS_USER_AGENT,
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise BrowserExtensionError(f"Failed to download Firefox XPI: {exc}") from exc
+
+        xpi_bytes = bytes(response.content or b"")
+        if not xpi_bytes.startswith(b"PK"):
+            raise BrowserExtensionError("Firefox Add-ons did not return an XPI package.")
+        return xpi_bytes
+
     def _extract_crx(self, crx_bytes: bytes, target_dir: Path) -> None:
         zip_start = self._get_crx_zip_start(crx_bytes)
         try:
@@ -292,6 +433,15 @@ class BrowserExtensionManager:
                 self._extract_zip_safely(archive, target_dir)
         except zipfile.BadZipFile as exc:
             raise BrowserExtensionError("The CRX file does not contain a valid zip payload.") from exc
+        if not (target_dir / "manifest.json").is_file():
+            raise BrowserExtensionError("The extension package did not contain manifest.json.")
+
+    def _extract_xpi(self, xpi_bytes: bytes, target_dir: Path) -> None:
+        try:
+            with zipfile.ZipFile(BytesIO(xpi_bytes)) as archive:
+                self._extract_zip_safely(archive, target_dir)
+        except zipfile.BadZipFile as exc:
+            raise BrowserExtensionError("The XPI file is not a valid zip package.") from exc
         if not (target_dir / "manifest.json").is_file():
             raise BrowserExtensionError("The extension package did not contain manifest.json.")
 
@@ -467,6 +617,20 @@ class BrowserExtensionManager:
     def _sanitize_key(value: str) -> str:
         key = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip()).strip("-").lower()
         return key[:64] or "extension"
+
+    @staticmethod
+    def _coerce_text(value: Any) -> str:
+        if isinstance(value, dict):
+            preferred_value = value.get("en-US") or value.get("en_US")
+            if preferred_value is not None:
+                return str(preferred_value).strip()
+            for candidate in value.values():
+                if candidate is not None:
+                    return str(candidate).strip()
+            return ""
+        if value is None:
+            return ""
+        return str(value).strip()
 
     @staticmethod
     def _assert_path_inside(path: Path, root: Path) -> None:

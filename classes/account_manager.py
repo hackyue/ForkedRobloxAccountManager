@@ -33,7 +33,7 @@ except Exception:
 
 from .encryption import HardwareEncryption, PasswordEncryption, EncryptionConfig
 from .roblox_api import RobloxAPI
-from .browser_extensions import BrowserExtensionError, BrowserExtensionManager
+from .browser_extensions import BrowserExtension, BrowserExtensionError, BrowserExtensionManager
 
 
 class RobloxAccountManager:
@@ -264,12 +264,28 @@ class RobloxAccountManager:
     def get_browser_extension_manager(self) -> BrowserExtensionManager:
         return self.browser_extension_manager
 
-    def get_enabled_browser_extension_paths(self) -> list[Path]:
+    def get_enabled_browser_extensions(self, browser_name: Optional[str] = None) -> list[BrowserExtension]:
         try:
-            return self.browser_extension_manager.get_enabled_extension_paths()
+            enabled_extensions = [
+                extension
+                for extension in self.browser_extension_manager.list_extensions()
+                if extension.enabled
+            ]
         except BrowserExtensionError as exc:
             print(f"[WARNING] Browser extensions could not be loaded: {exc}")
             return []
+
+        normalized_browser_name = str(browser_name or "").strip().lower()
+        if normalized_browser_name in {"chrome", "chromium"}:
+            return [
+                extension
+                for extension in enabled_extensions
+                if extension.source not in {"firefox_addons", "xpi"}
+            ]
+        return enabled_extensions
+
+    def get_enabled_browser_extension_paths(self, browser_name: Optional[str] = None) -> list[Path]:
+        return [extension.directory for extension in self.get_enabled_browser_extensions(browser_name)]
 
     def get_managed_chromium_binary_path(self) -> Optional[Path]:
         root = self.get_managed_chromium_root()
@@ -469,7 +485,7 @@ class RobloxAccountManager:
                 profile_dir,
                 headless=headless,
                 binary_path=browser_binary_path,
-                extension_paths=self.get_enabled_browser_extension_paths(),
+                extension_paths=self.get_enabled_browser_extension_paths("chromium"),
             )
             service = Service(
                 str(driver_binary_path),
@@ -487,7 +503,14 @@ class RobloxAccountManager:
             self.cleanup_temp_profile(profile_dir)
             raise
 
-    def _setup_firefox_driver(self, headless=False):
+    def _install_firefox_extensions(self, driver: Any) -> None:
+        for extension in self.get_enabled_browser_extensions("firefox"):
+            try:
+                driver.install_addon(str(extension.directory.resolve()), temporary=True)
+            except (AttributeError, OSError, WebDriverException) as exc:
+                print(f"[WARNING] Firefox could not load extension {extension.name}: {exc}")
+
+    def _setup_firefox_driver(self, headless: bool = False) -> Any:
         """Setup Firefox driver with compatible performance options."""
         if FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None:
             raise RuntimeError("Firefox Selenium support is unavailable in this environment.")
@@ -515,10 +538,11 @@ class RobloxAccountManager:
             )
             driver = webdriver.Firefox(service=service, options=firefox_options)
             setattr(driver, "_ram_temp_profile_dir", profile_dir)
+            self._install_firefox_extensions(driver)
             return driver
-        except Exception:
+        except Exception as exc:
             self.cleanup_temp_profile(profile_dir)
-            raise
+            raise RuntimeError(f"Failed to start Firefox automation: {exc}") from exc
 
     def setup_browser_driver(self, preferred_browser=None, headless=False):
         """

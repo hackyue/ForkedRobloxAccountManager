@@ -6808,7 +6808,7 @@ class AccountManagerUI:
 
         ttk.Label(
             header_frame,
-            text="This feature only works with Chromium.",
+            text="Manage extensions for browsers.",
             style="Dark.TLabel",
             font=("Segoe UI", 9),
             foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
@@ -6846,7 +6846,7 @@ class AccountManagerUI:
 
         action_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         action_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
-        for column_index in range(4):
+        for column_index in range(5):
             action_frame.grid_columnconfigure(column_index, weight=1)
 
         ttk.Label(
@@ -6855,10 +6855,11 @@ class AccountManagerUI:
             style="Dark.TLabel",
             font=("Segoe UI", 9),
             foreground=self.FG_MUTED if hasattr(self, "FG_MUTED") else "#888888",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
 
         extension_cache: dict[str, BrowserExtension] = {}
         task_buttons: list[ttk.Button] = []
+        chromium_download_state: dict[str, Optional[threading.Thread]] = {"thread": None}
 
         def is_chromium_ready() -> bool:
             try:
@@ -6866,17 +6867,57 @@ class AccountManagerUI:
             except (AttributeError, OSError, RuntimeError, TypeError):
                 return False
 
+        def is_firefox_ready() -> bool:
+            try:
+                return "firefox" in self._get_available_browsers()
+            except (AttributeError, OSError, RuntimeError, TypeError):
+                return False
+
+        def get_raw_browser_preference() -> str:
+            browser_preference = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
+            if browser_preference not in {"auto", "chrome", "firefox", "chromium"}:
+                return "auto"
+            return browser_preference
+
+        def get_extension_browser_mode() -> str:
+            browser_preference = get_raw_browser_preference()
+            if browser_preference == "auto":
+                return "chromium" if is_chromium_ready() else "auto_missing_chromium"
+            if browser_preference == "chromium":
+                return "chromium" if is_chromium_ready() else "chromium_missing"
+            if browser_preference == "firefox":
+                return "firefox" if is_firefox_ready() else "firefox_missing"
+            return "unsupported"
+
+        def is_chromium_extension(extension: BrowserExtension) -> bool:
+            return extension.source in {"web_store", "crx", "unpacked"}
+
+        def is_firefox_extension(extension: BrowserExtension) -> bool:
+            return extension.source in {"firefox_addons", "xpi", "unpacked"}
+
+        def is_extension_visible(extension: BrowserExtension) -> bool:
+            mode = get_extension_browser_mode()
+            if mode in {"chromium", "chromium_missing", "auto_missing_chromium"}:
+                return is_chromium_extension(extension)
+            if mode in {"firefox", "firefox_missing"}:
+                return is_firefox_extension(extension)
+            return False
+
         def refresh_status() -> None:
-            count = len(extension_cache)
-            enabled_count = len([extension for extension in extension_cache.values() if extension.enabled])
-            if is_chromium_ready():
-                status_var.set(
-                    f"{count} extension(s), {enabled_count} enabled. Enabled extensions load when Browser Automation uses Chromium."
-                )
-            else:
-                status_var.set(
-                    f"{count} extension(s), {enabled_count} enabled. Install Chromium before enabled extensions can load."
-                )
+            mode = get_extension_browser_mode()
+            if mode == "unsupported":
+                status_var.set("Chrome is not supported. Extension Manager supports Firefox and Chromium.")
+                return
+            if mode == "auto_missing_chromium":
+                status_var.set("Install Chromium to manage extensions.")
+                return
+            if mode == "chromium_missing":
+                status_var.set("Chromium is not installed. Install Chromium to manage Chromium extensions.")
+                return
+            if mode == "firefox_missing":
+                status_var.set("Firefox is not installed. Select another Browser Automation option first.")
+                return
+            status_var.set("")
 
         def refresh_tree(select_key: str = "") -> None:
             extension_cache.clear()
@@ -6891,6 +6932,8 @@ class AccountManagerUI:
                 return
 
             for extension in extensions:
+                if not is_extension_visible(extension):
+                    continue
                 extension_cache[extension.key] = extension
                 tree.insert(
                     "",
@@ -6969,10 +7012,13 @@ class AccountManagerUI:
 
             threading.Thread(target=worker, daemon=True, name="browser-extension-manager").start()
 
-        def add_extension_id() -> None:
+        def add_chrome_extension_id() -> None:
+            if get_extension_browser_mode() not in {"chromium", "chromium_missing"}:
+                messagebox.showwarning("Extension Manager", "Switch Browser Automation to Chromium first.", parent=window)
+                return
             extension_id = simpledialog.askstring(
-                "Add Extension",
-                "Extension ID or Chrome Web Store URL:",
+                "Add Chrome Extension",
+                "Chrome Web Store extension ID or URL:",
                 parent=window,
             )
             if extension_id is None:
@@ -6992,23 +7038,74 @@ class AccountManagerUI:
                 on_success,
             )
 
-        def import_crx() -> None:
-            file_path = filedialog.askopenfilename(
+        def add_firefox_addon_id() -> None:
+            if get_extension_browser_mode() != "firefox":
+                messagebox.showwarning("Extension Manager", "Switch Browser Automation to Firefox first.", parent=window)
+                return
+            addon_id = simpledialog.askstring(
+                "Add Firefox Extension",
+                "Firefox Add-ons slug, GUID, numeric ID, or URL:",
                 parent=window,
-                title="Import CRX Extension",
-                filetypes=(("CRX files", "*.crx"), ("All files", "*.*")),
             )
-            if not file_path:
+            if addon_id is None:
+                return
+            addon_id = addon_id.strip()
+            if not addon_id:
                 return
 
             def on_success(result: Any) -> None:
                 extension = result if isinstance(result, BrowserExtension) else None
                 refresh_tree(extension.key if extension is not None else "")
-                status_var.set(f"Imported {extension.name}." if extension is not None else "CRX imported.")
+                status_var.set(f"Added {extension.name}." if extension is not None else "Extension added.")
 
             run_manager_task(
-                "Importing CRX...",
-                lambda: manager.add_from_crx(file_path),
+                "Downloading Firefox extension...",
+                lambda: manager.add_from_firefox_addon(addon_id),
+                on_success,
+            )
+
+        def import_extension_package() -> None:
+            mode = get_extension_browser_mode()
+            if mode in {"chromium", "chromium_missing"}:
+                dialog_title = "Import CRX Extension"
+                filetypes = (("CRX files", "*.crx"), ("All files", "*.*"))
+                status_text = "Importing CRX..."
+                fallback_status_text = "CRX imported."
+                import_func: Callable[[str], BrowserExtension] = manager.add_from_crx
+            elif mode == "firefox":
+                dialog_title = "Import XPI Extension"
+                filetypes = (("XPI files", "*.xpi"), ("All files", "*.*"))
+                status_text = "Importing XPI..."
+                fallback_status_text = "XPI imported."
+                import_func = manager.add_from_xpi
+            else:
+                messagebox.showwarning("Extension Manager", "Browser not supported.", parent=window)
+                return
+
+            file_path = filedialog.askopenfilename(
+                parent=window,
+                title=dialog_title,
+                filetypes=filetypes,
+            )
+            if not file_path:
+                return
+
+            def import_package() -> BrowserExtension:
+                suffix = Path(file_path).suffix.casefold()
+                if mode in {"chromium", "chromium_missing"} and suffix != ".crx":
+                    raise BrowserExtensionError("Select a CRX extension package.")
+                if mode == "firefox" and suffix != ".xpi":
+                    raise BrowserExtensionError("Select an XPI extension package.")
+                return import_func(file_path)
+
+            def on_success(result: Any) -> None:
+                extension = result if isinstance(result, BrowserExtension) else None
+                refresh_tree(extension.key if extension is not None else "")
+                status_var.set(f"Imported {extension.name}." if extension is not None else fallback_status_text)
+
+            run_manager_task(
+                status_text,
+                import_package,
                 on_success,
             )
 
@@ -7081,6 +7178,66 @@ class AccountManagerUI:
             refresh_status()
             status_var.set("Browser Automation is set to Chromium.")
 
+        def use_firefox() -> None:
+            if not is_firefox_ready():
+                messagebox.showwarning(
+                    "Extension Manager",
+                    "Firefox is not installed.",
+                    parent=window,
+                )
+                return
+            self.settings["browser_preference"] = "firefox"
+            self.save_settings()
+            refresh_status()
+            status_var.set("Browser Automation is set to Firefox.")
+
+        def set_chromium_download_status(message: str) -> None:
+            schedule_ui(lambda: status_var.set(message))
+
+        def begin_chromium_download() -> None:
+            active_thread = chromium_download_state.get("thread")
+            if active_thread is not None and active_thread.is_alive():
+                return
+
+            set_task_buttons_enabled(False)
+            status_var.set("Starting Chromium download...")
+
+            def worker() -> None:
+                try:
+                    installation = self._install_managed_chromium(set_chromium_download_status)
+                except RuntimeError as exc:
+                    error_message = str(exc)
+
+                    def apply_error() -> None:
+                        chromium_download_state["thread"] = None
+                        set_task_buttons_enabled(True)
+                        refresh_tree()
+                        refresh_action_buttons()
+                        status_var.set(error_message)
+                        messagebox.showerror("Install Chromium", error_message, parent=window)
+
+                    schedule_ui(apply_error)
+                    return
+
+                def apply_success() -> None:
+                    chromium_download_state["thread"] = None
+                    set_task_buttons_enabled(True)
+                    refresh_tree()
+                    refresh_action_buttons()
+                    version_text = f" {installation.version}" if installation.version else ""
+                    status_var.set(f"Chromium{version_text} is ready.")
+                    messagebox.showinfo(
+                        "Install Chromium",
+                        f"Chromium{version_text} is ready to use.",
+                        parent=window,
+                    )
+
+                schedule_ui(apply_success)
+
+            thread = threading.Thread(target=worker, daemon=True, name="download-managed-chromium")
+            chromium_download_state["thread"] = thread
+            thread.start()
+
         def open_extensions_folder() -> None:
             target_path = manager.extensions_folder
             try:
@@ -7100,13 +7257,24 @@ class AccountManagerUI:
             except tk.TclError:
                 pass
 
-        add_id_button = ttk.Button(action_frame, text="Add ID", style="Dark.TButton", command=add_extension_id)
+        add_id_button = ttk.Button(action_frame, text="Add Chrome ID", style="Dark.TButton", command=add_chrome_extension_id)
         add_id_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=3)
-        task_buttons.append(add_id_button)
 
-        import_crx_button = ttk.Button(action_frame, text="Import CRX", style="Dark.TButton", command=import_crx)
-        import_crx_button.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
-        task_buttons.append(import_crx_button)
+        add_firefox_button = ttk.Button(
+            action_frame,
+            text="Add Firefox ID",
+            style="Dark.TButton",
+            command=add_firefox_addon_id,
+        )
+        add_firefox_button.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
+
+        import_crx_button = ttk.Button(
+            action_frame,
+            text="Import Package",
+            style="Dark.TButton",
+            command=import_extension_package,
+        )
+        import_crx_button.grid(row=0, column=2, sticky="ew", padx=4, pady=3)
 
         import_folder_button = ttk.Button(
             action_frame,
@@ -7114,28 +7282,118 @@ class AccountManagerUI:
             style="Dark.TButton",
             command=import_unpacked,
         )
-        import_folder_button.grid(row=0, column=2, sticky="ew", padx=4, pady=3)
-        task_buttons.append(import_folder_button)
+        import_folder_button.grid(row=0, column=3, sticky="ew", padx=4, pady=3)
 
         toggle_button = ttk.Button(action_frame, text="Enable / Disable", style="Dark.TButton", command=toggle_selected)
-        toggle_button.grid(row=0, column=3, sticky="ew", padx=(4, 0), pady=3)
-        task_buttons.append(toggle_button)
+        toggle_button.grid(row=0, column=4, sticky="ew", padx=(4, 0), pady=3)
 
         remove_button = ttk.Button(action_frame, text="Remove", style="Dark.TButton", command=remove_selected)
         remove_button.grid(row=1, column=0, sticky="ew", padx=(0, 4), pady=3)
-        task_buttons.append(remove_button)
 
-        use_chromium_button = ttk.Button(action_frame, text="Use Chromium", style="Dark.TButton", command=use_chromium)
-        use_chromium_button.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
+        download_chromium_button = ttk.Button(
+            action_frame,
+            text="Install Chromium",
+            style="Dark.TButton",
+            command=begin_chromium_download,
+        )
+        download_chromium_button.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
 
         open_folder_button = ttk.Button(action_frame, text="Open Folder", style="Dark.TButton", command=open_extensions_folder)
-        open_folder_button.grid(row=1, column=2, sticky="ew", padx=4, pady=3)
+        open_folder_button.grid(row=1, column=3, sticky="ew", padx=4, pady=3)
 
         close_button = ttk.Button(action_frame, text="Close", style="Dark.TButton", command=close_window)
-        close_button.grid(row=1, column=3, sticky="ew", padx=(4, 0), pady=3)
+        close_button.grid(row=1, column=4, sticky="ew", padx=(4, 0), pady=3)
 
-        tree.bind("<Double-Button-1>", lambda _event: toggle_selected())
+        all_action_buttons = [
+            add_id_button,
+            add_firefox_button,
+            import_crx_button,
+            import_folder_button,
+            toggle_button,
+            remove_button,
+            download_chromium_button,
+            open_folder_button,
+            close_button,
+        ]
+
+        def grid_action_button(
+            button: ttk.Button,
+            row: int,
+            column: int,
+            padx: tuple[int, int] | int = 4,
+            columnspan: int = 1,
+        ) -> None:
+            button.grid(row=row, column=column, columnspan=columnspan, sticky="ew", padx=padx, pady=3)
+
+        def refresh_action_buttons() -> None:
+            for button in all_action_buttons:
+                button.grid_forget()
+
+            task_buttons.clear()
+            mode = get_extension_browser_mode()
+            if mode == "firefox":
+                import_crx_button.configure(text="Import XPI")
+                grid_action_button(add_firefox_button, 0, 0, (0, 4))
+                grid_action_button(import_crx_button, 0, 1)
+                grid_action_button(import_folder_button, 0, 2)
+                grid_action_button(toggle_button, 0, 3)
+                grid_action_button(remove_button, 0, 4, (4, 0))
+                grid_action_button(open_folder_button, 1, 3)
+                grid_action_button(close_button, 1, 4, (4, 0))
+                task_buttons.extend([add_firefox_button, import_crx_button, import_folder_button, toggle_button, remove_button])
+                return
+
+            if mode == "chromium":
+                import_crx_button.configure(text="Import CRX")
+                grid_action_button(add_id_button, 0, 0, (0, 4))
+                grid_action_button(import_crx_button, 0, 1)
+                grid_action_button(import_folder_button, 0, 2)
+                grid_action_button(toggle_button, 0, 3)
+                grid_action_button(remove_button, 0, 4, (4, 0))
+                grid_action_button(open_folder_button, 1, 3)
+                grid_action_button(close_button, 1, 4, (4, 0))
+                task_buttons.extend([add_id_button, import_crx_button, import_folder_button, toggle_button, remove_button])
+                return
+
+            if mode == "chromium_missing":
+                import_crx_button.configure(text="Import CRX")
+                grid_action_button(download_chromium_button, 0, 0, (0, 4))
+                grid_action_button(add_id_button, 0, 1)
+                grid_action_button(import_crx_button, 0, 2)
+                grid_action_button(import_folder_button, 0, 3)
+                grid_action_button(toggle_button, 0, 4, (4, 0))
+                grid_action_button(remove_button, 1, 0, (0, 4))
+                grid_action_button(open_folder_button, 1, 3)
+                grid_action_button(close_button, 1, 4, (4, 0))
+                task_buttons.extend(
+                    [
+                        download_chromium_button,
+                        add_id_button,
+                        import_crx_button,
+                        import_folder_button,
+                        toggle_button,
+                        remove_button,
+                    ]
+                )
+                return
+
+            if mode == "auto_missing_chromium":
+                grid_action_button(download_chromium_button, 0, 0, (0, 4))
+                grid_action_button(open_folder_button, 0, 3)
+                grid_action_button(close_button, 0, 4, (4, 0))
+                task_buttons.append(download_chromium_button)
+                return
+
+            grid_action_button(open_folder_button, 0, 3)
+            grid_action_button(close_button, 0, 4, (4, 0))
+
+        def on_tree_double_click(_event: tk.Event) -> None:
+            if get_extension_browser_mode() in {"chromium", "chromium_missing", "firefox"}:
+                toggle_selected()
+
+        tree.bind("<Double-Button-1>", on_tree_double_click)
         window.protocol("WM_DELETE_WINDOW", close_window)
+        refresh_action_buttons()
         refresh_tree()
         window.update_idletasks()
         width = max(780, min(window.winfo_reqwidth() + 20, max(window.winfo_screenwidth() - 80, 360)))
@@ -15636,7 +15894,7 @@ class AccountManagerUI:
         extensions_card = create_settings_card(
             advanced_tab,
             "Extension Manager",
-            "Manage Chromium browser automation extensions",
+            "Manage Chromium and Firefox browser automation extensions",
         )
 
         ttk.Button(
