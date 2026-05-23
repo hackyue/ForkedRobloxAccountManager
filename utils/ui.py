@@ -15944,7 +15944,7 @@ class AccountManagerUI:
         self._center_window(settings_window, final_w, final_h)
         settings_window.deiconify()
 
-    def open_instance_manager(self):
+    def open_instance_manager(self) -> None:
         if platform.system() != "Windows":
             messagebox.showerror("Instance Manager", "This feature is only available on Windows.")
             return
@@ -15957,19 +15957,19 @@ class AccountManagerUI:
 
         return self._open_instance_manager_v3()
 
-    def _open_instance_manager_v3(self):
+    def _open_instance_manager_v3(self) -> None:
         window = tk.Toplevel(self.root)
         self.instance_manager_window = window
         window.withdraw()
         window.title("Instance Manager")
-        window.configure(bg="#070d18")
+        window.configure(bg=self.BG_DARK)
         window.resizable(True, True)
         window.minsize(980, 620)
         self.register_toplevel(window)
         if self.settings.get("enable_topmost", False):
             window.attributes("-topmost", True)
 
-        state = {
+        state: dict[str, Any] = {
             "rows": [],
             "selected": set(),
             "pid_to_hwnd": {},
@@ -15996,54 +15996,101 @@ class AccountManagerUI:
         metadata_retry_seconds = 60.0
 
         default_avatar = tk.PhotoImage(width=48, height=48)
-        try:
-            default_avatar.put("#22324f", to=(0, 0, 47, 47))
-        except Exception:
-            pass
+        themed_buttons: list[tuple[tk.Button, bool]] = []
+        control_labels: list[tk.Label] = []
 
-        root = tk.Frame(window, bg="#070d18")
+        def themed_font(size_delta: int = 0, weight: Optional[str] = None) -> tuple[Any, ...]:
+            family = str(self.FONT[0]) if getattr(self, "FONT", None) else "Segoe UI"
+            try:
+                base_size = int(self.FONT[1])
+            except (IndexError, TypeError, ValueError):
+                base_size = 10
+            size = max(1, base_size + size_delta)
+            if weight:
+                return (family, size, weight)
+            return (family, size)
+
+        def recolor_default_avatar() -> None:
+            try:
+                default_avatar.put(self.BG_LIGHT, to=(0, 0, 47, 47))
+            except tk.TclError:
+                pass
+
+        def configure_instance_manager_button(button: tk.Button, danger: bool) -> None:
+            foreground = self.FG_ACCENT_ALT if danger else self.FG_TEXT
+            button.configure(
+                bg=self.BG_MID if danger else self.BG_LIGHT,
+                fg=foreground,
+                activebackground=self.HOVER_BG,
+                activeforeground=self.FG_TEXT,
+                font=themed_font(0, "bold"),
+                highlightbackground=self.BORDER_COLOR,
+                highlightcolor=self.BORDER_COLOR,
+            )
+
+        def mbtn(parent: tk.Misc, text: str, cmd: Callable[[], Any], danger: bool = False) -> tk.Button:
+            button = tk.Button(
+                parent,
+                text=text,
+                command=cmd,
+                relief="flat",
+                bd=0,
+                padx=10,
+                pady=6,
+                cursor="hand2",
+            )
+            themed_buttons.append((button, danger))
+            configure_instance_manager_button(button, danger)
+            return button
+
+        recolor_default_avatar()
+
+        root = tk.Frame(window, bg=self.BG_DARK)
         root.pack(fill="both", expand=True, padx=16, pady=14)
 
-        tk.Label(root, text="Live Instances", bg="#070d18", fg="#f7fbff", font=("Segoe UI Semibold", 20)).pack(anchor="w")
-        tk.Label(root, text="Modern card dashboard for running Roblox clients", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 10))
+        title_label = tk.Label(root, text="Live Instances", bg=self.BG_DARK, fg=self.FG_TEXT, font=themed_font(10, "bold"))
+        title_label.pack(anchor="w")
+        subtitle_label = tk.Label(root, text="Shows running Roblox clients with accounts attached to it", bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font())
+        subtitle_label.pack(anchor="w", pady=(2, 10))
 
-        controls = tk.Frame(root, bg="#070d18")
+        controls = tk.Frame(root, bg=self.BG_DARK)
         controls.pack(fill="x", pady=(0, 8))
         controls.grid_columnconfigure(1, weight=1)
         filter_var = tk.StringVar()
         status_var = tk.StringVar(value="All")
         auto_refresh_var = tk.BooleanVar(value=True)
         interval_var = tk.IntVar(value=5)
-        tk.Label(controls, text="Search", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        search_label = tk.Label(controls, text="Search", bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font(-1))
+        control_labels.append(search_label)
+        search_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         search_entry = ttk.Entry(controls, textvariable=filter_var, style="Dark.TEntry")
         search_entry.grid(row=0, column=1, sticky="ew")
-        tk.Label(controls, text="Status", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 9)).grid(row=0, column=2, sticky="w", padx=(10, 4))
+        status_label = tk.Label(controls, text="Status", bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font(-1))
+        control_labels.append(status_label)
+        status_label.grid(row=0, column=2, sticky="w", padx=(10, 4))
         status_combo = ttk.Combobox(controls, textvariable=status_var, values=("All", "Running", "Not Responding"), state="readonly", style="Dark.TCombobox", width=16)
         status_combo.grid(row=0, column=3, sticky="w")
         ttk.Checkbutton(controls, text="Auto Refresh", variable=auto_refresh_var, style="Dark.TCheckbutton").grid(row=0, column=4, sticky="w", padx=(10, 0))
-        tk.Label(controls, text="Every (s)", bg="#070d18", fg="#9bb0cf", font=("Segoe UI", 9)).grid(row=0, column=5, sticky="w", padx=(8, 4))
+        interval_label = tk.Label(controls, text="Every (s)", bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font(-1))
+        control_labels.append(interval_label)
+        interval_label.grid(row=0, column=5, sticky="w", padx=(8, 4))
         ttk.Spinbox(controls, from_=1, to=30, increment=1, textvariable=interval_var, width=4, style="Dark.TSpinbox", justify="center").grid(row=0, column=6, sticky="w")
 
-        action_bar = tk.Frame(root, bg="#070d18")
+        action_bar = tk.Frame(root, bg=self.BG_DARK)
         action_bar.pack(fill="x", pady=(0, 8))
         loaded_var = tk.StringVar(value="0 running instance(s)")
-
-        def mbtn(parent, text, cmd, danger=False):
-            bg = "#2f3f62" if not danger else "#5b2a38"
-            active = "#3a4f7a" if not danger else "#6c3244"
-            fg = "#eff6ff" if not danger else "#ffd8df"
-            return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, activebackground=active, activeforeground=fg, relief="flat", bd=0, padx=10, pady=6, font=("Segoe UI Semibold", 9), cursor="hand2")
 
         mbtn(action_bar, "Refresh", lambda: refresh(False)).pack(side="left", padx=(0, 6))
         mbtn(action_bar, "Focus Selected", lambda: focus_selected()).pack(side="left", padx=(0, 6))
         mbtn(action_bar, "Kill Selected", lambda: kill_selected(), danger=True).pack(side="left", padx=(0, 6))
-        tk.Label(action_bar, textvariable=loaded_var, bg="#070d18", fg="#9bb0cf", font=("Consolas", 10)).pack(side="right")
+        loaded_label = tk.Label(action_bar, textvariable=loaded_var, bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font())
+        loaded_label.pack(side="right")
 
-        shell = tk.Frame(root, bg="#0b1528", highlightthickness=1, highlightbackground="#1a2a48", bd=0)
+        shell = tk.Frame(root, bg=self.BG_FRAME, highlightthickness=1, highlightbackground=self.BORDER_COLOR, bd=0)
         shell.pack(fill="both", expand=True)
-        canvas = tk.Canvas(shell, bg="#0b1528", highlightthickness=0, bd=0)
+        canvas = tk.Canvas(shell, bg=self.BG_FRAME, highlightthickness=0, bd=0)
         scroll = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
-        host = tk.Frame(canvas, bg="#0b1528")
+        host = tk.Frame(canvas, bg=self.BG_FRAME)
         host_id = canvas.create_window((0, 0), window=host, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
@@ -16139,7 +16186,7 @@ class AccountManagerUI:
             except Exception:
                 pass
 
-        def kill_pids(pid_values) -> None:
+        def kill_pids(pid_values: Any) -> None:
             pids = [int(pid) for pid in pid_values if str(pid).isdigit() and int(pid) > 0]
             if not pids:
                 return
@@ -16156,7 +16203,7 @@ class AccountManagerUI:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def toggle_selected(pid: int, additive=False) -> None:
+        def toggle_selected(pid: int, additive: bool = False) -> None:
             pid = int(pid)
             if additive:
                 if pid in state["selected"]:
@@ -16188,20 +16235,20 @@ class AccountManagerUI:
             widget.bind("<Double-Button-1>", lambda _event, current_pid=pid: focus_pid(current_pid))
 
         def create_card(pid: int) -> InstanceManagerCardWidgets:
-            card = tk.Frame(host, bg="#0f192d", highlightthickness=1, highlightbackground="#203255", bd=0, padx=10, pady=10)
+            card = tk.Frame(host, bg=self.BG_MID, highlightthickness=1, highlightbackground=self.BORDER_COLOR, bd=0, padx=10, pady=10)
             card.grid_columnconfigure(1, weight=1)
-            avatar_label = tk.Label(card, image=default_avatar, bg="#0f192d", bd=0)
+            avatar_label = tk.Label(card, image=default_avatar, bg=self.BG_MID, bd=0)
             avatar_label.image = default_avatar
             avatar_label.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 10))
-            username_label = tk.Label(card, text="Unknown", bg="#0f192d", fg="#eef5ff", font=("Segoe UI Semibold", 12))
+            username_label = tk.Label(card, text="Unknown", bg=self.BG_MID, fg=self.FG_TEXT, font=themed_font(2, "bold"))
             username_label.grid(row=0, column=1, sticky="w")
-            place_label = tk.Label(card, text="Place ID: Unknown", bg="#0f192d", fg="#9db2d0", font=("Consolas", 10))
+            place_label = tk.Label(card, text="Place ID: Unknown", bg=self.BG_MID, fg=self.FG_MUTED, font=themed_font())
             place_label.grid(row=1, column=1, sticky="w", pady=(2, 0))
-            pid_label = tk.Label(card, text=f"PID: {pid}", bg="#0f192d", fg="#9db2d0", font=("Consolas", 10))
+            pid_label = tk.Label(card, text=f"PID: {pid}", bg=self.BG_MID, fg=self.FG_MUTED, font=themed_font())
             pid_label.grid(row=2, column=1, sticky="w", pady=(2, 0))
-            status_label = tk.Label(card, text="Running", bg="#1b2944", fg="#38d39f", font=("Segoe UI Semibold", 9), padx=8, pady=2)
+            status_label = tk.Label(card, text="Running", bg=self.BG_LIGHT, fg=self.FG_ACCENT_ALT, font=themed_font(-1, "bold"), padx=8, pady=2)
             status_label.grid(row=0, column=2, sticky="e")
-            actions_frame = tk.Frame(card, bg="#0f192d")
+            actions_frame = tk.Frame(card, bg=self.BG_MID)
             actions_frame.grid(row=2, column=2, sticky="e")
             mbtn(actions_frame, "Focus", lambda current_pid=pid: focus_pid(current_pid)).pack(side="left", padx=(0, 6))
             mbtn(actions_frame, "Kill", lambda current_pid=pid: kill_pids([current_pid]), danger=True).pack(side="left")
@@ -16220,17 +16267,18 @@ class AccountManagerUI:
 
         def update_card(card_widgets: InstanceManagerCardWidgets, row: dict[str, Any], selected: bool) -> None:
             pid = int(row["pid"])
-            background = "#13223a" if selected else "#0f192d"
+            background = self.HOVER_BG if selected else self.BG_MID
+            border_color = self.FG_ACCENT if selected else self.BORDER_COLOR
             avatar = avatar_for(str(row.get("username", "")))
             status_text = str(row.get("status", "Running"))
-            status_color = "#38d39f" if status_text.lower() == "running" else "#ffc34d"
-            card_widgets.frame.configure(bg=background)
+            status_color = self.FG_ACCENT_ALT if status_text.lower() == "running" else self.FG_ACCENT
+            card_widgets.frame.configure(bg=background, highlightbackground=border_color, highlightcolor=border_color)
             card_widgets.avatar_label.configure(image=avatar, bg=background)
             card_widgets.avatar_label.image = avatar
-            card_widgets.username_label.configure(text=str(row.get("username", "Unknown")), bg=background)
-            card_widgets.place_label.configure(text=f"Place ID: {row.get('place_id', 'Unknown')}", bg=background)
-            card_widgets.pid_label.configure(text=f"PID: {pid}", bg=background)
-            card_widgets.status_label.configure(text=status_text, fg=status_color)
+            card_widgets.username_label.configure(text=str(row.get("username", "Unknown")), bg=background, fg=self.FG_TEXT, font=themed_font(2, "bold"))
+            card_widgets.place_label.configure(text=f"Place ID: {row.get('place_id', 'Unknown')}", bg=background, fg=self.FG_MUTED, font=themed_font())
+            card_widgets.pid_label.configure(text=f"PID: {pid}", bg=background, fg=self.FG_MUTED, font=themed_font())
+            card_widgets.status_label.configure(text=status_text, bg=self.BG_LIGHT, fg=status_color, font=themed_font(-1, "bold"))
             card_widgets.actions_frame.configure(bg=background)
 
         def render() -> None:
@@ -16266,7 +16314,48 @@ class AccountManagerUI:
             loaded_var.set(f"{len(state['rows'])} running instance(s)")
             canvas.configure(scrollregion=canvas.bbox("all"))
 
-        def snapshot(from_auto=False):
+        def apply_instance_manager_theme() -> None:
+            try:
+                if not window.winfo_exists():
+                    return
+            except (RuntimeError, tk.TclError):
+                return
+
+            window.configure(bg=self.BG_DARK)
+            root.configure(bg=self.BG_DARK)
+            title_label.configure(bg=self.BG_DARK, fg=self.FG_TEXT, font=themed_font(10, "bold"))
+            subtitle_label.configure(bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font())
+            controls.configure(bg=self.BG_DARK)
+            action_bar.configure(bg=self.BG_DARK)
+            loaded_label.configure(bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font())
+            shell.configure(bg=self.BG_FRAME, highlightbackground=self.BORDER_COLOR, highlightcolor=self.BORDER_COLOR)
+            canvas.configure(bg=self.BG_FRAME)
+            host.configure(bg=self.BG_FRAME)
+
+            for label in control_labels:
+                try:
+                    if label.winfo_exists():
+                        label.configure(bg=self.BG_DARK, fg=self.FG_MUTED, font=themed_font(-1))
+                except (RuntimeError, tk.TclError):
+                    continue
+
+            alive_buttons: list[tuple[tk.Button, bool]] = []
+            for button, danger in themed_buttons:
+                try:
+                    if button.winfo_exists():
+                        configure_instance_manager_button(button, danger)
+                        alive_buttons.append((button, danger))
+                except (RuntimeError, tk.TclError):
+                    continue
+            themed_buttons[:] = alive_buttons
+
+            recolor_default_avatar()
+            try:
+                render()
+            except tk.TclError:
+                pass
+
+        def snapshot(from_auto: bool = False) -> tuple[list[dict[str, Any]], dict[int, str], dict[int, float]]:
             tracked_snapshot = self._get_tracked_window_snapshot(
                 target_exes,
                 use_cache=from_auto,
@@ -16338,7 +16427,7 @@ class AccountManagerUI:
                 })
             return rows, place_id_by_pid, place_id_retry_after_by_pid
 
-        def refresh(from_auto=False) -> None:
+        def refresh(from_auto: bool = False) -> None:
             if state["closing"]:
                 return
             if state["refresh_in_progress"]:
@@ -16374,7 +16463,7 @@ class AccountManagerUI:
 
             threading.Thread(target=worker, daemon=True).start()
 
-        def schedule_auto_refresh():
+        def schedule_auto_refresh() -> None:
             after_id = state.get("auto_refresh_after_id")
             if after_id is not None:
                 try:
@@ -16406,12 +16495,12 @@ class AccountManagerUI:
                 return
             refresh(True)
 
-        def focus_selected():
+        def focus_selected() -> None:
             selected = sorted(int(pid) for pid in state["selected"] if int(pid) > 0)
             if selected:
                 focus_pid(selected[0])
 
-        def kill_selected():
+        def kill_selected() -> None:
             selected = sorted(int(pid) for pid in state["selected"] if int(pid) > 0)
             if not selected:
                 messagebox.showwarning("Kill Selected", "Select at least one instance first.")
@@ -16425,8 +16514,9 @@ class AccountManagerUI:
         interval_var.trace_add("write", lambda *_: schedule_auto_refresh())
         status_combo.bind("<<ComboboxSelected>>", lambda _evt: render())
         search_entry.bind("<Escape>", lambda _evt: (filter_var.set(""), "break")[1])
+        self.register_theme_refresh(window, apply_instance_manager_theme)
 
-        def on_close():
+        def on_close() -> None:
             state["closing"] = True
             after_id = state.get("auto_refresh_after_id")
             if after_id is not None:
