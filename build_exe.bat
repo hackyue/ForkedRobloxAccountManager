@@ -8,6 +8,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed ^
   --icon "icon.ico" ^
   --add-data "icon.ico;." ^
   --collect-data selenium ^
+  --collect-submodules selenium.webdriver ^
   --collect-data webdriver_manager ^
   --collect-all Crypto ^
   --hidden-import pywintypes ^
