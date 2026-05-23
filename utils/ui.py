@@ -62,6 +62,32 @@ WEAO_API_USER_AGENT = "WEAO-3PService"
 
 
 DISCORD_SERVER_URL = "https://discord.gg/SpMTxg8YjJ"
+SERVER_REGION_ANY_LABEL = "Any"
+SERVER_REGION_CHOICES: tuple[tuple[str, str], ...] = (
+    ("", SERVER_REGION_ANY_LABEL),
+    ("united states", "United States"),
+    ("us east", "US East"),
+    ("us central", "US Central"),
+    ("us west", "US West"),
+    ("canada", "Canada"),
+    ("brazil", "Brazil"),
+    ("europe", "Europe"),
+    ("united kingdom", "United Kingdom"),
+    ("germany", "Germany"),
+    ("france", "France"),
+    ("netherlands", "Netherlands"),
+    ("singapore", "Singapore"),
+    ("japan", "Japan"),
+    ("hong kong", "Hong Kong"),
+    ("south korea", "South Korea"),
+    ("india", "India"),
+    ("australia", "Australia"),
+)
+SERVER_REGION_LABEL_BY_VALUE: dict[str, str] = dict(SERVER_REGION_CHOICES)
+SERVER_REGION_VALUE_BY_LABEL: dict[str, str] = {
+    label: value
+    for value, label in SERVER_REGION_CHOICES
+}
 
 
 """Assets URLs (can be updated remotely for dynamic content without needing app updates)"""
@@ -1925,6 +1951,7 @@ class AccountManagerUI:
             "randomize_server_job_ids": False,
             "prefer_small_public_servers": False,
             "pick_server_per_account": False,
+            "preferred_server_region": "",
             "max_recent_games": 10,
             "enable_multi_select": False,
             "multi_select_keybind": MULTI_SELECT_KEYBIND_DEFAULT,
@@ -2013,6 +2040,9 @@ class AccountManagerUI:
 
         self.settings["last_place_id"] = str(self.settings.get("last_place_id", "") or "").strip()
         self.settings["last_user"] = str(self.settings.get("last_user", "") or "").strip()
+        self.settings["preferred_server_region"] = self._normalize_server_region_preference(
+            self.settings.get("preferred_server_region", "")
+        )
 
         self.settings["multi_launch_delay"] = clamp_multi_launch_delay(
             self.settings.get("multi_launch_delay", MIN_LAUNCH_DELAY_SECONDS)
@@ -2253,6 +2283,21 @@ class AccountManagerUI:
         )
         self.settings["auto_rejoin_launch_behavior"] = behavior
         return behavior
+
+    def _normalize_server_region_preference(self, value: Any) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+        if not normalized:
+            return ""
+
+        allowed_values = {region_value for region_value, _label in SERVER_REGION_CHOICES}
+        if normalized in allowed_values:
+            return normalized
+
+        for region_value, label in SERVER_REGION_CHOICES:
+            normalized_label = re.sub(r"[^a-z0-9]+", " ", str(label or "").casefold()).strip()
+            if normalized == normalized_label:
+                return region_value
+        return ""
 
     def _is_auto_rejoin_force_enabled(self):
         return bool(self.settings.get("auto_rejoin_enable_all_accounts", False))
@@ -13402,6 +13447,9 @@ class AccountManagerUI:
         randomize_server_jobs = self.settings.get("randomize_server_job_ids", False)
         prefer_small_servers = self.settings.get("prefer_small_public_servers", False)
         pick_server_per_account = self.settings.get("pick_server_per_account", False)
+        preferred_server_region = self._normalize_server_region_preference(
+            self.settings.get("preferred_server_region", "")
+        )
 
         def run_launch_batch(
             selected_usernames: list[str],
@@ -13414,6 +13462,7 @@ class AccountManagerUI:
             randomize_jobs: bool,
             prefer_small: bool,
             pick_per_account: bool,
+            preferred_region: str,
             active_launch_mode: str,
             join_input_text: Any,
         ) -> dict[str, Any]:
@@ -13428,7 +13477,7 @@ class AccountManagerUI:
                     recent_join_username = entered
                 else:
                     recent_join_username = RobloxAPI.get_username_from_user_id(pid) or ""
-            public_server_selection_enabled = bool(randomize_jobs or prefer_small or pick_per_account)
+            public_server_selection_enabled = bool(randomize_jobs or prefer_small or pick_per_account or preferred_region)
             if active_launch_mode == "join_user":
                 if psid:
                     print("[INFO] Private server ID is ignored in Join User mode.")
@@ -13440,6 +13489,8 @@ class AccountManagerUI:
                 print("[INFO] Lowest-population server setting ignored because a manual Job ID is set.")
             if pick_per_account and manual_job_id:
                 print("[INFO] Per-account server selection setting ignored because a manual Job ID is set.")
+            if preferred_region and manual_job_id:
+                print("[INFO] Preferred server region setting ignored because a manual Job ID is set.")
             if prefer_small and randomize_jobs and not psid and not manual_job_id and active_launch_mode != "join_user":
                 print("[INFO] Lowest-population server setting is enabled; random server selection will be ignored.")
 
@@ -13451,18 +13502,31 @@ class AccountManagerUI:
                 if public_server_pool_loaded:
                     return ""
 
+                region_probe_cookie = ""
+                if selected_usernames:
+                    region_probe_cookie = self.manager.get_account_cookie(selected_usernames[0]) or ""
                 public_server_job_pool = RobloxAPI.get_public_server_job_candidates(
                     pid,
                     max_pages=1,
                     prefer_small=bool(prefer_small),
                     enable_debug=debug_flag,
+                    preferred_region=preferred_region,
+                    roblosecurity_cookie=region_probe_cookie,
                 ) or []
                 public_server_pool_loaded = True
                 if public_server_job_pool:
-                    mode_label = "low-population" if prefer_small else ("randomized" if randomize_jobs else "per-account")
+                    mode_label = (
+                        "preferred-region"
+                        if preferred_region else
+                        "low-population" if prefer_small else
+                        "randomized" if randomize_jobs else
+                        "per-account"
+                    )
                     print(f"[INFO] Loaded {len(public_server_job_pool)} {mode_label} public server candidates for this launch batch.")
                     return public_server_job_pool.pop(0)
-                if prefer_small:
+                if preferred_region:
+                    print("[INFO] Preferred-region public server unavailable; launching without job ID override.")
+                elif prefer_small:
                     print("[INFO] Low-population public server unavailable; launching without job ID override.")
                 elif pick_per_account:
                     print("[INFO] Per-account public server selection unavailable; launching without job ID override.")
@@ -13491,6 +13555,8 @@ class AccountManagerUI:
                         server_job_id = take_public_server_job_id()
                     elif pick_per_account and not account_private_server:
                         server_job_id = take_public_server_job_id()
+                    elif preferred_region and not account_private_server:
+                        server_job_id = take_public_server_job_id()
 
                     if randomize_jobs and account_private_server:
                         print(f"[INFO] Random Job ID setting ignored for {uname} because a private server link code is set.")
@@ -13498,6 +13564,8 @@ class AccountManagerUI:
                         print(f"[INFO] Lowest-population server setting ignored for {uname} because a private server link code is set.")
                     if pick_per_account and account_private_server:
                         print(f"[INFO] Per-account server selection setting ignored for {uname} because a private server link code is set.")
+                    if preferred_region and account_private_server:
+                        print(f"[INFO] Preferred server region setting ignored for {uname} because a private server link code is set.")
 
                     before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
                     effective_auto_rejoin = self._get_effective_auto_rejoin_enabled(uname)
@@ -13631,6 +13699,7 @@ class AccountManagerUI:
             randomize_server_jobs,
             prefer_small_servers,
             pick_server_per_account,
+            preferred_server_region,
             launch_mode,
             join_input_override if join_input_override is not None else target_value,
         )
@@ -13881,6 +13950,9 @@ class AccountManagerUI:
         randomize_job_id_var = tk.BooleanVar(value=self.settings.get("randomize_server_job_ids", False))
         prefer_small_servers_var = tk.BooleanVar(value=self.settings.get("prefer_small_public_servers", False))
         pick_server_per_account_var = tk.BooleanVar(value=self.settings.get("pick_server_per_account", False))
+        preferred_server_region_var = tk.StringVar(
+            value=self._normalize_server_region_preference(self.settings.get("preferred_server_region", ""))
+        )
         multi_select_var = tk.BooleanVar(value=self.settings.get("enable_multi_select", False))
         multi_select_text_var = tk.StringVar(value=self._get_multi_select_label_text())
         active_client_indicator_var = tk.BooleanVar(value=self.settings.get("show_active_client_indicator", True))
@@ -14635,6 +14707,32 @@ class AccountManagerUI:
             style="Dark.TCheckbutton",
             command=auto_save_setting("pick_server_per_account", pick_server_per_account_var)
         ).pack(anchor="w", pady=2)
+
+        ttk.Label(
+            server_selection_card,
+            text="Preferred Region",
+            style="Dark.TLabel",
+        ).pack(anchor="w", pady=(8, 2))
+
+        preferred_server_region_combo = ttk.Combobox(
+            server_selection_card,
+            values=[label for _value, label in SERVER_REGION_CHOICES],
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        preferred_server_region_combo.set(
+            SERVER_REGION_LABEL_BY_VALUE.get(preferred_server_region_var.get(), SERVER_REGION_ANY_LABEL)
+        )
+        preferred_server_region_combo.pack(fill="x", pady=(0, 2))
+
+        def on_preferred_server_region_change(_event: Optional[tk.Event] = None) -> None:
+            selected_label = str(preferred_server_region_combo.get() or SERVER_REGION_ANY_LABEL).strip()
+            selected_value = SERVER_REGION_VALUE_BY_LABEL.get(selected_label, "")
+            preferred_server_region_var.set(selected_value)
+            self.settings["preferred_server_region"] = selected_value
+            self.save_settings()
+
+        preferred_server_region_combo.bind("<<ComboboxSelected>>", on_preferred_server_region_change)
 
         launch_delay_card = create_settings_card(
             roblox_tab,

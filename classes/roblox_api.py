@@ -4,6 +4,7 @@ Handles authentication, info, and game launching
 """
 
 import os
+import ipaddress
 import platform
 import time
 import random
@@ -12,12 +13,40 @@ import threading
 import uuid
 import re
 import requests
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Optional
 
 from urllib.parse import quote, parse_qs, urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+
+@dataclass(frozen=True)
+class PublicServerCandidate:
+    job_id: str
+    playing: int
+    max_players: int
+    fill_ratio: float
+    ping: Optional[int] = None
+    region_text: str = ""
+
+
+@dataclass(frozen=True)
+class ServerRegionDetails:
+    city: str = ""
+    region: str = ""
+    country: str = ""
+    country_code: str = ""
+    text: str = ""
+
+    @property
+    def search_text(self) -> str:
+        return " ".join(
+            value
+            for value in (self.city, self.region, self.country, self.country_code, self.text)
+            if value
+        )
 
 
 class RobloxAPI:
@@ -26,6 +55,75 @@ class RobloxAPI:
     _protocol_handler_missing_warned = False
     _http_session = None
     _http_session_lock = threading.Lock()
+    _server_region_cache: dict[str, Optional[ServerRegionDetails]] = {}
+    _ip_region_cache: dict[str, Optional[ServerRegionDetails]] = {}
+    _server_region_cache_lock = threading.Lock()
+    _public_server_region_probe_limit: int = 30
+    _server_region_aliases: dict[str, tuple[str, ...]] = {
+        "australia": ("australia", "sydney", "melbourne", "au"),
+        "brazil": ("brazil", "sao paulo", "saopaulo", "brasil", "br"),
+        "canada": ("canada", "montreal", "toronto", "ca"),
+        "europe": (
+            "europe",
+            "amsterdam",
+            "frankfurt",
+            "germany",
+            "netherlands",
+            "france",
+            "paris",
+            "london",
+            "united kingdom",
+            "ireland",
+            "spain",
+            "sweden",
+            "poland",
+            "italy",
+        ),
+        "france": ("france", "paris", "fr"),
+        "germany": ("germany", "deutschland", "frankfurt", "de"),
+        "hong kong": ("hong kong", "hongkong", "hk"),
+        "india": ("india", "mumbai", "delhi", "in"),
+        "japan": ("japan", "tokyo", "osaka", "jp"),
+        "netherlands": ("netherlands", "amsterdam", "nl"),
+        "singapore": ("singapore", "sg"),
+        "south korea": ("south korea", "korea", "seoul", "kr"),
+        "united kingdom": ("united kingdom", "great britain", "england", "london", "gb", "uk"),
+        "united states": ("united states", "usa", "america", "us"),
+        "us central": (
+            "us central",
+            "central united states",
+            "illinois",
+            "chicago",
+            "texas",
+            "dallas",
+            "iowa",
+            "ohio",
+        ),
+        "us east": (
+            "us east",
+            "east us",
+            "eastern united states",
+            "virginia",
+            "ashburn",
+            "new york",
+            "new jersey",
+            "florida",
+            "miami",
+            "georgia",
+            "atlanta",
+        ),
+        "us west": (
+            "us west",
+            "west us",
+            "western united states",
+            "california",
+            "los angeles",
+            "san jose",
+            "oregon",
+            "washington",
+            "seattle",
+        ),
+    }
 
     @staticmethod
     def _subprocess_no_window_kwargs():
@@ -87,6 +185,329 @@ class RobloxAPI:
     def _log_debug(enabled, message):
         if enabled:
             print(f"[DEBUG] {message}")
+
+    @staticmethod
+    def _normalize_region_search_text(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+    @staticmethod
+    def _preferred_region_terms(preferred_region: Any) -> tuple[str, ...]:
+        normalized = RobloxAPI._normalize_region_search_text(preferred_region)
+        if not normalized:
+            return ()
+        return RobloxAPI._server_region_aliases.get(normalized, (normalized,))
+
+    @staticmethod
+    def _server_region_matches(details: ServerRegionDetails, preferred_region: Any) -> bool:
+        terms = RobloxAPI._preferred_region_terms(preferred_region)
+        if not terms:
+            return False
+
+        normalized_text = RobloxAPI._normalize_region_search_text(details.search_text)
+        if not normalized_text:
+            return False
+
+        text_tokens = set(normalized_text.split())
+        country_code = RobloxAPI._normalize_region_search_text(details.country_code)
+        for term in terms:
+            normalized_term = RobloxAPI._normalize_region_search_text(term)
+            if not normalized_term:
+                continue
+            if len(normalized_term) <= 3:
+                if normalized_term == country_code or normalized_term in text_tokens:
+                    return True
+                continue
+            if normalized_term in normalized_text:
+                return True
+        return False
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _coerce_optional_int(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _extract_public_server_region_text(value: Any, depth: int = 0) -> str:
+        if depth > 3:
+            return ""
+
+        region_parts: list[str] = []
+        region_key_markers = ("region", "location", "country", "city", "datacenter", "data_center", "data center")
+        if isinstance(value, dict):
+            for key, nested_value in value.items():
+                normalized_key = RobloxAPI._normalize_region_search_text(key)
+                key_matches = any(marker in normalized_key for marker in region_key_markers)
+                if key_matches and isinstance(nested_value, (str, int, float)):
+                    region_parts.append(str(nested_value))
+                elif key_matches or isinstance(nested_value, (dict, list, tuple)):
+                    nested_text = RobloxAPI._extract_public_server_region_text(nested_value, depth + 1)
+                    if nested_text:
+                        region_parts.append(nested_text)
+        elif isinstance(value, (list, tuple)):
+            for nested_value in value:
+                nested_text = RobloxAPI._extract_public_server_region_text(nested_value, depth + 1)
+                if nested_text:
+                    region_parts.append(nested_text)
+
+        return " ".join(region_parts)
+
+    @staticmethod
+    def _extract_public_server_region_details(server: Any) -> Optional[ServerRegionDetails]:
+        region_text = RobloxAPI._extract_public_server_region_text(server)
+        if not region_text:
+            return None
+        return ServerRegionDetails(text=region_text)
+
+    @staticmethod
+    def _create_gamejoin_probe_session(roblosecurity_cookie: Optional[str] = None) -> requests.Session:
+        session = requests.Session()
+        session.trust_env = False
+        retry = Retry(
+            total=1,
+            backoff_factor=0.25,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["GET", "HEAD", "OPTIONS", "POST"]),
+        )
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        session.headers.update({
+            "Content-Type": "application/json",
+            "User-Agent": "Roblox/WinInet",
+            "Referer": "https://www.roblox.com/",
+        })
+
+        normalized_cookie = RobloxAPI._normalize_roblosecurity_cookie(roblosecurity_cookie)
+        if normalized_cookie:
+            session.cookies.set(".ROBLOSECURITY", normalized_cookie, domain=".roblox.com")
+        return session
+
+    @staticmethod
+    def _extract_join_script_address(join_script: Any) -> str:
+        if not isinstance(join_script, dict):
+            return ""
+
+        for endpoint_key in ("UdmuxEndpoints", "ServerConnections"):
+            endpoints = join_script.get(endpoint_key)
+            if not isinstance(endpoints, list):
+                continue
+            for endpoint in endpoints:
+                if not isinstance(endpoint, dict):
+                    continue
+                address = str(endpoint.get("Address") or "").strip()
+                if address:
+                    return address
+
+        return str(join_script.get("MachineAddress") or "").strip()
+
+    @staticmethod
+    def _get_ip_region_details(
+        address: str,
+        session: requests.Session,
+        enable_debug: bool = False,
+    ) -> Optional[ServerRegionDetails]:
+        normalized_address = str(address or "").strip()
+        if not normalized_address:
+            return None
+
+        try:
+            parsed_address = ipaddress.ip_address(normalized_address)
+        except ValueError:
+            RobloxAPI._log_debug(enable_debug, f"Server region lookup skipped: invalid IP address '{normalized_address}'.")
+            return None
+
+        if not parsed_address.is_global:
+            RobloxAPI._log_debug(enable_debug, f"Server region lookup skipped: non-public IP address '{normalized_address}'.")
+            return None
+
+        with RobloxAPI._server_region_cache_lock:
+            if normalized_address in RobloxAPI._ip_region_cache:
+                return RobloxAPI._ip_region_cache[normalized_address]
+
+        try:
+            response = session.get(f"https://ipwho.is/{normalized_address}", timeout=5)
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+        except requests.exceptions.RequestException as exc:
+            RobloxAPI._log_debug(enable_debug, f"Server IP geolocation request failed for {normalized_address}: {exc}")
+            return None
+        except ValueError as exc:
+            RobloxAPI._log_debug(enable_debug, f"Server IP geolocation response could not be parsed for {normalized_address}: {exc}")
+            return None
+
+        if not isinstance(payload, dict):
+            RobloxAPI._log_debug(enable_debug, f"Server IP geolocation returned an unexpected payload for {normalized_address}.")
+            return None
+
+        if payload.get("success") is False:
+            message = str(payload.get("message") or "unknown error")
+            RobloxAPI._log_debug(enable_debug, f"Server IP geolocation failed for {normalized_address}: {message}")
+            with RobloxAPI._server_region_cache_lock:
+                RobloxAPI._ip_region_cache[normalized_address] = None
+            return None
+
+        details = ServerRegionDetails(
+            city=str(payload.get("city") or "").strip(),
+            region=str(payload.get("region") or "").strip(),
+            country=str(payload.get("country") or "").strip(),
+            country_code=str(payload.get("country_code") or "").strip(),
+            text=normalized_address,
+        )
+        if not details.search_text.strip():
+            with RobloxAPI._server_region_cache_lock:
+                RobloxAPI._ip_region_cache[normalized_address] = None
+            return None
+
+        with RobloxAPI._server_region_cache_lock:
+            RobloxAPI._ip_region_cache[normalized_address] = details
+        return details
+
+    @staticmethod
+    def _get_game_instance_region_details(
+        place_id: str,
+        job_id: str,
+        gamejoin_session: requests.Session,
+        geolocation_session: requests.Session,
+        enable_debug: bool = False,
+    ) -> Optional[ServerRegionDetails]:
+        place_id_text = str(place_id or "").strip()
+        job_id_text = str(job_id or "").strip()
+        if not place_id_text or not job_id_text:
+            return None
+
+        cache_key = f"{place_id_text}:{job_id_text}"
+        with RobloxAPI._server_region_cache_lock:
+            if cache_key in RobloxAPI._server_region_cache:
+                return RobloxAPI._server_region_cache[cache_key]
+
+        try:
+            place_id_value = int(place_id_text)
+        except ValueError:
+            return None
+
+        payload = {
+            "placeId": place_id_value,
+            "gameId": job_id_text,
+            "gameJoinAttemptId": str(uuid.uuid4()),
+        }
+
+        try:
+            response = gamejoin_session.post(
+                "https://gamejoin.roblox.com/v1/join-game-instance",
+                json=payload,
+                timeout=8,
+            )
+            csrf_token = response.headers.get("x-csrf-token")
+            if response.status_code == 403 and csrf_token:
+                gamejoin_session.headers["X-CSRF-TOKEN"] = csrf_token
+                response = gamejoin_session.post(
+                    "https://gamejoin.roblox.com/v1/join-game-instance",
+                    json=payload,
+                    timeout=8,
+                )
+            response.raise_for_status()
+            response_payload = response.json() if response.content else {}
+        except requests.exceptions.RequestException as exc:
+            RobloxAPI._log_debug(enable_debug, f"Game instance region probe failed for server {job_id_text}: {exc}")
+            return None
+        except ValueError as exc:
+            RobloxAPI._log_debug(enable_debug, f"Game instance region probe response could not be parsed for server {job_id_text}: {exc}")
+            return None
+
+        if not isinstance(response_payload, dict):
+            RobloxAPI._log_debug(enable_debug, f"Game instance region probe returned an unexpected payload for server {job_id_text}.")
+            return None
+
+        join_script = response_payload.get("joinScript")
+        if not isinstance(join_script, dict):
+            status = str(response_payload.get("status") or "unknown")
+            message = str(response_payload.get("message") or "").strip()
+            detail = f": {message}" if message else ""
+            RobloxAPI._log_debug(enable_debug, f"Game instance region unavailable for server {job_id_text}; status {status}{detail}.")
+            with RobloxAPI._server_region_cache_lock:
+                RobloxAPI._server_region_cache[cache_key] = None
+            return None
+
+        address = RobloxAPI._extract_join_script_address(join_script)
+        details = RobloxAPI._get_ip_region_details(address, geolocation_session, enable_debug=enable_debug)
+        with RobloxAPI._server_region_cache_lock:
+            RobloxAPI._server_region_cache[cache_key] = details
+        return details
+
+    @staticmethod
+    def _rank_public_server_candidates_by_region(
+        place_id: str,
+        candidates: list[PublicServerCandidate],
+        preferred_region: str,
+        roblosecurity_cookie: Optional[str],
+        enable_debug: bool = False,
+    ) -> list[PublicServerCandidate]:
+        if not candidates or not RobloxAPI._preferred_region_terms(preferred_region):
+            return candidates
+
+        matching_candidates: list[PublicServerCandidate] = []
+        non_matching_candidates: list[PublicServerCandidate] = []
+        deferred_candidates: list[PublicServerCandidate] = []
+        probed_count = 0
+        gamejoin_session = RobloxAPI._create_gamejoin_probe_session(roblosecurity_cookie)
+        geolocation_session = RobloxAPI._get_http_session()
+
+        try:
+            for candidate in candidates:
+                inline_details = ServerRegionDetails(text=candidate.region_text) if candidate.region_text else None
+                if inline_details is not None and RobloxAPI._server_region_matches(inline_details, preferred_region):
+                    matching_candidates.append(candidate)
+                    continue
+
+                if probed_count >= RobloxAPI._public_server_region_probe_limit:
+                    deferred_candidates.append(candidate)
+                    continue
+
+                probed_count += 1
+                details = RobloxAPI._get_game_instance_region_details(
+                    place_id,
+                    candidate.job_id,
+                    gamejoin_session,
+                    geolocation_session,
+                    enable_debug=enable_debug,
+                )
+                if details is not None and RobloxAPI._server_region_matches(details, preferred_region):
+                    matching_candidates.append(candidate)
+                else:
+                    non_matching_candidates.append(candidate)
+        finally:
+            try:
+                gamejoin_session.close()
+            except requests.exceptions.RequestException:
+                pass
+
+        if matching_candidates:
+            RobloxAPI._log_debug(
+                enable_debug,
+                (
+                    f"Preferred server region '{preferred_region}' matched "
+                    f"{len(matching_candidates)} of {probed_count} probed public server candidates."
+                ),
+            )
+            return matching_candidates + non_matching_candidates + deferred_candidates
+
+        RobloxAPI._log_debug(
+            enable_debug,
+            (
+                f"Preferred server region '{preferred_region}' did not match "
+                f"the first {probed_count} public server candidates; using the normal order."
+            ),
+        )
+        return non_matching_candidates + deferred_candidates
 
     @staticmethod
     def _format_token_preview(cookie):
@@ -619,7 +1040,14 @@ class RobloxAPI:
             return result
 
     @staticmethod
-    def get_public_server_job_candidates(place_id, max_pages=1, prefer_small=False, enable_debug=False):
+    def get_public_server_job_candidates(
+        place_id: Any,
+        max_pages: int = 1,
+        prefer_small: bool = False,
+        enable_debug: bool = False,
+        preferred_region: str = "",
+        roblosecurity_cookie: Optional[str] = None,
+    ) -> list[str]:
         """Fetch joinable public server job IDs for a place, optionally ranked for low population."""
         if not place_id:
             RobloxAPI._log_debug(enable_debug, "Public server candidate lookup skipped: missing place ID.")
@@ -630,7 +1058,7 @@ class RobloxAPI:
             RobloxAPI._log_debug(enable_debug, f"Public server candidate lookup skipped: non-numeric place ID '{place_id_str}'.")
             return []
 
-        server_rows = []
+        server_rows: list[PublicServerCandidate] = []
         cursor = ""
         pages_fetched = 0
 
@@ -695,21 +1123,28 @@ class RobloxAPI:
                 servers = payload.get("data") or []
 
                 for server in servers:
+                    if not isinstance(server, dict):
+                        continue
                     job_id = str(server.get("id") or "").strip()
                     if not job_id:
                         continue
-                    try:
-                        max_players = int(server.get("maxPlayers", 0) or 0)
-                    except Exception:
-                        max_players = 0
-                    try:
-                        playing = int(server.get("playing", 0) or 0)
-                    except Exception:
-                        playing = 0
+                    max_players = RobloxAPI._coerce_int(server.get("maxPlayers", 0), 0)
+                    playing = RobloxAPI._coerce_int(server.get("playing", 0), 0)
                     if max_players > 0 and playing >= max_players:
                         continue
                     fill_ratio = (playing / max_players) if max_players > 0 else 1.0
-                    server_rows.append((job_id, playing, fill_ratio))
+                    region_details = RobloxAPI._extract_public_server_region_details(server)
+                    region_text = region_details.search_text if region_details is not None else ""
+                    server_rows.append(
+                        PublicServerCandidate(
+                            job_id=job_id,
+                            playing=playing,
+                            max_players=max_players,
+                            fill_ratio=fill_ratio,
+                            ping=RobloxAPI._coerce_optional_int(server.get("ping")),
+                            region_text=region_text,
+                        )
+                    )
 
                 pages_fetched += 1
                 cursor = str(payload.get("nextPageCursor") or "").strip()
@@ -720,13 +1155,22 @@ class RobloxAPI:
                 return []
 
             if prefer_small:
-                # Keep low-pop servers at the front while preserving random tie-breaks.
-                server_rows.sort(key=lambda row: (row[1], row[2], random.random()))
+                server_rows.sort(key=lambda row: (row.playing, row.fill_ratio, random.random()))
             else:
                 random.shuffle(server_rows)
 
-            return [row[0] for row in server_rows]
-        except Exception as exc:
+            preferred_region_text = str(preferred_region or "").strip()
+            if preferred_region_text:
+                server_rows = RobloxAPI._rank_public_server_candidates_by_region(
+                    place_id_str,
+                    server_rows,
+                    preferred_region_text,
+                    roblosecurity_cookie,
+                    enable_debug=enable_debug,
+                )
+
+            return [row.job_id for row in server_rows]
+        except (requests.exceptions.RequestException, ValueError) as exc:
             print(f"[WARNING] Failed to fetch public server candidates for place {place_id_str}: {exc}")
             return []
     
