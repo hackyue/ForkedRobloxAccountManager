@@ -10280,17 +10280,20 @@ class AccountManagerUI:
         for username in usernames:
             account_data = self.manager.accounts.get(username)
             if not isinstance(account_data, dict):
+                if include_cookie:
+                    rows.append(f"{username}:notfound:notfound")
+                else:
+                    rows.append(f"{username}:notfound")
                 continue
             password_value = str(account_data.get("password", "") or "").strip()
-            if not password_value:
-                continue
             if include_cookie:
-                cookie_value = str(self.manager.get_account_cookie(username) or "").strip()
-                if not cookie_value:
-                    continue
-                rows.append(f"{username}:{password_value}:{cookie_value}")
-            else:
-                rows.append(f"{username}:{password_value}")
+                cookie_value = str(account_data.get("cookie", "") or "").strip()
+                saved_password_value = password_value if password_value else "notfound"
+                saved_cookie_value = cookie_value if cookie_value else "notfound"
+                rows.append(f"{username}:{saved_password_value}:{saved_cookie_value}")
+                continue
+            saved_password_value = password_value if password_value else "notfound"
+            rows.append(f"{username}:{saved_password_value}")
         return list(dict.fromkeys(rows))
 
     def copy_selected_account_username_passwords(self) -> None:
@@ -10301,7 +10304,7 @@ class AccountManagerUI:
 
         rows = self._get_selected_account_username_password_rows(include_cookie=False)
         if not rows:
-            messagebox.showinfo("Copy user:pass", "No saved username:password found for the selected account(s).")
+            messagebox.showinfo("Copy user:pass", "No selected account rows found.")
             return
 
         if self._copy_text_to_clipboard("\n".join(rows)):
