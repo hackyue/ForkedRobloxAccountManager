@@ -9718,7 +9718,7 @@ class AccountManagerUI:
 
         ttk.Label(
             container,
-            text="Privacy: Nothing is sent automatically. Sensitive values are redacted before opening the draft.",
+            text="Privacy: Nothing is sent automatically. Sensitive values are redacted before opening the draft or exporting diagnostics.",
             style="Dark.TLabel",
             wraplength=460,
             justify="left",
@@ -9729,6 +9729,7 @@ class AccountManagerUI:
         button_row.columnconfigure(0, weight=1)
         button_row.columnconfigure(1, weight=1)
         button_row.columnconfigure(2, weight=1)
+        button_row.columnconfigure(3, weight=1)
 
         def close_prompt():
             try:
@@ -9745,6 +9746,15 @@ class AccountManagerUI:
                 pass
             close_prompt()
 
+        def export_diagnostics():
+            try:
+                if getattr(self, "console_window", None) is not None:
+                    self.console_window.export_logs()
+                else:
+                    messagebox.showerror("Export Diagnostics", "Console diagnostics are not available.", parent=dialog)
+            except Exception as exc:
+                messagebox.showerror("Export Diagnostics", f"Failed to export diagnostics:\n{exc}", parent=dialog)
+
         def never_ask_again():
             self.settings["bug_issue_prompt_enabled"] = False
             self.save_settings()
@@ -9755,25 +9765,32 @@ class AccountManagerUI:
             text="Create GitHub Issue",
             style="Dark.TButton",
             command=open_issue,
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        ttk.Button(
+            button_row,
+            text="Export Diagnostics",
+            style="Dark.TButton",
+            command=export_diagnostics,
+        ).grid(row=0, column=1, sticky="ew", padx=4)
 
         ttk.Button(
             button_row,
             text="Not Now",
             style="Dark.TButton",
             command=close_prompt,
-        ).grid(row=0, column=1, sticky="ew", padx=3)
+        ).grid(row=0, column=2, sticky="ew", padx=4)
 
         ttk.Button(
             button_row,
             text="Never Ask Again",
             style="Dark.TButton",
             command=never_ask_again,
-        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        ).grid(row=0, column=3, sticky="ew", padx=(4, 0))
 
         dialog.protocol("WM_DELETE_WINDOW", close_prompt)
         dialog.update_idletasks()
-        self._center_window(dialog, max(520, dialog.winfo_reqwidth() + 20), max(210, dialog.winfo_reqheight() + 20))
+        self._center_window(dialog, max(700, dialog.winfo_reqwidth() + 20), max(210, dialog.winfo_reqheight() + 20))
         dialog.deiconify()
 
     def report_unhandled_exception(self, exc_type, exc_value, exc_traceback, source="unknown"):
