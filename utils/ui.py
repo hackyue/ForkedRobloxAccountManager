@@ -306,6 +306,10 @@ SENSITIVE_CONSOLE_TEXT_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
         r"\1<user>",
     ),
 )
+SENSITIVE_SETTINGS_KEY_PATTERN = re.compile(
+    r"(?i)(password|passwd|pwd|cookie|token|authorization|access_token|refresh_token|webhook|secret|last_user|recent_user|user_id)"
+)
+DIAGNOSTIC_EXPORT_VERSION = "2"
 
 
 class Guid(ctypes.Structure):
@@ -1131,7 +1135,7 @@ class ConsoleOutputWindow:
 
         ttk.Button(button_frame, text="Clear", style="Dark.TButton", command=self.clear).pack(side="left", padx=(0, 5))
         ttk.Button(button_frame, text="Copy All", style="Dark.TButton", command=self.copy_all).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Export Logs", style="Dark.TButton", command=self.export_logs).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Export Diagnostics", style="Dark.TButton", command=self.export_logs).pack(side="left", padx=5)
 
         self.last_index = 0
         entries, self.last_index = self.capture.get_entries_since(0)
@@ -1195,17 +1199,16 @@ class ConsoleOutputWindow:
 
     def export_logs(self):
         entries = self.capture.get_all_entries()
-        redacted_entries = [self._redact_private_server_ids(line) for line in entries]
+        redacted_entries = [self._redact_export_text(line) for line in entries]
         debug_entries = [
             line for line in redacted_entries
             if "[DEBUG]" in line or "[IM]" in line
         ]
-        settings_snapshot = dict(getattr(self.ui, "settings", {}) or {})
         exported_at = datetime.now()
-        default_name = f"fram_logs_{exported_at.strftime('%Y%m%d_%H%M%S')}.txt"
+        default_name = f"fram_diagnostics_{exported_at.strftime('%Y%m%d_%H%M%S')}.txt"
 
         file_path = filedialog.asksaveasfilename(
-            title="Export Console Logs",
+            title="Export Diagnostic Report",
             defaultextension=".txt",
             initialfile=default_name,
             filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
@@ -1213,38 +1216,585 @@ class ConsoleOutputWindow:
         if not file_path:
             return
 
-        sections = [
-            "ForkedRobloxAccountManager Log Export",
-            f"Exported At: {exported_at.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Total Log Lines: {len(redacted_entries)}",
-            f"Debug Log Lines: {len(debug_entries)}",
-            "",
-            "=== USER SETTINGS SNAPSHOT ===",
-            self._format_settings_snapshot(settings_snapshot),
-            "",
-            "=== ALL LOGS (includes debug logs) ===",
-        ]
-        if redacted_entries:
-            sections.extend(redacted_entries)
-        else:
-            sections.append("(No logs captured)")
-
-        sections.extend([
-            "",
-            "=== DEBUG LOGS ONLY ===",
-        ])
-        if debug_entries:
-            sections.extend(debug_entries)
-        else:
-            sections.append("(No debug logs captured)")
+        sections = self._build_diagnostic_export_sections(
+            exported_at=exported_at,
+            redacted_entries=redacted_entries,
+            debug_entries=debug_entries,
+        )
 
         try:
             with open(file_path, "w", encoding="utf-8", newline="\n") as export_file:
                 export_file.write("\n".join(sections))
-            print(f"[INFO] Exported console logs to {file_path}")
-            messagebox.showinfo("Export Complete", f"Logs exported to:\n{file_path}")
+            print(f"[INFO] Exported diagnostic report to {file_path}")
+            messagebox.showinfo("Export Complete", f"Diagnostic report exported to:\n{file_path}")
         except Exception as exc:
             messagebox.showerror("Export Failed", f"Could not export logs:\n{exc}")
+
+    def _build_diagnostic_export_sections(self, exported_at, redacted_entries, debug_entries):
+        settings_snapshot = dict(getattr(self.ui, "settings", {}) or {})
+        sections = [
+            "ForkedRobloxAccountManager Diagnostic Export",
+            f"Export Version: {DIAGNOSTIC_EXPORT_VERSION}",
+            "Privacy: cookies, passwords, tokens, webhooks, private server links, account names, and user paths are redacted where detected.",
+            "",
+        ]
+
+        self._append_export_section(sections, "EXPORT SUMMARY", self._format_key_values({
+            "Exported At Local": exported_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "Exported At UTC": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "App Version": str(getattr(self.ui, "APP_VERSION", "unknown") or "unknown"),
+            "Runtime Mode": "frozen executable" if getattr(sys, "frozen", False) else "source",
+            "Total Log Lines": len(redacted_entries),
+            "Debug Log Lines": len(debug_entries),
+            "Warning/Error Lines": len(self._get_interesting_log_lines(redacted_entries)),
+        }))
+        self._append_export_section(sections, "RUNTIME ENVIRONMENT", self._format_runtime_diagnostics())
+        self._append_export_section(sections, "APP FILES", self._format_file_diagnostics())
+        self._append_export_section(sections, "APP STATE", self._format_app_state_diagnostics())
+        self._append_export_section(sections, "ACCOUNT STORAGE SUMMARY", self._format_account_storage_diagnostics())
+        self._append_export_section(sections, "BROWSER AUTOMATION", self._format_browser_diagnostics())
+        self._append_export_section(sections, "ROBLOX DIAGNOSTICS", self._format_roblox_diagnostics())
+        self._append_export_section(sections, "AUTO REJOIN SESSIONS", self._format_auto_rejoin_diagnostics())
+        self._append_export_section(sections, "DISCORD LOG MIRROR", self._format_discord_log_mirror_diagnostics())
+        self._append_export_section(sections, "RECENT WARNINGS AND ERRORS", self._format_log_block(
+            self._get_interesting_log_lines(redacted_entries)[-120:],
+            empty_text="(No warning or error lines captured)",
+        ))
+        self._append_export_section(sections, "USER SETTINGS SNAPSHOT", self._format_settings_snapshot(settings_snapshot))
+        self._append_export_section(sections, "ALL LOGS", self._format_log_block(
+            redacted_entries,
+            empty_text="(No logs captured)",
+        ))
+        self._append_export_section(sections, "DEBUG LOGS ONLY", self._format_log_block(
+            debug_entries,
+            empty_text="(No debug logs captured)",
+        ))
+        return sections
+
+    def _append_export_section(self, sections, title, body):
+        sections.extend([
+            f"=== {title} ===",
+            self._redact_export_text(str(body or "(No data)")),
+            "",
+        ])
+
+    def _safe_diagnostic_value(self, callback, fallback="[unavailable]"):
+        try:
+            return callback()
+        except Exception as exc:
+            return f"{fallback}: {type(exc).__name__}: {exc}"
+
+    def _format_key_values(self, values):
+        if not values:
+            return "(No data)"
+
+        rows = [(str(key), self._format_diagnostic_value(value)) for key, value in values.items()]
+        max_key_len = max((len(key) for key, _ in rows), default=0)
+        return "\n".join(
+            self._redact_export_text(f"{key.ljust(max_key_len)} : {value}")
+            for key, value in rows
+        )
+
+    def _format_diagnostic_value(self, value):
+        if value is None:
+            return "None"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, (dict, list, tuple, set)):
+            try:
+                return json.dumps(value, ensure_ascii=False, default=str)
+            except Exception:
+                return str(value)
+        return str(value)
+
+    def _format_runtime_diagnostics(self):
+        root = getattr(self.ui, "root", None)
+        return self._format_key_values({
+            "App Version": str(getattr(self.ui, "APP_VERSION", "unknown") or "unknown"),
+            "Export Version": DIAGNOSTIC_EXPORT_VERSION,
+            "Frozen Executable": bool(getattr(sys, "frozen", False)),
+            "Process ID": os.getpid(),
+            "Python Version": sys.version.replace("\n", " "),
+            "Python Executable": sys.executable,
+            "Platform": platform.platform(),
+            "OS": platform.system(),
+            "OS Release": platform.release(),
+            "Machine": platform.machine(),
+            "Processor": platform.processor() or "unknown",
+            "Working Directory": os.getcwd(),
+            "Command Args": list(getattr(sys, "argv", []) or []),
+            "Tk Version": self._safe_diagnostic_value(
+                lambda: root.tk.call("info", "patchlevel") if root is not None else "unknown"
+            ),
+            "Tk Scaling": self._safe_diagnostic_value(
+                lambda: root.tk.call("tk", "scaling") if root is not None else "unknown"
+            ),
+            "Root Geometry": self._safe_diagnostic_value(
+                lambda: root.geometry() if root is not None else "unknown"
+            ),
+            "Screen Size": self._safe_diagnostic_value(
+                lambda: f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}" if root is not None else "unknown"
+            ),
+            "Open Themed Windows": self._safe_diagnostic_value(
+                lambda: len(getattr(self.ui, "themable_windows", set()) or set())
+            ),
+            "Git": self._get_git_diagnostics(),
+            "Dependency Versions": self._get_dependency_versions(),
+        })
+
+    def _get_git_diagnostics(self):
+        if getattr(sys, "frozen", False):
+            return "not available in frozen executable"
+
+        repo_root = self._safe_diagnostic_value(lambda: str(Path(__file__).resolve().parents[1]), fallback="")
+        if not repo_root:
+            return "unknown"
+
+        def run_git(args):
+            result = subprocess.run(
+                ["git", *args],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+                **subprocess_no_window_kwargs(),
+            )
+            if result.returncode != 0:
+                return ""
+            return str(result.stdout or "").strip()
+
+        try:
+            branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"]) or "unknown"
+            commit = run_git(["rev-parse", "--short", "HEAD"]) or "unknown"
+            status_lines = [line for line in run_git(["status", "--short"]).splitlines() if line.strip()]
+            return f"branch={branch}, commit={commit}, changed_files={len(status_lines)}"
+        except Exception as exc:
+            return f"unavailable: {type(exc).__name__}: {exc}"
+
+    def _get_dependency_versions(self):
+        try:
+            from importlib import metadata as importlib_metadata
+        except Exception:
+            importlib_metadata = None
+
+        packages = ("selenium", "webdriver-manager", "requests", "pycryptodome", "pywin32")
+        versions = []
+        for package_name in packages:
+            version = "unknown"
+            if importlib_metadata is not None:
+                try:
+                    version = importlib_metadata.version(package_name)
+                except Exception:
+                    version = "not installed"
+            versions.append(f"{package_name}={version}")
+        return ", ".join(versions)
+
+    def _format_file_diagnostics(self):
+        manager = getattr(self.ui, "manager", None)
+        paths = {
+            "App Base Directory": Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1],
+            "UI Module": Path(__file__).resolve(),
+            "Data Folder": getattr(self.ui, "data_folder", ""),
+            "Settings File": getattr(self.ui, "settings_file", ""),
+            "Accounts File": getattr(manager, "accounts_file", ""),
+            "Encryption Config": getattr(getattr(manager, "encryption_config", None), "config_file", ""),
+            "Custom Themes File": getattr(self.ui, "custom_themes_file", ""),
+            "Addons Folder": getattr(self.ui, "addons_folder", ""),
+            "Browser Extensions Folder": getattr(getattr(self.ui, "browser_extension_manager", None), "extensions_folder", ""),
+            "Managed Chromium Root": self._safe_diagnostic_value(lambda: self.ui._get_managed_chromium_root(), fallback=""),
+            "Temp Directory": tempfile.gettempdir(),
+        }
+        return self._format_key_values({name: self._describe_path(path) for name, path in paths.items()})
+
+    def _describe_path(self, path):
+        if not path:
+            return "not configured"
+        try:
+            resolved_path = Path(path)
+            exists = resolved_path.exists()
+            details = [str(resolved_path), f"exists={'yes' if exists else 'no'}"]
+            if exists:
+                if resolved_path.is_file():
+                    details.append("type=file")
+                    details.append(f"size={resolved_path.stat().st_size} bytes")
+                elif resolved_path.is_dir():
+                    details.append("type=directory")
+                    try:
+                        details.append(f"items={sum(1 for _ in resolved_path.iterdir())}")
+                    except OSError:
+                        details.append("items=unavailable")
+                else:
+                    details.append("type=other")
+                try:
+                    modified = datetime.fromtimestamp(resolved_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    details.append(f"modified={modified}")
+                except OSError:
+                    pass
+            return " | ".join(details)
+        except Exception as exc:
+            return f"{path} | unavailable: {type(exc).__name__}: {exc}"
+
+    def _format_app_state_diagnostics(self):
+        settings = getattr(self.ui, "settings", {}) or {}
+        selected_usernames = self._safe_diagnostic_value(
+            lambda: list(self.ui._get_selected_usernames_silent()),
+            fallback=[],
+        )
+        if not isinstance(selected_usernames, list):
+            selected_usernames = []
+
+        return self._format_key_values({
+            "Theme": settings.get("selected_theme", ""),
+            "Topmost Enabled": settings.get("enable_topmost", False),
+            "Debug Logging": settings.get("enable_debug_logging", False),
+            "Hide Sensitive Info": settings.get("hide_sensitive_info", True),
+            "Multi Roblox": settings.get("enable_multi_roblox", False),
+            "Multi Select": settings.get("enable_multi_select", False),
+            "Selected Group": settings.get("selected_group", ""),
+            "Selected Account Count": len(selected_usernames),
+            "Selected Account IDs": [self._hash_identifier(username) for username in selected_usernames],
+            "Launch Input Mode": getattr(self.ui, "launch_input_mode", settings.get("launch_input_mode", "")),
+            "Place Target Mode": getattr(self.ui, "place_join_target_mode", settings.get("place_join_target_mode", "")),
+            "Place Entry": self._safe_diagnostic_value(lambda: self.ui.place_entry.get(), fallback=""),
+            "Private Server Entry": self._safe_diagnostic_value(lambda: self.ui.private_server_entry.get(), fallback=""),
+            "Version Selection": self._safe_diagnostic_value(lambda: self.ui.version_var.get(), fallback=""),
+            "Recent Games": len(settings.get("game_list", []) or []),
+            "Recent Users": len(settings.get("recent_user_list", []) or []),
+            "Version Options": len(getattr(self.ui, "version_options", {}) or {}),
+            "Keep Clients Arranged": settings.get("keep_roblox_clients_arranged", False),
+            "Auto Relaunch Enabled": settings.get("auto_relaunch_enabled", False),
+            "Auto Memory Trim Enabled": settings.get("auto_memory_trim_enabled", False),
+            "Auto Memory Kill Enabled": settings.get("auto_memory_kill_enabled", False),
+            "Anti AFK Enabled": settings.get("anti_afk_enabled", False),
+            "Roblox Headless Mode": settings.get("roblox_headless_mode_enabled", False),
+        })
+
+    def _format_account_storage_diagnostics(self):
+        manager = getattr(self.ui, "manager", None)
+        accounts = getattr(manager, "accounts", {}) or {}
+        if not isinstance(accounts, dict):
+            accounts = {}
+
+        dict_accounts = [value for value in accounts.values() if isinstance(value, dict)]
+        encryption_config = getattr(manager, "encryption_config", None)
+        groups = self._safe_diagnostic_value(lambda: manager.get_groups() if manager is not None else [], fallback=[])
+        if not isinstance(groups, list):
+            groups = []
+
+        return self._format_key_values({
+            "Account Count": len(accounts),
+            "Structured Account Records": len(dict_accounts),
+            "Accounts With Cookie": sum(1 for value in dict_accounts if str(value.get("cookie", "") or "").strip()),
+            "Accounts With Saved Password": sum(1 for value in dict_accounts if str(value.get("password", "") or "").strip()),
+            "Accounts With User ID": sum(1 for value in dict_accounts if str(value.get("user_id", "") or "").strip()),
+            "Accounts With Notes": sum(1 for value in dict_accounts if str(value.get("note", "") or "").strip()),
+            "Accounts With VIP Server": sum(1 for value in dict_accounts if str(value.get("vip_server", "") or "").strip()),
+            "Accounts With Auto Rejoin": sum(1 for value in dict_accounts if bool(value.get("auto_rejoin_enabled", False))),
+            "Group Count": len(groups),
+            "Encryption Enabled": self._safe_diagnostic_value(lambda: encryption_config.is_encryption_enabled(), fallback="unknown") if encryption_config else "unknown",
+            "Encryption Method": self._safe_diagnostic_value(lambda: encryption_config.get_encryption_method(), fallback="unknown") if encryption_config else "unknown",
+            "No Encryption Chosen": self._safe_diagnostic_value(lambda: encryption_config.is_no_encryption_chosen(), fallback="unknown") if encryption_config else "unknown",
+        })
+
+    def _format_browser_diagnostics(self):
+        available_browsers = self._safe_diagnostic_value(lambda: self.ui._get_available_browsers(), fallback=[])
+        if not isinstance(available_browsers, list):
+            available_browsers = []
+
+        rows = []
+        for browser_name, display_name in BROWSER_DISPLAY_NAMES.items():
+            rows.append({
+                "browser": display_name,
+                "installed": self._safe_diagnostic_value(lambda name=browser_name: self.ui._is_browser_installed_locally(name), fallback="unknown"),
+                "available": browser_name in available_browsers,
+            })
+
+        installation = None
+        installation_error = ""
+        try:
+            installation = self.ui._get_managed_chromium_installation()
+        except Exception as exc:
+            installation_error = f"{type(exc).__name__}: {exc}"
+        extensions_text = self._format_browser_extension_diagnostics()
+        summary = self._format_key_values({
+            "Preferred Browser": self._safe_diagnostic_value(lambda: self.ui._get_preferred_browser(), fallback="unknown"),
+            "Available Browsers": available_browsers,
+            "Managed Chromium Installed": installation is not None,
+            "Managed Chromium Version": getattr(installation, "version", "") if installation is not None else "",
+            "Managed Chromium Binary": getattr(installation, "binary_path", "") if installation is not None else "",
+            "Managed Chromium Error": installation_error,
+        })
+        return "\n".join([
+            summary,
+            "",
+            "Browser Availability:",
+            self._format_table(rows, [("browser", "Browser"), ("installed", "Installed"), ("available", "Available")]),
+            "",
+            "Extensions:",
+            extensions_text,
+        ])
+
+    def _format_browser_extension_diagnostics(self):
+        manager = getattr(self.ui, "browser_extension_manager", None)
+        if manager is None:
+            return "(Extension manager unavailable)"
+        try:
+            extensions = manager.list_extensions()
+        except BrowserExtensionError as exc:
+            return f"Extension manager error: {exc}"
+        except Exception as exc:
+            return f"Extension manager unavailable: {type(exc).__name__}: {exc}"
+
+        rows = []
+        for extension in extensions:
+            rows.append({
+                "enabled": bool(extension.enabled),
+                "name": extension.name,
+                "source": extension.display_source,
+                "manifest": extension.manifest_version or "",
+                "id": extension.extension_id,
+            })
+        if not rows:
+            return "(No managed browser extensions)"
+        return self._format_table(
+            rows,
+            [
+                ("enabled", "Enabled"),
+                ("name", "Name"),
+                ("source", "Source"),
+                ("manifest", "MV"),
+                ("id", "Extension ID"),
+            ],
+        )
+
+    def _format_roblox_diagnostics(self):
+        process_rows = self._safe_diagnostic_value(lambda: self.ui._get_discord_active_instance_rows(), fallback=[])
+        if not isinstance(process_rows, list):
+            process_rows = []
+
+        installed_versions = self._safe_diagnostic_value(lambda: RobloxAPI.get_installed_versions(), fallback=[])
+        if not isinstance(installed_versions, list):
+            installed_versions = []
+
+        total_memory_bytes = 0
+        for row in process_rows:
+            try:
+                total_memory_bytes += int(row.get("memory_bytes") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+        summary = self._format_key_values({
+            "Running Roblox Instances": len(process_rows),
+            "Not Responding Instances": sum(1 for row in process_rows if str(row.get("status", "")).lower() == "not responding"),
+            "Total Roblox Memory": self._format_bytes(total_memory_bytes) if total_memory_bytes else "unknown",
+            "Installed Roblox Versions Found": len(installed_versions),
+            "Selected Version": self._safe_diagnostic_value(lambda: self.ui.version_var.get(), fallback=""),
+            "Custom Roblox Player Path": self._describe_path((getattr(self.ui, "settings", {}) or {}).get("custom_roblox_player_path", "")),
+        })
+
+        version_rows = []
+        for version in installed_versions[:20]:
+            if isinstance(version, dict):
+                version_rows.append({
+                    "name": version.get("name", "") or version.get("version", ""),
+                    "version": version.get("version", ""),
+                    "path": version.get("path", ""),
+                })
+
+        return "\n".join([
+            summary,
+            "",
+            "Running Instances:",
+            self._format_table(
+                process_rows,
+                [
+                    ("pid", "PID"),
+                    ("image", "Image"),
+                    ("account", "Account"),
+                    ("status", "Status"),
+                    ("place", "Place"),
+                    ("memory_bytes", "Memory"),
+                    ("auto_rejoin", "Auto Rejoin"),
+                    ("title", "Window Title"),
+                ],
+                transforms={"memory_bytes": self._format_bytes},
+                empty_text="(No running Roblox instances detected)",
+            ),
+            "",
+            "Installed Versions:",
+            self._format_table(
+                version_rows,
+                [("name", "Name"), ("version", "Version"), ("path", "Path")],
+                empty_text="(No installed Roblox versions detected)",
+            ),
+        ])
+
+    def _format_auto_rejoin_diagnostics(self):
+        monitor = getattr(self.ui, "_auto_rejoin_monitor", None)
+        if monitor is None:
+            return "Monitor Attached: no"
+
+        sessions = []
+        try:
+            lock = getattr(monitor, "_lock", None)
+            if lock is not None:
+                with lock:
+                    sessions = list(getattr(monitor, "active_sessions", {}).values())
+            else:
+                sessions = list(getattr(monitor, "active_sessions", {}).values())
+        except Exception:
+            sessions = []
+
+        rows = []
+        for session in sessions:
+            username = str(getattr(session, "username", "") or "")
+            rows.append({
+                "account": self._hash_identifier(username),
+                "pid": getattr(session, "pid", 0),
+                "place": getattr(session, "place_id", ""),
+                "mode": getattr(session, "launch_mode", ""),
+                "auto": bool(getattr(session, "auto_rejoin", False)),
+                "attempts": f"{getattr(session, 'rejoin_attempts', 0)}/{getattr(session, 'max_rejoin_attempts', 0)}",
+                "process": bool(getattr(session, "has_seen_process_alive", False)),
+                "window": bool(getattr(session, "has_seen_window", False)),
+                "in_game": bool(getattr(session, "has_seen_in_game", False)),
+                "rejoining": bool(getattr(session, "rejoin_in_progress", False)),
+                "disabled": getattr(session, "disabled_reason", ""),
+            })
+
+        summary = self._format_key_values({
+            "Monitor Attached": True,
+            "Thread Alive": self._safe_diagnostic_value(lambda: bool(getattr(monitor, "_thread", None) and monitor._thread.is_alive()), fallback="unknown"),
+            "Active Sessions": len(rows),
+            "Manual Stop Grace Entries": self._safe_diagnostic_value(lambda: len(getattr(monitor, "_manual_stop_grace", {}) or {}), fallback="unknown"),
+        })
+        return "\n".join([
+            summary,
+            "",
+            self._format_table(
+                rows,
+                [
+                    ("account", "Account ID"),
+                    ("pid", "PID"),
+                    ("place", "Place"),
+                    ("mode", "Mode"),
+                    ("auto", "Auto"),
+                    ("attempts", "Attempts"),
+                    ("process", "Seen Process"),
+                    ("window", "Seen Window"),
+                    ("in_game", "Seen In Game"),
+                    ("rejoining", "Rejoining"),
+                    ("disabled", "Disabled Reason"),
+                ],
+                empty_text="(No active auto-rejoin sessions)",
+            ),
+        ])
+
+    def _format_discord_log_mirror_diagnostics(self):
+        settings = getattr(self.ui, "settings", {}) or {}
+        webhook_url = self._safe_diagnostic_value(lambda: self.ui._get_discord_log_mirror_webhook_url(), fallback="")
+        current_total = self._safe_diagnostic_value(lambda: self.ui._discord_log_mirror_get_current_total(), fallback="unknown")
+        return self._format_key_values({
+            "Enabled": settings.get("discord_log_mirror_enabled", False),
+            "Webhook Configured": bool(str(webhook_url or "").strip()),
+            "Webhook Valid": self._safe_diagnostic_value(lambda: self.ui._is_valid_discord_webhook_url(webhook_url), fallback="unknown"),
+            "Include STDOUT": settings.get("discord_log_mirror_include_stdout", True),
+            "Include STDERR": settings.get("discord_log_mirror_include_stderr", True),
+            "Redact Sensitive": settings.get("discord_log_mirror_redact_sensitive", True),
+            "Filter Preset": settings.get("discord_log_mirror_filter_preset", "all"),
+            "Max Lines Per Message": settings.get("discord_log_mirror_max_lines_per_message", ""),
+            "Last Sent Index": getattr(self.ui, "_discord_log_mirror_last_index", ""),
+            "Current Log Total": current_total,
+            "Send In Progress": getattr(self.ui, "_discord_log_mirror_in_progress", False),
+            "Screenshot Interval Minutes": settings.get("discord_log_mirror_screenshot_interval_minutes", 0),
+            "Instance Summary Enabled": settings.get("discord_log_mirror_instance_summary_enabled", False),
+            "Last Error": getattr(self.ui, "_discord_log_mirror_last_error", ""),
+        })
+
+    def _format_table(self, rows, columns, transforms=None, empty_text="(No rows)"):
+        rows = list(rows or [])
+        if not rows:
+            return empty_text
+        transforms = transforms or {}
+        prepared_rows = []
+        for row in rows:
+            prepared_row = []
+            for key, _label in columns:
+                try:
+                    value = row.get(key, "") if isinstance(row, dict) else getattr(row, key, "")
+                except Exception:
+                    value = ""
+                transform = transforms.get(key)
+                if callable(transform):
+                    value = transform(value)
+                value_text = self._clip_diagnostic_text(self._format_diagnostic_value(value))
+                prepared_row.append(self._redact_export_text(value_text))
+            prepared_rows.append(prepared_row)
+
+        widths = []
+        for column_index, (_key, label) in enumerate(columns):
+            width = len(str(label))
+            for row in prepared_rows:
+                if column_index < len(row):
+                    width = max(width, len(row[column_index]))
+            widths.append(min(width, 80))
+
+        header = " | ".join(str(label).ljust(widths[index]) for index, (_key, label) in enumerate(columns))
+        divider = "-+-".join("-" * width for width in widths)
+        lines = [header, divider]
+        for row in prepared_rows:
+            lines.append(" | ".join(str(value).ljust(widths[index]) for index, value in enumerate(row)))
+        return "\n".join(lines)
+
+    def _clip_diagnostic_text(self, value, max_length=180):
+        text = str(value or "")
+        if len(text) <= max_length:
+            return text
+        return f"{text[:max_length - 3]}..."
+
+    def _format_log_block(self, entries, empty_text="(No logs captured)"):
+        if not entries:
+            return empty_text
+        return "\n".join(self._redact_export_text(entry) for entry in entries)
+
+    def _get_interesting_log_lines(self, entries):
+        tokens = (
+            "[error]",
+            "[warning]",
+            "traceback",
+            "exception",
+            "failed",
+            "failure",
+            "timed out",
+            "timeout",
+            "invalid",
+            "denied",
+            "not responding",
+        )
+        interesting = []
+        for entry in entries:
+            entry_l = str(entry or "").lower()
+            if any(token in entry_l for token in tokens):
+                interesting.append(entry)
+        return interesting
+
+    def _format_bytes(self, value):
+        try:
+            byte_count = float(value or 0)
+        except (TypeError, ValueError):
+            return "unknown"
+        if byte_count <= 0:
+            return "unknown"
+        units = ("B", "KB", "MB", "GB", "TB")
+        unit_index = 0
+        while byte_count >= 1024 and unit_index < len(units) - 1:
+            byte_count /= 1024.0
+            unit_index += 1
+        if unit_index == 0:
+            return f"{int(byte_count)} {units[unit_index]}"
+        return f"{byte_count:.1f} {units[unit_index]}"
 
     def _format_settings_snapshot(self, settings_snapshot):
         if not settings_snapshot:
@@ -1256,20 +1806,88 @@ class ConsoleOutputWindow:
         for key in sorted(keys, key=lambda x: x.lower()):
             value = settings_snapshot.get(key)
             lower_key = str(key).lower()
-            if any(marker in lower_key for marker in ("private_server", "vip_server", "linkcode", "link_code")):
+            if self._is_sensitive_settings_key(lower_key) or any(
+                marker in lower_key for marker in ("private_server", "vip_server", "linkcode", "link_code")
+            ):
                 value_text = "[REDACTED]"
             elif isinstance(value, (dict, list, tuple)):
                 value_text = json.dumps(value, ensure_ascii=False, default=str)
             else:
                 value_text = str(value)
-            value_text = self._redact_private_server_ids(value_text)
+            value_text = self._redact_export_text(value_text)
             lines.append(f"{key.ljust(max_key_len)} : {value_text}")
         return "\n".join(lines)
+
+    def _is_sensitive_settings_key(self, key):
+        return bool(SENSITIVE_SETTINGS_KEY_PATTERN.search(str(key or "")))
+
+    def _redact_export_text(self, text):
+        if not text:
+            return text
+        redacted = redact_sensitive_console_text(str(text))
+        redacted = self._redact_account_identifiers(redacted)
+        return self._redact_private_server_ids(redacted)
+
+    def _hash_identifier(self, value):
+        normalized = str(value or "").strip().casefold()
+        if not normalized:
+            return ""
+        return hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()[:12]
+
+    def _redact_account_identifiers(self, text):
+        if not text:
+            return text
+
+        redacted = str(text)
+        account_names = set()
+        try:
+            accounts = getattr(getattr(self.ui, "manager", None), "accounts", {}) or {}
+            if isinstance(accounts, dict):
+                account_names.update(str(username or "").strip() for username in accounts.keys())
+        except Exception:
+            pass
+
+        try:
+            with self.ui._pid_account_lock:
+                account_names.update(
+                    str(username or "").strip()
+                    for username in dict(getattr(self.ui, "_pid_account_map", {}) or {}).values()
+                )
+        except Exception:
+            pass
+
+        try:
+            monitor = getattr(self.ui, "_auto_rejoin_monitor", None)
+            sessions = getattr(monitor, "active_sessions", {}) if monitor is not None else {}
+            if isinstance(sessions, dict):
+                account_names.update(str(username or "").strip() for username in sessions.keys())
+        except Exception:
+            pass
+
+        for account_name in sorted((name for name in account_names if len(name) >= 3), key=len, reverse=True):
+            replacement = f"[ACCOUNT:{self._hash_identifier(account_name)}]"
+            redacted = re.sub(re.escape(account_name), replacement, redacted, flags=re.IGNORECASE)
+        return redacted
 
     def _redact_private_server_ids(self, text):
         if not text:
             return text
         redacted = str(text)
+        private_server_key = (
+            r"(?:private[_\s-]*server(?:[_\s-]*(?:id|link|code))*|"
+            r"vip[_\s-]*server(?:[_\s-]*(?:id|link|code))*|"
+            r"link[_\s-]*code)"
+        )
+        redacted = re.sub(
+            rf'(?i)("{private_server_key}"\s*:\s*")([^"]+)(")',
+            r"\1[REDACTED]\3",
+            redacted,
+        )
+        redacted = re.sub(
+            rf"(?i)('{private_server_key}'\s*:\s*')([^']+)(')",
+            r"\1[REDACTED]\3",
+            redacted,
+        )
         redacted = re.sub(
             r"(?i)(roblox://navigation/share_links\?[^\s]*?\bcode=)([^&\s]+)",
             r"\1[REDACTED]",
