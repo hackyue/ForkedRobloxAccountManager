@@ -1951,7 +1951,7 @@ def get_console_output_buffer():
 
 
 class FRAMAddonAPI:
-    def __init__(self, ui, addon_name, addon_path, addon_fram_version=""):
+    def __init__(self, ui, addon_name, addon_path, addon_fram_version="", context_window=None, context="addons"):
         self.ui = ui
         self.root = ui.root
         self.manager = ui.manager
@@ -1962,8 +1962,15 @@ class FRAMAddonAPI:
         self.addon_path = str(addon_path or "").strip()
         self.fram_version = str(getattr(ui, "APP_VERSION", "unknown") or "unknown").strip() or "unknown"
         self.addon_fram_version = str(addon_fram_version or "").strip()
+        self.context_window = context_window
+        self.context = str(context or "addons").strip() or "addons"
+        self.create_settings_card = None
+        self.refresh_settings_search = None
         self.tk = tk
         self.ttk = ttk
+
+    def _message_parent(self):
+        return self.context_window or getattr(self.ui, "addons_window", None) or self.root
 
     def run_on_ui_thread(self, callback, *args, **kwargs):
         if not callable(callback):
@@ -1974,14 +1981,14 @@ class FRAMAddonAPI:
         messagebox.showinfo(
             title or self.addon_name,
             str(message or ""),
-            parent=getattr(self.ui, "addons_window", None) or self.root,
+            parent=self._message_parent(),
         )
 
     def show_error(self, message, title=None):
         messagebox.showerror(
             title or self.addon_name,
             str(message or ""),
-            parent=getattr(self.ui, "addons_window", None) or self.root,
+            parent=self._message_parent(),
         )
 
     def show_success(self, message, title=None):
@@ -2009,6 +2016,9 @@ class FRAMAddonAPI:
         self.settings[key] = value
         if save:
             self.ui.save_settings()
+
+    def save_settings(self):
+        return self.ui.save_settings()
 
     def refresh_accounts(self, selected_usernames=None):
         return self.ui.refresh_accounts(selected_usernames=selected_usernames)
@@ -6390,6 +6400,22 @@ class AccountManagerUI:
                 "        style=\"Dark.TButton\",\n"
                 "        command=api.refresh_accounts,\n"
                 "    ).pack(anchor=\"w\")\n"
+                "\n\n"
+                "def build_settings_tab(parent, api):\n"
+                "    import tkinter as tk\n"
+                "    from tkinter import ttk\n\n"
+                "    enabled_var = tk.BooleanVar(value=bool(api.get_setting(\"example_addon_enabled\", False)))\n\n"
+                "    def save_enabled():\n"
+                "        api.set_setting(\"example_addon_enabled\", bool(enabled_var.get()))\n"
+                "        if callable(api.refresh_settings_search):\n"
+                "            api.refresh_settings_search()\n\n"
+                "    ttk.Checkbutton(\n"
+                "        parent,\n"
+                "        text=\"Enable example addon setting\",\n"
+                "        variable=enabled_var,\n"
+                "        style=\"Dark.TCheckbutton\",\n"
+                "        command=save_enabled,\n"
+                "    ).pack(anchor=\"w\")\n"
             )
             try:
                 with open(template_path, "w", encoding="utf-8", newline="\n") as template_file:
@@ -6534,6 +6560,10 @@ class AccountManagerUI:
                 return builder
         raise RuntimeError("Addon must define a callable build_tab(parent, api).")
 
+    def _get_addon_settings_tab_builder(self, module):
+        builder = getattr(module, "build_settings_tab", None)
+        return builder if callable(builder) else None
+
     def _collect_addon_entries(self):
         addon_files = self._get_addon_file_paths()
         entries = []
@@ -6551,17 +6581,35 @@ class AccountManagerUI:
                 "fram_version": "",
                 "module": None,
                 "builder": None,
+                "settings_tab_builder": None,
+                "settings_tab_name": "",
+                "settings_tab_description": "",
+                "settings_only": False,
                 "traceback": "",
                 "content_frame": None,
             }
             try:
                 module = self._load_addon_module(file_path)
-                builder = self._get_addon_builder(module)
+                settings_tab_builder = self._get_addon_settings_tab_builder(module)
+                try:
+                    builder = self._get_addon_builder(module)
+                except RuntimeError:
+                    if settings_tab_builder is None:
+                        raise
+                    builder = None
                 entry["module"] = module
                 entry["builder"] = builder
+                entry["settings_tab_builder"] = settings_tab_builder
                 entry["name"] = str(getattr(module, "ADDON_NAME", entry["name"]) or "").strip() or entry["name"]
                 entry["description"] = str(getattr(module, "ADDON_DESCRIPTION", "") or "").strip()
                 entry["fram_version"] = str(getattr(module, "ADDON_FRAM_VERSION", "") or "").strip()
+                entry["settings_tab_name"] = str(
+                    getattr(module, "ADDON_SETTINGS_TAB_NAME", entry["name"]) or ""
+                ).strip() or entry["name"]
+                entry["settings_tab_description"] = str(
+                    getattr(module, "ADDON_SETTINGS_TAB_DESCRIPTION", entry["description"]) or ""
+                ).strip()
+                entry["settings_only"] = builder is None and settings_tab_builder is not None
                 loaded_count += 1
             except Exception:
                 entry["kind"] = "error"
@@ -6952,7 +7000,8 @@ class AccountManagerUI:
                 "1. Put a .py script in AccountManagerData/addons",
                 "2. Keep the filename from starting with '_'",
                 "3. Define build_tab(parent, api)",
-                "4. Optionally set ADDON_NAME, ADDON_DESCRIPTION, and ADDON_FRAM_VERSION",
+                "4. Define build_settings_tab(parent, api) to add a Settings tab",
+                "5. Optionally set ADDON_NAME, ADDON_DESCRIPTION, and ADDON_FRAM_VERSION",
             ]
             tk.Label(
                 intro_body,
@@ -6975,6 +7024,7 @@ class AccountManagerUI:
                 "launch_game / launch_home / launch_home_app",
                 "refresh_accounts / refresh_game_list",
                 "show_info / show_error / show_success",
+                "create_settings_card / refresh_settings_search in Settings tabs",
                 "data_folder / addons_folder / fram_version / open_addons_folder",
             ]
             tk.Label(
@@ -7293,6 +7343,27 @@ class AccountManagerUI:
             addon_host.pack(fill="both", expand=True)
 
             try:
+                if not callable(entry.get("builder")):
+                    ttk.Label(
+                        addon_host,
+                        text="This addon adds a Settings tab.",
+                        style="Dark.TLabel",
+                        font=("Segoe UI", 11, "bold"),
+                    ).pack(anchor="w")
+                    ttk.Label(
+                        addon_host,
+                        text="Open Settings to use this addon's settings page.",
+                        style="Dark.TLabel",
+                        wraplength=560,
+                    ).pack(anchor="w", pady=(4, 10))
+                    ttk.Button(
+                        addon_host,
+                        text="Open Settings",
+                        style="Dark.TButton",
+                        command=self.open_settings,
+                    ).pack(anchor="w")
+                    return frame
+
                 api = FRAMAddonAPI(
                     self,
                     entry.get("name", "Addon"),
@@ -15290,6 +15361,82 @@ class AccountManagerUI:
                 canvas = data.get("canvas")
                 if canvas and canvas.winfo_exists():
                     canvas.configure(bg=self.BG_DARK)
+
+        def _build_addon_settings_tabs():
+            entries, _summary = self._collect_addon_entries()
+
+            def clip_tab_label(value):
+                label = str(value or "Addon").strip() or "Addon"
+                return label if len(label) <= 22 else f"{label[:19].rstrip()}..."
+
+            def refresh_addon_settings_search():
+                _refresh_settings_search_index()
+                _refresh_settings_card_visibility()
+
+            for index, entry in enumerate(entries):
+                builder = entry.get("settings_tab_builder")
+                if not callable(builder):
+                    continue
+
+                tab_label = clip_tab_label(entry.get("settings_tab_name") or entry.get("name"))
+                tab_seed = f"{entry.get('file_path', '')}:{index}"
+                tab_name = f"addon_settings_{hashlib.sha1(tab_seed.encode('utf-8')).hexdigest()[:10]}"
+                create_tab_button(tab_label, tab_name)
+                addon_tab = create_tab_frame(tab_name)
+                card_title = entry.get("name") or tab_label
+                card_subtitle = (
+                    entry.get("settings_tab_description")
+                    or entry.get("description")
+                    or "Settings provided by a FRAM addon."
+                )
+                addon_card = create_settings_card(addon_tab, card_title, card_subtitle)
+                addon_host = ttk.Frame(addon_card, style="Dark.TFrame")
+                addon_host.pack(fill="both", expand=True)
+
+                try:
+                    api = FRAMAddonAPI(
+                        self,
+                        entry.get("name", "Addon"),
+                        entry.get("file_path", ""),
+                        addon_fram_version=entry.get("fram_version", ""),
+                        context_window=settings_window,
+                        context="settings",
+                    )
+                    api.settings_window = settings_window
+                    api.settings_tab = addon_tab
+                    api.create_settings_card = (
+                        lambda title, subtitle="", header_action_builder=None, parent=addon_tab: create_settings_card(
+                            parent,
+                            title,
+                            subtitle,
+                            header_action_builder,
+                        )
+                    )
+                    api.refresh_settings_search = refresh_addon_settings_search
+                    build_result = builder(addon_host, api)
+                    if isinstance(build_result, tk.Widget) and not build_result.winfo_manager():
+                        build_result.pack(fill="both", expand=True)
+                except Exception:
+                    for child in list(addon_host.winfo_children()):
+                        try:
+                            child.destroy()
+                        except Exception:
+                            pass
+                    ttk.Label(
+                        addon_host,
+                        text="Addon settings failed to load.",
+                        style="Dark.TLabel",
+                        font=("Segoe UI", 11, "bold"),
+                    ).pack(anchor="w")
+                    ttk.Label(
+                        addon_host,
+                        text=traceback.format_exc().strip() or "Unknown addon settings error.",
+                        style="Dark.TLabel",
+                        wraplength=640,
+                        justify="left",
+                    ).pack(anchor="w", fill="x", pady=(6, 0))
+
+        _build_addon_settings_tabs()
 
         window_behavior_card = create_settings_card(general_tab, "FRAM Behavior", "FRAM and account list interaction")
 
