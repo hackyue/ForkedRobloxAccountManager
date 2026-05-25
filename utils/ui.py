@@ -7588,6 +7588,8 @@ class AccountManagerUI:
             browser_preference = get_raw_browser_preference()
             if browser_preference == "auto":
                 return "chromium" if is_chromium_ready() else "auto_missing_chromium"
+            if browser_preference == "chrome":
+                return "chrome"
             if browser_preference == "chromium":
                 return "chromium" if is_chromium_ready() else "chromium_missing"
             if browser_preference == "firefox":
@@ -7613,13 +7615,19 @@ class AccountManagerUI:
         def refresh_status() -> None:
             mode = get_extension_browser_mode()
             if mode == "unsupported":
-                status_var.set("Chrome is not supported. Extension Manager supports Firefox, Waterfox, and Chromium.")
+                status_var.set("Selected browser is not supported. Extension Manager supports Firefox, Waterfox, and Chromium.")
+                return
+            if mode == "chrome":
+                if is_chromium_ready():
+                    status_var.set("Chrome is selected. Switch to Chromium to manage Chromium extensions.")
+                else:
+                    status_var.set("Chrome is selected. Download Chromium to use the Extension Manager.")
                 return
             if mode == "auto_missing_chromium":
-                status_var.set("Install Chromium or select Firefox/Waterfox in Browser Automation to manage extensions.")
+                status_var.set("Download Chromium or select Firefox/Waterfox in Browser Automation to manage extensions.")
                 return
             if mode == "chromium_missing":
-                status_var.set("Chromium is not installed. Install Chromium to manage Chromium extensions.")
+                status_var.set("Chromium is not installed. Download Chromium to manage Chromium extensions.")
                 return
             if mode == "firefox_missing":
                 status_var.set("Firefox is not installed. Select another Browser Automation option first.")
@@ -7885,6 +7893,8 @@ class AccountManagerUI:
                 return
             self.settings["browser_preference"] = "chromium"
             self.save_settings()
+            refresh_tree()
+            refresh_action_buttons()
             refresh_status()
             status_var.set("Browser Automation is set to Chromium.")
 
@@ -7924,20 +7934,22 @@ class AccountManagerUI:
                         refresh_tree()
                         refresh_action_buttons()
                         status_var.set(error_message)
-                        messagebox.showerror("Install Chromium", error_message, parent=window)
+                        messagebox.showerror("Download Chromium", error_message, parent=window)
 
                     schedule_ui(apply_error)
                     return
 
                 def apply_success() -> None:
+                    self.settings["browser_preference"] = "chromium"
+                    self.save_settings()
                     chromium_download_state["thread"] = None
                     set_task_buttons_enabled(True)
                     refresh_tree()
                     refresh_action_buttons()
                     version_text = f" {installation.version}" if installation.version else ""
-                    status_var.set(f"Chromium{version_text} is ready.")
+                    status_var.set(f"Chromium{version_text} is ready. Browser Automation is set to Chromium.")
                     messagebox.showinfo(
-                        "Install Chromium",
+                        "Download Chromium",
                         f"Chromium{version_text} is ready to use.",
                         parent=window,
                     )
@@ -7947,6 +7959,12 @@ class AccountManagerUI:
             thread = threading.Thread(target=worker, daemon=True, name="download-managed-chromium")
             chromium_download_state["thread"] = thread
             thread.start()
+
+        def activate_chromium() -> None:
+            if get_extension_browser_mode() == "chrome" and is_chromium_ready():
+                use_chromium()
+                return
+            begin_chromium_download()
 
         def open_extensions_folder() -> None:
             target_path = manager.extensions_folder
@@ -8002,9 +8020,9 @@ class AccountManagerUI:
 
         download_chromium_button = ttk.Button(
             action_frame,
-            text="Install Chromium",
+            text="Download Chromium",
             style="Dark.TButton",
-            command=begin_chromium_download,
+            command=activate_chromium,
         )
         download_chromium_button.grid(row=1, column=1, sticky="ew", padx=4, pady=3)
 
@@ -8041,6 +8059,9 @@ class AccountManagerUI:
 
             task_buttons.clear()
             mode = get_extension_browser_mode()
+            download_chromium_button.configure(
+                text="Use Chromium" if mode == "chrome" and is_chromium_ready() else "Download Chromium"
+            )
             if mode in GECKO_BROWSER_NAMES:
                 import_crx_button.configure(text="Import XPI")
                 grid_action_button(add_firefox_button, 0, 0, (0, 4))
@@ -8088,6 +8109,13 @@ class AccountManagerUI:
                 return
 
             if mode == "auto_missing_chromium":
+                grid_action_button(download_chromium_button, 0, 0, (0, 4))
+                grid_action_button(open_folder_button, 0, 3)
+                grid_action_button(close_button, 0, 4, (4, 0))
+                task_buttons.append(download_chromium_button)
+                return
+
+            if mode == "chrome":
                 grid_action_button(download_chromium_button, 0, 0, (0, 4))
                 grid_action_button(open_folder_button, 0, 3)
                 grid_action_button(close_button, 0, 4, (4, 0))
