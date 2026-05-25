@@ -2142,6 +2142,7 @@ class AccountManagerUI:
         self._pid_account_map = {}
         self._pid_launch_context_map = {}
         self._pid_account_lock = threading.Lock()
+        self._launch_pid_attribution_lock = threading.Lock()
         self._client_title_rename_lock = threading.Lock()
         self._client_title_rename_active_pids: set[int] = set()
         self._tracked_roblox_exes = {
@@ -13169,21 +13170,25 @@ class AccountManagerUI:
             success_count = 0
             for idx, uname in enumerate(selected_usernames):
                 try:
-                    before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
-                    launched = self.manager.launch_home_app(uname, version=version_path or None, enable_debug=debug_enabled)
-                    after_pids = before_pids
-                    if launched:
-                        success_count += 1
-                        after_pids = self._wait_for_tracked_roblox_pid_change(before_pids)
-                    self._assign_new_pids_to_account(
-                        uname,
-                        before_pids,
-                        after_pids,
-                        launch_context={
-                            "mode": "home",
-                            "version_path": version_path or None,
-                        },
-                    )
+                    with self._launch_pid_attribution_lock:
+                        before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
+                        launched = self.manager.launch_home_app(uname, version=version_path or None, enable_debug=debug_enabled)
+                        after_pids = before_pids
+                        if launched:
+                            success_count += 1
+                            after_pids = self._wait_for_tracked_roblox_pid_change(
+                                before_pids,
+                                target_username=uname,
+                            )
+                        self._assign_new_pids_to_account(
+                            uname,
+                            before_pids,
+                            after_pids,
+                            launch_context={
+                                "mode": "home",
+                                "version_path": version_path or None,
+                            },
+                        )
                 except Exception as e:
                     print(f"Failed to launch Roblox home for {uname}: {e}")
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
@@ -13251,9 +13256,31 @@ class AccountManagerUI:
                 normalized_pids.add(pid_value)
         return normalized_pids
 
+    def _get_pids_mapped_to_other_accounts(self, username: Any) -> set[int]:
+        normalized_username = str(username or "").strip()
+        mapped_pids: set[int] = set()
+        try:
+            with self._pid_account_lock:
+                pid_account_map = dict(self._pid_account_map)
+        except (AttributeError, RuntimeError):
+            return mapped_pids
+
+        for raw_pid, mapped_username in pid_account_map.items():
+            try:
+                pid_value = int(raw_pid)
+            except (TypeError, ValueError):
+                continue
+            if pid_value <= 0:
+                continue
+            mapped_username = str(mapped_username or "").strip()
+            if mapped_username and mapped_username != normalized_username:
+                mapped_pids.add(pid_value)
+        return mapped_pids
+
     def _wait_for_tracked_roblox_pid_change(
         self,
         before_pids: Any,
+        target_username: Any = "",
         timeout_seconds: float = CLIENT_TITLE_RENAME_PID_WAIT_SECONDS,
         poll_interval_seconds: float = CLIENT_TITLE_RENAME_PID_POLL_SECONDS,
     ) -> set[int]:
@@ -13264,7 +13291,8 @@ class AccountManagerUI:
 
         while time.monotonic() <= deadline:
             last_seen = self._get_running_tracked_roblox_pid_set(use_cache=False)
-            new_pids = sorted(last_seen - normalized_before)
+            mapped_to_other_accounts = self._get_pids_mapped_to_other_accounts(target_username)
+            new_pids = sorted((last_seen - normalized_before) - mapped_to_other_accounts)
             if new_pids:
                 self._log_client_title_rename(
                     f"Detected new Roblox PID(s) after launch: {', '.join(str(pid) for pid in new_pids)}.",
@@ -13843,14 +13871,41 @@ class AccountManagerUI:
             return
 
         normalized_context = self._normalize_launch_context(launch_context)
+        mapped_pids: list[int] = []
+        skipped_pids: list[tuple[int, str]] = []
         with self._pid_account_lock:
-            for pid_value in new_pids:
+            for pid_value in sorted(new_pids):
+                existing_username = str(self._pid_account_map.get(int(pid_value), "") or "").strip()
+                if existing_username and existing_username != normalized_username:
+                    skipped_pids.append((int(pid_value), existing_username))
+                    continue
                 self._pid_account_map[int(pid_value)] = normalized_username
                 self._pid_launch_context_map[int(pid_value)] = dict(normalized_context)
+                mapped_pids.append(int(pid_value))
+
+        if skipped_pids:
+            skipped_text = ", ".join(
+                f"{pid_value} ({existing_username})"
+                for pid_value, existing_username in skipped_pids
+            )
+            self._log_client_title_rename(
+                (
+                    f"Skipped PID(s) already mapped to another account while linking "
+                    f"{normalized_username}: {skipped_text}."
+                ),
+                debug=True,
+            )
+
+        if not mapped_pids:
+            self._log_client_title_rename(
+                f"No unmapped Roblox PID could be linked to account {normalized_username}.",
+                debug=True,
+            )
+            return
 
         self._log_client_title_rename(
             (
-                f"Mapped Roblox PID(s) {', '.join(str(pid) for pid in sorted(new_pids))} "
+                f"Mapped Roblox PID(s) {', '.join(str(pid) for pid in mapped_pids)} "
                 f"to account {normalized_username}."
             ),
             debug=True,
@@ -13858,10 +13913,10 @@ class AccountManagerUI:
 
         self._invalidate_active_client_indicator_cache()
 
-        for pid_value in new_pids:
+        for pid_value in mapped_pids:
             self._rename_roblox_client_window_title(int(pid_value), normalized_username)
 
-        session_pid = self._select_primary_session_pid(new_pids)
+        session_pid = self._select_primary_session_pid(mapped_pids)
         if session_pid > 0:
             try:
                 self.manager.update_active_session_pid(normalized_username, session_pid)
@@ -14369,40 +14424,16 @@ class AccountManagerUI:
                     if preferred_region and account_private_server:
                         print(f"[INFO] Preferred server region setting ignored for {uname} because a private server link code is set.")
 
-                    before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
                     effective_auto_rejoin = self._get_effective_auto_rejoin_enabled(uname)
-                    launched = self.manager.launch_roblox(
-                        uname,
-                        pid,
-                        account_private_server,
-                        ver,
-                        enable_debug=debug_flag,
-                        server_job_id=server_job_id,
-                        launch_mode=active_launch_mode,
-                        auto_rejoin=effective_auto_rejoin,
-                        rejoin_delay=self._get_auto_rejoin_delay_seconds(),
-                        max_rejoin_attempts=self._get_auto_rejoin_max_attempts(),
-                        rejoin_launch_behavior=self._get_auto_rejoin_launch_behavior(),
-                        preserve_rejoin_attempts=preserve_rejoin_attempts,
-                    )
-                    last_effective_private_server = account_private_server
-                    effective_server_job_id = server_job_id
-                    if (
-                        active_launch_mode != "join_user"
-                        and (not launched)
-                        and server_job_id
-                        and public_server_selection_enabled
-                        and not account_private_server
-                        and not manual_job_id
-                    ):
-                        print("[INFO] Server job ID launch failed; retrying with default launch.")
+                    with self._launch_pid_attribution_lock:
+                        before_pids = self._get_running_tracked_roblox_pid_set(use_cache=False)
                         launched = self.manager.launch_roblox(
                             uname,
                             pid,
                             account_private_server,
                             ver,
                             enable_debug=debug_flag,
-                            server_job_id="",
+                            server_job_id=server_job_id,
                             launch_mode=active_launch_mode,
                             auto_rejoin=effective_auto_rejoin,
                             rejoin_delay=self._get_auto_rejoin_delay_seconds(),
@@ -14410,25 +14441,53 @@ class AccountManagerUI:
                             rejoin_launch_behavior=self._get_auto_rejoin_launch_behavior(),
                             preserve_rejoin_attempts=preserve_rejoin_attempts,
                         )
+                        last_effective_private_server = account_private_server
+                        effective_server_job_id = server_job_id
+                        if (
+                            active_launch_mode != "join_user"
+                            and (not launched)
+                            and server_job_id
+                            and public_server_selection_enabled
+                            and not account_private_server
+                            and not manual_job_id
+                        ):
+                            print("[INFO] Server job ID launch failed; retrying with default launch.")
+                            launched = self.manager.launch_roblox(
+                                uname,
+                                pid,
+                                account_private_server,
+                                ver,
+                                enable_debug=debug_flag,
+                                server_job_id="",
+                                launch_mode=active_launch_mode,
+                                auto_rejoin=effective_auto_rejoin,
+                                rejoin_delay=self._get_auto_rejoin_delay_seconds(),
+                                max_rejoin_attempts=self._get_auto_rejoin_max_attempts(),
+                                rejoin_launch_behavior=self._get_auto_rejoin_launch_behavior(),
+                                preserve_rejoin_attempts=preserve_rejoin_attempts,
+                            )
+                            if launched:
+                                effective_server_job_id = ""
                         if launched:
-                            effective_server_job_id = ""
-                    if launched:
-                        success_count += 1
-                    after_pids = before_pids
-                    if launched:
-                        after_pids = self._wait_for_tracked_roblox_pid_change(before_pids)
-                    self._assign_new_pids_to_account(
-                        uname,
-                        before_pids,
-                        after_pids,
-                        launch_context={
-                            "mode": "join_user" if active_launch_mode == "join_user" else "game",
-                            "game_id": pid,
-                            "private_server_id": account_private_server,
-                            "server_job_id": effective_server_job_id,
-                            "version_path": ver,
-                        },
-                    )
+                            success_count += 1
+                        after_pids = before_pids
+                        if launched:
+                            after_pids = self._wait_for_tracked_roblox_pid_change(
+                                before_pids,
+                                target_username=uname,
+                            )
+                        self._assign_new_pids_to_account(
+                            uname,
+                            before_pids,
+                            after_pids,
+                            launch_context={
+                                "mode": "join_user" if active_launch_mode == "join_user" else "game",
+                                "game_id": pid,
+                                "private_server_id": account_private_server,
+                                "server_job_id": effective_server_job_id,
+                                "version_path": ver,
+                            },
+                        )
                 except Exception as e:
                     print(f"Failed to launch game for {uname}: {e}")
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
