@@ -38,6 +38,15 @@ from .browser_extensions import BrowserExtension, BrowserExtensionError, Browser
 
 class RobloxAccountManager:
     LOGIN_DETECTION_INTERVAL_SECONDS = 0.25
+    SUPPORTED_BROWSER_NAMES = ("chrome", "firefox", "waterfox", "chromium")
+    GECKO_BROWSER_NAMES = {"firefox", "waterfox"}
+    CHROMIUM_BROWSER_NAMES = {"chrome", "chromium"}
+    BROWSER_DISPLAY_NAMES = {
+        "chrome": "Chrome",
+        "firefox": "Firefox",
+        "waterfox": "Waterfox",
+        "chromium": "Chromium",
+    }
     _SELENIUM_POPEN_KW = {
         "creation_flags": getattr(subprocess, "CREATE_NO_WINDOW", 0)
     } if os.name == "nt" else {}
@@ -276,11 +285,17 @@ class RobloxAccountManager:
             return []
 
         normalized_browser_name = str(browser_name or "").strip().lower()
-        if normalized_browser_name in {"chrome", "chromium"}:
+        if normalized_browser_name in self.CHROMIUM_BROWSER_NAMES:
             return [
                 extension
                 for extension in enabled_extensions
                 if extension.source not in {"firefox_addons", "xpi"}
+            ]
+        if normalized_browser_name in self.GECKO_BROWSER_NAMES:
+            return [
+                extension
+                for extension in enabled_extensions
+                if extension.source not in {"web_store", "crx"}
             ]
         return enabled_extensions
 
@@ -323,72 +338,106 @@ class RobloxAccountManager:
             return None
         return None
 
+    def _get_browser_display_name(self, browser_name: str) -> str:
+        normalized_name = str(browser_name or "").strip().lower()
+        return self.BROWSER_DISPLAY_NAMES.get(normalized_name, normalized_name.capitalize() or "Browser")
+
+    def _get_browser_binary_path(self, browser_name: str) -> Optional[Path]:
+        """Find an installed browser executable for local automation."""
+        name = str(browser_name or "").strip().lower()
+        if name == "chromium":
+            return self.get_managed_chromium_binary_path()
+        if name not in {"chrome", "firefox", "waterfox"}:
+            return None
+
+        executable_name_by_browser = {
+            "chrome": "chrome.exe",
+            "firefox": "firefox.exe",
+            "waterfox": "waterfox.exe",
+        }
+        executable_name = executable_name_by_browser[name]
+
+        for command_name in (executable_name, executable_name[:-4]):
+            resolved_path = shutil.which(command_name)
+            if resolved_path and Path(resolved_path).is_file():
+                return Path(resolved_path)
+
+        candidates: list[Path] = []
+        pf = os.environ.get("ProgramFiles")
+        pfx86 = os.environ.get("ProgramFiles(x86)")
+        localapp = os.environ.get("LOCALAPPDATA")
+        appdata = os.environ.get("APPDATA")
+
+        if name == "chrome":
+            if pf:
+                candidates.append(Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe")
+            if pfx86:
+                candidates.append(Path(pfx86) / "Google" / "Chrome" / "Application" / "chrome.exe")
+            if localapp:
+                candidates.append(Path(localapp) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        elif name == "firefox":
+            if pf:
+                candidates.append(Path(pf) / "Mozilla Firefox" / "firefox.exe")
+            if pfx86:
+                candidates.append(Path(pfx86) / "Mozilla Firefox" / "firefox.exe")
+            if localapp:
+                candidates.append(Path(localapp) / "Mozilla Firefox" / "firefox.exe")
+            if appdata:
+                candidates.append(Path(appdata) / "Mozilla" / "Firefox" / "firefox.exe")
+        elif name == "waterfox":
+            waterfox_folders = ("Waterfox", "Waterfox Current", "Waterfox Classic")
+            for base_path in (pf, pfx86):
+                if not base_path:
+                    continue
+                for folder_name in waterfox_folders:
+                    candidates.append(Path(base_path) / folder_name / "waterfox.exe")
+            if localapp:
+                for folder_name in waterfox_folders:
+                    candidates.append(Path(localapp) / folder_name / "waterfox.exe")
+                    candidates.append(Path(localapp) / "Programs" / folder_name / "waterfox.exe")
+            if appdata:
+                for folder_name in waterfox_folders:
+                    candidates.append(Path(appdata) / folder_name / "waterfox.exe")
+
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
+
     def _is_browser_installed(self, browser_name):
         """Best-effort check for local browser executable presence."""
         name = (browser_name or "").strip().lower()
-        if name not in {"chrome", "firefox", "chromium"}:
+        if name not in self.SUPPORTED_BROWSER_NAMES:
             return False
         if name == "chromium":
             return self.get_managed_chromium_binary_path() is not None and self.get_managed_chromium_driver_path() is not None
-        if name == "firefox" and (FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None):
+        if name in self.GECKO_BROWSER_NAMES and (FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None):
             return False
 
         try:
-            candidates = []
-            pf = os.environ.get("ProgramFiles")
-            pfx86 = os.environ.get("ProgramFiles(x86)")
-            localapp = os.environ.get("LOCALAPPDATA")
-            appdata = os.environ.get("APPDATA")
-
-            if name == "chrome":
-                if pf:
-                    candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
-                if pfx86:
-                    candidates.append(os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"))
-                if localapp:
-                    candidates.append(os.path.join(localapp, "Google", "Chrome", "Application", "chrome.exe"))
-            elif name == "firefox":
-                if pf:
-                    candidates.append(os.path.join(pf, "Mozilla Firefox", "firefox.exe"))
-                if pfx86:
-                    candidates.append(os.path.join(pfx86, "Mozilla Firefox", "firefox.exe"))
-                if localapp:
-                    candidates.append(os.path.join(localapp, "Mozilla Firefox", "firefox.exe"))
-                if appdata:
-                    candidates.append(os.path.join(appdata, "Mozilla", "Firefox", "firefox.exe"))
-
-            for path in candidates:
-                if path and os.path.exists(path):
-                    return True
+            return self._get_browser_binary_path(name) is not None
         except Exception:
             pass
         return False
 
     def has_supported_browser(self):
-        return (
-            self._is_browser_installed("chrome")
-            or self._is_browser_installed("firefox")
-            or self._is_browser_installed("chromium")
-        )
+        return any(self._is_browser_installed(browser_name) for browser_name in self.SUPPORTED_BROWSER_NAMES)
 
     def get_available_browsers(self):
         available = []
-        if self._is_browser_installed("chrome"):
-            available.append("chrome")
-        if self._is_browser_installed("firefox"):
-            available.append("firefox")
-        if self._is_browser_installed("chromium"):
-            available.append("chromium")
+        for browser_name in self.SUPPORTED_BROWSER_NAMES:
+            if self._is_browser_installed(browser_name):
+                available.append(browser_name)
         return available
 
     def _get_browser_preference_order(self, preferred_browser=None):
         preferred = (preferred_browser or "").strip().lower()
-        supported_browsers = ["chrome", "firefox", "chromium"]
+        supported_browsers = list(self.SUPPORTED_BROWSER_NAMES)
         if preferred in supported_browsers:
             return [preferred] + [browser_name for browser_name in supported_browsers if browser_name != preferred]
         if self._is_browser_installed("chromium"):
-            return ["chromium", "chrome", "firefox"]
-        return ["chrome", "firefox"]
+            return ["chromium", "chrome", "firefox", "waterfox"]
+        return ["chrome", "firefox", "waterfox"]
 
     def _create_chrome_options(
         self,
@@ -503,23 +552,35 @@ class RobloxAccountManager:
             self.cleanup_temp_profile(profile_dir)
             raise
 
-    def _install_firefox_extensions(self, driver: Any) -> None:
-        for extension in self.get_enabled_browser_extensions("firefox"):
+    def _install_firefox_extensions(self, driver: Any, browser_name: str = "firefox") -> None:
+        display_name = self._get_browser_display_name(browser_name)
+        for extension in self.get_enabled_browser_extensions(browser_name):
             try:
                 driver.install_addon(str(extension.directory.resolve()), temporary=True)
             except (AttributeError, OSError, WebDriverException) as exc:
-                print(f"[WARNING] Firefox could not load extension {extension.name}: {exc}")
+                print(f"[WARNING] {display_name} could not load extension {extension.name}: {exc}")
 
-    def _setup_firefox_driver(self, headless: bool = False) -> Any:
-        """Setup Firefox driver with compatible performance options."""
+    def _setup_gecko_driver(self, browser_name: str, headless: bool = False) -> Any:
+        """Setup a Firefox-compatible Gecko browser driver."""
+        normalized_browser_name = str(browser_name or "firefox").strip().lower()
+        if normalized_browser_name not in self.GECKO_BROWSER_NAMES:
+            raise RuntimeError(f"Unsupported Gecko browser: {browser_name}")
+
+        display_name = self._get_browser_display_name(normalized_browser_name)
         if FirefoxService is None or FirefoxOptions is None or GeckoDriverManager is None:
-            raise RuntimeError("Firefox Selenium support is unavailable in this environment.")
+            raise RuntimeError(f"{display_name} Selenium support is unavailable in this environment.")
 
         profile_dir = self.create_temp_profile()
         try:
             firefox_options = FirefoxOptions()
+            browser_binary_path = self._get_browser_binary_path(normalized_browser_name)
+            if normalized_browser_name == "waterfox" and browser_binary_path is None:
+                raise RuntimeError("Waterfox is not installed.")
+            if browser_binary_path is not None:
+                firefox_options.binary_location = str(browser_binary_path)
             firefox_options.add_argument("-profile")
             firefox_options.add_argument(profile_dir)
+            firefox_options.set_preference("marionette.enabled", True)
             firefox_options.set_preference("dom.webdriver.enabled", False)
             firefox_options.set_preference("useAutomationExtension", False)
             firefox_options.set_preference("toolkit.telemetry.reportingpolicy.firstRun", False)
@@ -538,11 +599,19 @@ class RobloxAccountManager:
             )
             driver = webdriver.Firefox(service=service, options=firefox_options)
             setattr(driver, "_ram_temp_profile_dir", profile_dir)
-            self._install_firefox_extensions(driver)
+            self._install_firefox_extensions(driver, normalized_browser_name)
             return driver
         except Exception as exc:
             self.cleanup_temp_profile(profile_dir)
-            raise RuntimeError(f"Failed to start Firefox automation: {exc}") from exc
+            raise RuntimeError(f"Failed to start {display_name} automation: {exc}") from exc
+
+    def _setup_firefox_driver(self, headless: bool = False) -> Any:
+        """Setup Firefox driver with compatible performance options."""
+        return self._setup_gecko_driver("firefox", headless=headless)
+
+    def _setup_waterfox_driver(self, headless: bool = False) -> Any:
+        """Setup Waterfox driver with compatible performance options."""
+        return self._setup_gecko_driver("waterfox", headless=headless)
 
     def setup_browser_driver(self, preferred_browser=None, headless=False):
         """
@@ -564,8 +633,12 @@ class RobloxAccountManager:
                         driver = self._setup_chrome_driver(headless=headless)
                     elif browser_name == "chromium":
                         driver = self._setup_chromium_driver(headless=headless)
-                    else:
+                    elif browser_name == "firefox":
                         driver = self._setup_firefox_driver(headless=headless)
+                    elif browser_name == "waterfox":
+                        driver = self._setup_waterfox_driver(headless=headless)
+                    else:
+                        continue
                     return driver, browser_name
                 except Exception as exc:
                     attempted.append((browser_name, str(exc)))
@@ -576,8 +649,12 @@ class RobloxAccountManager:
                         driver = self._setup_chrome_driver(headless=headless)
                     elif browser_name == "chromium":
                         driver = self._setup_chromium_driver(headless=headless)
-                    else:
+                    elif browser_name == "firefox":
                         driver = self._setup_firefox_driver(headless=headless)
+                    elif browser_name == "waterfox":
+                        driver = self._setup_waterfox_driver(headless=headless)
+                    else:
+                        continue
                     return driver, browser_name
                 except Exception as exc:
                     attempted.append((browser_name, str(exc)))
@@ -594,12 +671,12 @@ class RobloxAccountManager:
             print(f"Error setting up browser driver: {details}")
         else:
             print("Error setting up browser driver: no supported browser available.")
-        print("Please make sure Google Chrome, Mozilla Firefox, or downloaded Chromium is installed.")
+        print("Please make sure Google Chrome, Mozilla Firefox, Waterfox, or downloaded Chromium is installed.")
         return None, None
 
     def setup_chrome_driver(self):
         """
-        Backward-compatible wrapper that supports fallback to Firefox or downloaded Chromium.
+        Backward-compatible wrapper that supports fallback to Firefox, Waterfox, or downloaded Chromium.
         """
         driver, _browser = self.setup_browser_driver(preferred_browser="chrome")
         return driver

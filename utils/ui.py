@@ -100,6 +100,14 @@ ADDITIONAL_THEMES_URL = (
 FRAM_ASSETS_ADDONS_WEB_URL = "https://github.com/hackyue/FRAMAssets/tree/main/Addons"
 FRAM_ASSETS_ADDONS_API_URL = "https://api.github.com/repos/hackyue/FRAMAssets/contents/Addons"
 CHROME_FOR_TESTING_DOWNLOADS_URL = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
+BROWSER_DISPLAY_NAMES: dict[str, str] = {
+    "chrome": "Chrome",
+    "firefox": "Firefox",
+    "waterfox": "Waterfox",
+    "chromium": "Chromium",
+}
+SUPPORTED_BROWSER_PREFERENCES: set[str] = {"auto", *BROWSER_DISPLAY_NAMES.keys()}
+GECKO_BROWSER_NAMES: set[str] = {"firefox", "waterfox"}
 
 
 
@@ -2055,7 +2063,7 @@ class AccountManagerUI:
             True,
         )
         browser_pref = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
-        if browser_pref not in {"auto", "chrome", "firefox", "chromium"}:
+        if browser_pref not in SUPPORTED_BROWSER_PREFERENCES:
             browser_pref = "auto"
         self.settings["browser_preference"] = browser_pref
 
@@ -2488,9 +2496,9 @@ class AccountManagerUI:
         return ManagedChromiumInstallation(version=version, binary_path=resolved_binary_path)
 
     def _get_preferred_browser(self) -> str:
-        """Return browser automation preference: auto, chrome, firefox, or chromium."""
+        """Return browser automation preference: auto, chrome, firefox, waterfox, or chromium."""
         value = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
-        if value not in {"auto", "chrome", "firefox", "chromium"}:
+        if value not in SUPPORTED_BROWSER_PREFERENCES:
             value = "auto"
 
         available = self._get_available_browsers()
@@ -2498,13 +2506,13 @@ class AccountManagerUI:
             return value
         if len(available) == 1:
             return available[0]
-        if value in {"auto", "chrome", "firefox", "chromium"} and (value == "auto" or value in available):
+        if value in SUPPORTED_BROWSER_PREFERENCES and (value == "auto" or value in available):
             return value
         return "auto"
 
     def _is_browser_installed_locally(self, browser_name: Any) -> bool:
         name = str(browser_name or "").strip().lower()
-        if name not in {"chrome", "firefox", "chromium"}:
+        if name not in BROWSER_DISPLAY_NAMES:
             return False
 
         try:
@@ -2531,6 +2539,18 @@ class AccountManagerUI:
             localapp = os.environ.get("LOCALAPPDATA")
             appdata = os.environ.get("APPDATA")
 
+            executable_name_by_browser = {
+                "chrome": "chrome.exe",
+                "firefox": "firefox.exe",
+                "waterfox": "waterfox.exe",
+            }
+            executable_name = executable_name_by_browser.get(name)
+            if executable_name:
+                for command_name in (executable_name, executable_name[:-4]):
+                    resolved_path = shutil.which(command_name)
+                    if resolved_path and os.path.exists(resolved_path):
+                        return True
+
             if name == "chrome":
                 if pf:
                     candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
@@ -2538,7 +2558,7 @@ class AccountManagerUI:
                     candidates.append(os.path.join(pfx86, "Google", "Chrome", "Application", "chrome.exe"))
                 if localapp:
                     candidates.append(os.path.join(localapp, "Google", "Chrome", "Application", "chrome.exe"))
-            else:
+            elif name == "firefox":
                 if pf:
                     candidates.append(os.path.join(pf, "Mozilla Firefox", "firefox.exe"))
                 if pfx86:
@@ -2547,6 +2567,20 @@ class AccountManagerUI:
                     candidates.append(os.path.join(localapp, "Mozilla Firefox", "firefox.exe"))
                 if appdata:
                     candidates.append(os.path.join(appdata, "Mozilla", "Firefox", "firefox.exe"))
+            elif name == "waterfox":
+                waterfox_folders = ("Waterfox", "Waterfox Current", "Waterfox Classic")
+                for base_path in (pf, pfx86):
+                    if not base_path:
+                        continue
+                    for folder_name in waterfox_folders:
+                        candidates.append(os.path.join(base_path, folder_name, "waterfox.exe"))
+                if localapp:
+                    for folder_name in waterfox_folders:
+                        candidates.append(os.path.join(localapp, folder_name, "waterfox.exe"))
+                        candidates.append(os.path.join(localapp, "Programs", folder_name, "waterfox.exe"))
+                if appdata:
+                    for folder_name in waterfox_folders:
+                        candidates.append(os.path.join(appdata, folder_name, "waterfox.exe"))
 
             for path in candidates:
                 if path and os.path.exists(path):
@@ -2563,7 +2597,7 @@ class AccountManagerUI:
                 if isinstance(manager_available, (list, tuple, set)):
                     for name in manager_available:
                         normalized = str(name or "").strip().lower()
-                        if normalized in {"chrome", "firefox", "chromium"} and normalized not in available:
+                        if normalized in BROWSER_DISPLAY_NAMES and normalized not in available:
                             available.append(normalized)
                     if available:
                         return available
@@ -2574,6 +2608,8 @@ class AccountManagerUI:
             available.append("chrome")
         if self._is_browser_installed_locally("firefox"):
             available.append("firefox")
+        if self._is_browser_installed_locally("waterfox"):
+            available.append("waterfox")
         if self._is_browser_installed_locally("chromium"):
             available.append("chromium")
         return available
@@ -6918,9 +6954,15 @@ class AccountManagerUI:
             except (AttributeError, OSError, RuntimeError, TypeError):
                 return False
 
+        def is_waterfox_ready() -> bool:
+            try:
+                return "waterfox" in self._get_available_browsers()
+            except (AttributeError, OSError, RuntimeError, TypeError):
+                return False
+
         def get_raw_browser_preference() -> str:
             browser_preference = str(self.settings.get("browser_preference", "auto") or "auto").strip().lower()
-            if browser_preference not in {"auto", "chrome", "firefox", "chromium"}:
+            if browser_preference not in SUPPORTED_BROWSER_PREFERENCES:
                 return "auto"
             return browser_preference
 
@@ -6932,6 +6974,8 @@ class AccountManagerUI:
                 return "chromium" if is_chromium_ready() else "chromium_missing"
             if browser_preference == "firefox":
                 return "firefox" if is_firefox_ready() else "firefox_missing"
+            if browser_preference == "waterfox":
+                return "waterfox" if is_waterfox_ready() else "waterfox_missing"
             return "unsupported"
 
         def is_chromium_extension(extension: BrowserExtension) -> bool:
@@ -6944,23 +6988,26 @@ class AccountManagerUI:
             mode = get_extension_browser_mode()
             if mode in {"chromium", "chromium_missing", "auto_missing_chromium"}:
                 return is_chromium_extension(extension)
-            if mode in {"firefox", "firefox_missing"}:
+            if mode in {"firefox", "firefox_missing", "waterfox", "waterfox_missing"}:
                 return is_firefox_extension(extension)
             return False
 
         def refresh_status() -> None:
             mode = get_extension_browser_mode()
             if mode == "unsupported":
-                status_var.set("Chrome is not supported. Extension Manager supports Firefox and Chromium.")
+                status_var.set("Chrome is not supported. Extension Manager supports Firefox, Waterfox, and Chromium.")
                 return
             if mode == "auto_missing_chromium":
-                status_var.set("Install Chromium to manage extensions.")
+                status_var.set("Install Chromium or select Firefox/Waterfox in Browser Automation to manage extensions.")
                 return
             if mode == "chromium_missing":
                 status_var.set("Chromium is not installed. Install Chromium to manage Chromium extensions.")
                 return
             if mode == "firefox_missing":
                 status_var.set("Firefox is not installed. Select another Browser Automation option first.")
+                return
+            if mode == "waterfox_missing":
+                status_var.set("Waterfox is not installed. Select another Browser Automation option first.")
                 return
             status_var.set("")
 
@@ -7084,8 +7131,8 @@ class AccountManagerUI:
             )
 
         def add_firefox_addon_id() -> None:
-            if get_extension_browser_mode() != "firefox":
-                messagebox.showwarning("Extension Manager", "Switch Browser Automation to Firefox first.", parent=window)
+            if get_extension_browser_mode() not in GECKO_BROWSER_NAMES:
+                messagebox.showwarning("Extension Manager", "Switch Browser Automation to Firefox or Waterfox first.", parent=window)
                 return
             addon_id = simpledialog.askstring(
                 "Add Firefox Extension",
@@ -7117,7 +7164,7 @@ class AccountManagerUI:
                 status_text = "Importing CRX..."
                 fallback_status_text = "CRX imported."
                 import_func: Callable[[str], BrowserExtension] = manager.add_from_crx
-            elif mode == "firefox":
+            elif mode in GECKO_BROWSER_NAMES:
                 dialog_title = "Import XPI Extension"
                 filetypes = (("XPI files", "*.xpi"), ("All files", "*.*"))
                 status_text = "Importing XPI..."
@@ -7139,7 +7186,7 @@ class AccountManagerUI:
                 suffix = Path(file_path).suffix.casefold()
                 if mode in {"chromium", "chromium_missing"} and suffix != ".crx":
                     raise BrowserExtensionError("Select a CRX extension package.")
-                if mode == "firefox" and suffix != ".xpi":
+                if mode in GECKO_BROWSER_NAMES and suffix != ".xpi":
                     raise BrowserExtensionError("Select an XPI extension package.")
                 return import_func(file_path)
 
@@ -7376,7 +7423,7 @@ class AccountManagerUI:
 
             task_buttons.clear()
             mode = get_extension_browser_mode()
-            if mode == "firefox":
+            if mode in GECKO_BROWSER_NAMES:
                 import_crx_button.configure(text="Import XPI")
                 grid_action_button(add_firefox_button, 0, 0, (0, 4))
                 grid_action_button(import_crx_button, 0, 1)
@@ -7433,7 +7480,7 @@ class AccountManagerUI:
             grid_action_button(close_button, 0, 4, (4, 0))
 
         def on_tree_double_click(_event: tk.Event) -> None:
-            if get_extension_browser_mode() in {"chromium", "chromium_missing", "firefox"}:
+            if get_extension_browser_mode() in {"chromium", "chromium_missing", "firefox", "waterfox"}:
                 toggle_selected()
 
         tree.bind("<Double-Button-1>", on_tree_double_click)
@@ -9486,6 +9533,7 @@ class AccountManagerUI:
             pf = os.environ.get("ProgramFiles")
             pfx86 = os.environ.get("ProgramFiles(x86)")
             localapp = os.environ.get("LOCALAPPDATA")
+            appdata = os.environ.get("APPDATA")
 
             if pf:
                 candidates.append(os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"))
@@ -9497,10 +9545,27 @@ class AccountManagerUI:
                 candidates.append(os.path.join(localapp, "Google", "Chrome", "Application", "chrome.exe"))
                 candidates.append(os.path.join(localapp, "Mozilla Firefox", "firefox.exe"))
 
+            waterfox_folders = ("Waterfox", "Waterfox Current", "Waterfox Classic")
+            for base_path in (pf, pfx86):
+                if not base_path:
+                    continue
+                for folder_name in waterfox_folders:
+                    candidates.append(os.path.join(base_path, folder_name, "waterfox.exe"))
+            if localapp:
+                for folder_name in waterfox_folders:
+                    candidates.append(os.path.join(localapp, folder_name, "waterfox.exe"))
+                    candidates.append(os.path.join(localapp, "Programs", folder_name, "waterfox.exe"))
+            if appdata:
+                for folder_name in waterfox_folders:
+                    candidates.append(os.path.join(appdata, folder_name, "waterfox.exe"))
+
             for path in candidates:
                 if path and os.path.exists(path):
                     return True
-            return self._is_browser_installed_locally("chromium")
+            return any(
+                self._is_browser_installed_locally(browser_name)
+                for browser_name in ("waterfox", "chromium")
+            )
         except Exception:
             pass
         return False
@@ -10571,7 +10636,7 @@ class AccountManagerUI:
         if not self.is_chrome_installed():
             messagebox.showwarning(
                 "Browser Required",
-                "Quick Sign-In requires Google Chrome, Mozilla Firefox, or Chromium.\n"
+                "Quick Sign-In requires Google Chrome, Mozilla Firefox, Waterfox, or Chromium.\n"
                 "Install a browser or use Settings to download Chromium, then try again."
             )
             return
@@ -10720,7 +10785,7 @@ class AccountManagerUI:
         if not self.is_chrome_installed():
             messagebox.showwarning(
                 "Browser Required",
-                "Add Account requires Google Chrome, Mozilla Firefox, or Chromium.\n"
+                "Add Account requires Google Chrome, Mozilla Firefox, Waterfox, or Chromium.\n"
                 "Install a browser or use Settings to download Chromium, then try again."
             )
             return
@@ -12300,7 +12365,7 @@ class AccountManagerUI:
         if not self.is_chrome_installed():
             messagebox.showwarning(
                 "Browser Required",
-                "Launching browser requires Google Chrome, Mozilla Firefox, Chromium.\n"
+                "Launching browser requires Google Chrome, Mozilla Firefox, Waterfox, or Chromium.\n"
                 "Install a browser or use Settings to download Chromium, then try again."
             )
             return
@@ -15117,19 +15182,15 @@ class AccountManagerUI:
         browser_download_state = {"thread": None}
         browser_download_button_holder = {"button": None}
         browser_status_label_holder = {"label": None}
-        browser_display_names = {
-            "chrome": "Chrome",
-            "firefox": "Firefox",
-            "chromium": "Chromium",
-        }
+        browser_display_names = BROWSER_DISPLAY_NAMES
 
         def get_browser_value_to_label() -> dict[str, str]:
             available_browsers = self._get_available_browsers()
             value_to_label = {}
             auto_browser_order = (
-                ("chromium", "chrome", "firefox")
+                ("chromium", "chrome", "firefox", "waterfox")
                 if "chromium" in available_browsers
-                else ("chrome", "firefox")
+                else ("chrome", "firefox", "waterfox")
             )
             ordered_available = [
                 browser_name
@@ -15143,6 +15204,8 @@ class AccountManagerUI:
                 value_to_label["chrome"] = "Chrome only"
             if "firefox" in available_browsers:
                 value_to_label["firefox"] = "Firefox only"
+            if "waterfox" in available_browsers:
+                value_to_label["waterfox"] = "Waterfox only"
             if "chromium" in available_browsers:
                 value_to_label["chromium"] = "Chromium only"
             return value_to_label
@@ -15995,7 +16058,7 @@ class AccountManagerUI:
         extensions_card = create_settings_card(
             advanced_tab,
             "Extension Manager",
-            "Manage Chromium and Firefox browser automation extensions",
+            "Manage Chromium, Firefox, and Waterfox browser automation extensions",
         )
 
         ttk.Button(

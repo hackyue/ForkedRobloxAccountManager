@@ -50,7 +50,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 
 **Requirements:**
 - **Windows**
-- **Google Chrome, Mozilla Firefox, or Chromium**
+- **Google Chrome, Mozilla Firefox, Waterfox, or Chromium**
 
 > ⚠️ Windows Defender may flag the EXE as untrusted since it's not signed. Click "More info" → "Run anyway" to proceed.
 
@@ -66,7 +66,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 **Requirements:**
 - **Python 3.7+**
 - **Windows**
-- **Google Chrome, Mozilla Firefox, or download chromium in fram**
+- **Google Chrome, Mozilla Firefox, Waterfox, or download chromium in fram**
 
 1. **Clone the repository**
    ```bash
