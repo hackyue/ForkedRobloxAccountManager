@@ -6625,6 +6625,52 @@ class AccountManagerUI:
         }
         return entries, summary
 
+    def _notify_addons_launch_success(self, usernames, launch_context=None):
+        if isinstance(usernames, str):
+            selected_usernames = [usernames]
+        else:
+            selected_usernames = [
+                str(username or "").strip()
+                for username in list(usernames or [])
+                if str(username or "").strip()
+            ]
+        if not selected_usernames:
+            return
+
+        context = dict(launch_context or {})
+
+        def worker():
+            try:
+                entries, _summary = self._collect_addon_entries()
+            except Exception as exc:
+                print(f"[WARNING] Failed to load launch addon hooks: {exc}")
+                return
+
+            for entry in entries:
+                module = entry.get("module")
+                if module is None:
+                    continue
+                hook = getattr(module, "on_fram_launch_success", None)
+                if not callable(hook):
+                    hook = getattr(module, "on_roblox_launch_success", None)
+                if not callable(hook):
+                    continue
+
+                try:
+                    api = FRAMAddonAPI(
+                        self,
+                        entry.get("name", "Addon"),
+                        entry.get("file_path", ""),
+                        addon_fram_version=entry.get("fram_version", ""),
+                        context="launch",
+                    )
+                    hook(api, list(selected_usernames), dict(context))
+                except Exception as exc:
+                    addon_name = entry.get("name") or entry.get("file_label") or "addon"
+                    print(f"[WARNING] Launch hook failed for {addon_name}: {exc}")
+
+        threading.Thread(target=worker, daemon=True, name="addon-launch-success-hooks").start()
+
     def _build_addons_panel(self, parent, owner_window=None, close_callback=None):
         panel = tk.Frame(parent, bg=self.BG_DARK, highlightthickness=0, bd=0)
         panel.pack(fill="both", expand=True)
@@ -13126,15 +13172,24 @@ class AccountManagerUI:
 
         def worker(selected_usernames, delay_seconds):
             success_count = 0
+            successful_usernames = []
             for idx, uname in enumerate(selected_usernames):
                 try:
                     if self.manager.launch_home(uname, preferred_browser=self._get_preferred_browser()):
                         success_count += 1
+                        successful_usernames.append(uname)
                 except Exception as e:
                     print(f"Failed to launch browser for {uname}: {e}")
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
                     time.sleep(delay_seconds)
             if success_count > 0:
+                self._notify_addons_launch_success(
+                    successful_usernames,
+                    {
+                        "kind": "browser_home",
+                        "success_count": success_count,
+                    },
+                )
                 self.root.after(0, lambda: self.show_success_message(f"Launched {success_count} browser(s)!"))
             else:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Failed to launch any browsers."))
@@ -13168,6 +13223,7 @@ class AccountManagerUI:
 
         def worker(selected_usernames, delay_seconds, done_callback):
             success_count = 0
+            successful_usernames = []
             for idx, uname in enumerate(selected_usernames):
                 try:
                     with self._launch_pid_attribution_lock:
@@ -13176,6 +13232,7 @@ class AccountManagerUI:
                         after_pids = before_pids
                         if launched:
                             success_count += 1
+                            successful_usernames.append(uname)
                             after_pids = self._wait_for_tracked_roblox_pid_change(
                                 before_pids,
                                 target_username=uname,
@@ -13194,13 +13251,26 @@ class AccountManagerUI:
                 if delay_seconds > 0 and idx < len(selected_usernames) - 1:
                     time.sleep(delay_seconds)
 
-            def notify(success_count=success_count, selected_usernames=selected_usernames, on_done_callback=done_callback):
+            def notify(
+                success_count=success_count,
+                selected_usernames=selected_usernames,
+                successful_usernames=successful_usernames,
+                on_done_callback=done_callback,
+            ):
                 if success_count > 0:
                     if len(selected_usernames) == 1:
                         self.show_success_message("Roblox is launching to home! Check your desktop.")
                     else:
                         self.show_success_message(f"Roblox is launching to home for {success_count} account(s)! Check your desktop.")
 
+                    self._notify_addons_launch_success(
+                        successful_usernames,
+                        {
+                            "kind": "roblox_home",
+                            "success_count": success_count,
+                            "version_path": version_path or None,
+                        },
+                    )
                     self._notify_roblox_windows_changed(success_count)
 
                     if on_done_callback is not None:
@@ -14324,6 +14394,7 @@ class AccountManagerUI:
             join_input_text: Any,
         ) -> dict[str, Any]:
             success_count = 0
+            successful_usernames = []
             recent_join_username = ""
             last_effective_private_server = psid
             public_server_job_pool: list[str] = []
@@ -14470,6 +14541,7 @@ class AccountManagerUI:
                                 effective_server_job_id = ""
                         if launched:
                             success_count += 1
+                            successful_usernames.append(uname)
                         after_pids = before_pids
                         if launched:
                             after_pids = self._wait_for_tracked_roblox_pid_change(
@@ -14500,6 +14572,7 @@ class AccountManagerUI:
             return {
                 "success_count": success_count,
                 "selected_usernames": list(selected_usernames),
+                "successful_usernames": list(successful_usernames),
                 "active_launch_mode": active_launch_mode,
                 "recent_private_server": last_effective_private_server if len(selected_usernames) == 1 else psid,
                 "recent_join_username": recent_join_username,
@@ -14510,6 +14583,7 @@ class AccountManagerUI:
         def handle_launch_result(result: dict[str, Any]) -> bool:
             success_count = int(result.get("success_count", 0) or 0)
             selected_usernames = list(result.get("selected_usernames") or [])
+            successful_usernames = list(result.get("successful_usernames") or selected_usernames[:success_count])
             active_launch_mode = str(result.get("active_launch_mode") or launch_mode).strip()
             if success_count > 0:
                 if update_recent_history:
@@ -14532,6 +14606,16 @@ class AccountManagerUI:
                         )
 
                 self._notify_roblox_windows_changed(success_count)
+                self._notify_addons_launch_success(
+                    successful_usernames,
+                    {
+                        "kind": "roblox_game" if active_launch_mode != "join_user" else "roblox_join_user",
+                        "success_count": success_count,
+                        "game_id": game_id,
+                        "launch_mode": active_launch_mode,
+                        "version_path": version_path,
+                    },
+                )
 
                 if on_done_callback is not None:
                     try:
@@ -14597,6 +14681,18 @@ class AccountManagerUI:
             self.root.after(0, apply_result)
             done_event.wait(timeout=10)
             return bool(success_holder["ok"])
+        if int(result.get("success_count", 0) or 0) > 0:
+            successful_usernames = list(result.get("successful_usernames") or list(usernames))
+            self._notify_addons_launch_success(
+                successful_usernames,
+                {
+                    "kind": "roblox_game" if launch_mode != "join_user" else "roblox_join_user",
+                    "success_count": int(result.get("success_count", 0) or 0),
+                    "game_id": game_id,
+                    "launch_mode": launch_mode,
+                    "version_path": version_path,
+                },
+            )
         return bool(result.get("success_count", 0))
 
     def enable_multi_roblox(self):

@@ -69,6 +69,80 @@ def set_windows_app_user_model_id():
         pass
 
 
+ADMIN_LAUNCH_ARGS = {"-admin", "--admin"}
+
+
+def _clean_admin_launch_args(argv):
+    return [arg for arg in argv if str(arg).lower() not in ADMIN_LAUNCH_ARGS]
+
+
+def _has_admin_launch_arg(argv):
+    return any(str(arg).lower() in ADMIN_LAUNCH_ARGS for arg in argv[1:])
+
+
+def _is_windows_admin():
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _show_admin_launch_error(message):
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Administrator Launch Failed", message)
+        root.destroy()
+    except Exception:
+        print(message)
+
+
+def _admin_relaunch_exit_code_if_requested(argv):
+    if not _has_admin_launch_arg(argv):
+        return None
+
+    cleaned_argv = [argv[0], *_clean_admin_launch_args(argv[1:])]
+    sys.argv[:] = cleaned_argv
+
+    if os.name != "nt":
+        print("-admin is only supported on Windows.")
+        return None
+
+    if _is_windows_admin():
+        return None
+
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        arguments = cleaned_argv[1:]
+        working_dir = get_cached_app_base_dir()
+    else:
+        script_path = os.path.abspath(cleaned_argv[0] or __file__)
+        executable = sys.executable
+        arguments = [script_path, *cleaned_argv[1:]]
+        working_dir = os.getcwd()
+
+    try:
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            executable,
+            subprocess.list2cmdline(arguments),
+            working_dir,
+            1,
+        )
+    except Exception as exc:
+        _show_admin_launch_error(f"Failed to request administrator access: {exc}")
+        return 1
+
+    if result <= 32:
+        _show_admin_launch_error(f"The administrator session failed. Error code: {result}")
+        return 1
+
+    return 0
+
+
 def _apply_update_mode(argv):
     pid = None
     source = None
@@ -297,4 +371,7 @@ def main():
 if __name__ == "__main__":
     if "--apply-update" in sys.argv:
         raise SystemExit(_apply_update_mode(sys.argv))
+    admin_relaunch_exit_code = _admin_relaunch_exit_code_if_requested(sys.argv)
+    if admin_relaunch_exit_code is not None:
+        raise SystemExit(admin_relaunch_exit_code)
     main()
