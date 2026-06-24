@@ -1591,7 +1591,7 @@ class ConsoleOutputWindow:
             "Total Roblox Memory": self._format_bytes(total_memory_bytes) if total_memory_bytes else "unknown",
             "Installed Roblox Versions Found": len(installed_versions),
             "Selected Version": self._safe_diagnostic_value(lambda: self.ui.version_var.get(), fallback=""),
-            "Custom Roblox Player Path": self._describe_path((getattr(self.ui, "settings", {}) or {}).get("custom_roblox_player_path", "")),
+            "Custom Roblox Executable Path": self._describe_path((getattr(self.ui, "settings", {}) or {}).get("custom_roblox_player_path", "")),
         })
 
         version_rows = []
@@ -2047,6 +2047,11 @@ class AccountManagerUI:
         "robloxplayerbeta.exe",
         "robloxplayerlauncher.exe",
     }
+    ROBLOX_BOOTSTRAPPER_EXECUTABLES = {
+        str(client["launcher"]).lower()
+        for client in RobloxAPI.BOOTSTRAPPER_CLIENTS
+    }
+    CUSTOM_ROBLOX_EXECUTABLES = ROBLOX_CLIENT_EXECUTABLES | ROBLOX_BOOTSTRAPPER_EXECUTABLES
     ROBLOX_HEADLESS_TARGET_EXECUTABLES = {"robloxplayerbeta.exe"}
     ANTI_AFK_TARGET_EXECUTABLES: set[str] = {"robloxplayerbeta.exe"}
     ANTI_AFK_DEFAULT_INTERVAL_MINUTES: int = 10
@@ -8335,7 +8340,7 @@ class AccountManagerUI:
         if not clients:
             messagebox.showwarning(
                 "Roblox Installer",
-                "No supported clients were found.\n\nInstall Roblox, Bloxstrap, or Fishstrap first."
+                "No supported clients were found.\n\nInstall Roblox or a supported bootstrapper first."
             )
             return
 
@@ -8805,7 +8810,7 @@ class AccountManagerUI:
             return None
 
         exe_name = os.path.basename(normalized_path).lower()
-        if exe_name not in self.ROBLOX_CLIENT_EXECUTABLES:
+        if exe_name not in self.CUSTOM_ROBLOX_EXECUTABLES:
             return None
 
         parent_name = os.path.basename(os.path.dirname(normalized_path)) or "Custom"
@@ -8851,9 +8856,13 @@ class AccountManagerUI:
             sources.append({"name": name, "base": expanded})
 
         add_source("Roblox", r"%LOCALAPPDATA%\Roblox\Versions")
-        add_source("Bloxstrap", r"%LOCALAPPDATA%\Bloxstrap\Versions")
-        add_source("Fishstrap", r"%LOCALAPPDATA%\Fishstrap\Versions")
-        add_source("Voidstrap", r"%LOCALAPPDATA%\Voidstrap\RblxVersions")
+        for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
+            root = bootstrapper.get("root", "")
+            for versions_dir_name in bootstrapper.get("version_dirs", ("Versions",)):
+                add_source(
+                    bootstrapper.get("name", ""),
+                    os.path.join(root, versions_dir_name),
+                )
 
         return sources
 
@@ -9028,10 +9037,14 @@ class AccountManagerUI:
         """Return installed client targets that have a Versions directory on disk."""
         candidates = [
             ("Roblox", os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")),
-            ("Bloxstrap", os.path.expandvars(r"%LOCALAPPDATA%\Bloxstrap\Versions")),
-            ("Fishstrap", os.path.expandvars(r"%LOCALAPPDATA%\Fishstrap\Versions")),
-            ("Voidstrap", os.path.expandvars(r"%LOCALAPPDATA%\Voidstrap\RblxVersions")),
         ]
+        for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
+            root = bootstrapper.get("root", "")
+            for versions_dir_name in bootstrapper.get("version_dirs", ("Versions",)):
+                candidates.append((
+                    bootstrapper.get("name", ""),
+                    os.path.expandvars(os.path.join(root, versions_dir_name)),
+                ))
 
         installed = []
         for name, base_path in candidates:
@@ -15818,12 +15831,12 @@ class AccountManagerUI:
         custom_player_card = create_settings_card(
             roblox_tab,
             "Roblox Executable",
-            "Add a custom Roblox player to launch with",
+            "Add a custom Roblox player or bootstrapper to launch with",
         )
 
         ttk.Label(
             custom_player_card,
-            text="Custom Roblox Player",
+            text="Custom Roblox Executable",
             style="Dark.TLabel",
         ).pack(anchor="w", pady=(0, 2))
 
@@ -15848,20 +15861,20 @@ class AccountManagerUI:
         def browse_custom_player_path():
             path = filedialog.askopenfilename(
                 parent=settings_window,
-                title="Select RobloxPlayer executable",
+                title="Select Roblox executable",
                 filetypes=[("Executable", "*.exe"), ("All Files", "*.*")]
             )
             if not path:
                 return
             path = os.path.normpath(path)
             if not os.path.isfile(path):
-                messagebox.showerror("Custom RobloxPlayer", "Selected path is not a file.")
+                messagebox.showerror("Custom Roblox Executable", "Selected path is not a file.")
                 return
             exe_name = os.path.basename(path).lower()
-            if exe_name not in self.ROBLOX_CLIENT_EXECUTABLES:
+            if exe_name not in self.CUSTOM_ROBLOX_EXECUTABLES:
                 messagebox.showerror(
-                    "Custom RobloxPlayer",
-                    "Please select RobloxPlayerBeta.exe or RobloxPlayerLauncher.exe."
+                    "Custom Roblox Executable",
+                    "Please select RobloxPlayerBeta.exe, RobloxPlayerLauncher.exe, or a supported bootstrapper executable."
                 )
                 return
             save_custom_player_path(path)

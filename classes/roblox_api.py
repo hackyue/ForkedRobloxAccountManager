@@ -52,6 +52,33 @@ class ServerRegionDetails:
 class RobloxAPI:
     """Handles all Roblox API interactions"""
 
+    BOOTSTRAPPER_CLIENTS = (
+        {
+            "name": "Bloxstrap",
+            "root": r"%LOCALAPPDATA%\Bloxstrap",
+            "launcher": "Bloxstrap.exe",
+            "version_dirs": ("Versions",),
+        },
+        {
+            "name": "Fishstrap",
+            "root": r"%LOCALAPPDATA%\Fishstrap",
+            "launcher": "Fishstrap.exe",
+            "version_dirs": ("Versions",),
+        },
+        {
+            "name": "Voidstrap",
+            "root": r"%LOCALAPPDATA%\Voidstrap",
+            "launcher": "Voidstrap.exe",
+            "version_dirs": ("RblxVersions",),
+        },
+        {
+            "name": "FrostStrap",
+            "root": r"%LOCALAPPDATA%\FrostStrap",
+            "launcher": "FrostStrap.exe",
+            "version_dirs": ("Versions",),
+        },
+    )
+
     _protocol_handler_missing_warned = False
     _http_session = None
     _http_session_lock = threading.Lock()
@@ -1228,7 +1255,7 @@ class RobloxAPI:
     
     @staticmethod
     def get_installed_versions():
-        """Get list of installed Roblox versions from Bloxstrap and Fishstrap."""
+        """Get list of installed Roblox versions from supported bootstrappers."""
         versions = []
         try:
 
@@ -1236,9 +1263,9 @@ class RobloxAPI:
             if not local_appdata:
                 return versions
 
-            def scan_versions(root_name):
+            def scan_versions(root_name, versions_dir_name='Versions', source_name=None):
                 entries = []
-                versions_dir = Path(local_appdata) / root_name / 'Versions'
+                versions_dir = Path(local_appdata) / root_name / versions_dir_name
                 if not versions_dir.exists():
                     return entries
 
@@ -1256,12 +1283,21 @@ class RobloxAPI:
                         entries.append({
                             'path': str(version_dir),
                             'version': version_dir.name,
-                            'source': root_name
+                            'source': source_name or root_name
                         })
                 return entries
 
-            versions.extend(scan_versions('Bloxstrap'))
-            versions.extend(scan_versions('Fishstrap'))
+            for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
+                root_path = Path(os.path.expandvars(bootstrapper["root"]))
+                root_name = root_path.name
+                for versions_dir_name in bootstrapper.get("version_dirs", ("Versions",)):
+                    versions.extend(
+                        scan_versions(
+                            root_name,
+                            versions_dir_name,
+                            source_name=bootstrapper["name"],
+                        )
+                    )
 
         except Exception as e:
             print(f"[WARNING] Could not scan for Roblox versions: {e}")
@@ -1433,17 +1469,15 @@ class RobloxAPI:
 
         using_local_install = effective_path and os.path.isdir(effective_path)
 
-        bloxstrap_root = os.path.expandvars(r"%LOCALAPPDATA%\Bloxstrap")
-        bloxstrap_launcher = os.path.join(bloxstrap_root, "Bloxstrap.exe")
-        is_bloxstrap_install = False
-        is_fishstrap_install = False
-        is_voidstrap_install = False
-
-        fishstrap_root = os.path.expandvars(r"%LOCALAPPDATA%\Fishstrap")
-        fishstrap_launcher = os.path.join(fishstrap_root, "Fishstrap.exe")
-
-        voidstrap_root = os.path.expandvars(r"%LOCALAPPDATA%\Voidstrap")
-        voidstrap_launcher = os.path.join(voidstrap_root, "Voidstrap.exe")
+        bootstrapper_launchers = []
+        for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
+            root = os.path.expandvars(bootstrapper["root"])
+            bootstrapper_launchers.append({
+                "name": bootstrapper["name"],
+                "root": root,
+                "launcher": os.path.join(root, bootstrapper["launcher"]),
+                "exe_name": str(bootstrapper["launcher"]).lower(),
+            })
 
         def _launch_with_launcher(target_url, context):
             """Launch via the resolved launcher executable with shared logging."""
@@ -1457,13 +1491,7 @@ class RobloxAPI:
                 stderr=subprocess.DEVNULL,
                 **RobloxAPI._subprocess_no_window_kwargs(),
             )
-            launcher_display = launcher_name or (
-                "Bloxstrap" if is_bloxstrap_install else (
-                    "Fishstrap" if is_fishstrap_install else (
-                        "Voidstrap" if is_voidstrap_install else os.path.basename(launcher_exe)
-                    )
-                )
-            )
+            launcher_display = launcher_name or os.path.basename(launcher_exe)
             _log_debug(f"Launching {context} via {launcher_display} with URL: {target_url}")
 
         if using_local_install:
@@ -1471,25 +1499,18 @@ class RobloxAPI:
             if explicit_executable_provided and explicit_executable_path:
                 explicit_name = os.path.basename(explicit_executable_path).lower()
 
-            if explicit_name == "bloxstrap.exe":
+            explicit_bootstrapper = next(
+                (
+                    bootstrapper
+                    for bootstrapper in bootstrapper_launchers
+                    if explicit_name == bootstrapper["exe_name"]
+                ),
+                None,
+            )
+            if explicit_bootstrapper:
                 launcher_exe = explicit_executable_path
-                launcher_name = "Bloxstrap"
+                launcher_name = explicit_bootstrapper["name"]
                 launcher_requires_player_flag = True
-                is_bloxstrap_install = True
-                roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
-                _log_debug(f"Using explicitly selected bootstrapper at {launcher_exe}")
-            elif explicit_name == "fishstrap.exe":
-                launcher_exe = explicit_executable_path
-                launcher_name = "Fishstrap"
-                launcher_requires_player_flag = True
-                is_fishstrap_install = True
-                roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
-                _log_debug(f"Using explicitly selected bootstrapper at {launcher_exe}")
-            elif explicit_name == "voidstrap.exe":
-                launcher_exe = explicit_executable_path
-                launcher_name = "Voidstrap"
-                launcher_requires_player_flag = True
-                is_voidstrap_install = True
                 roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
                 _log_debug(f"Using explicitly selected bootstrapper at {launcher_exe}")
             elif explicit_name == "robloxplayerlauncher.exe":
@@ -1511,39 +1532,23 @@ class RobloxAPI:
                 return False
 
             if not explicit_executable_provided:
-                normalized_root = bloxstrap_root.lower()
                 effective_lower = effective_path.lower()
-                if normalized_root and effective_lower.startswith(normalized_root):
-                    is_bloxstrap_install = True
-                    if os.path.exists(bloxstrap_launcher):
-                        launcher_exe = bloxstrap_launcher
-                        launcher_name = "Bloxstrap"
+                for bootstrapper in bootstrapper_launchers:
+                    root_lower = bootstrapper["root"].lower()
+                    if not root_lower or not effective_lower.startswith(root_lower):
+                        continue
+                    if os.path.exists(bootstrapper["launcher"]):
+                        launcher_exe = bootstrapper["launcher"]
+                        launcher_name = bootstrapper["name"]
                         launcher_requires_player_flag = True
-                        _log_debug(f"Using Bloxstrap launcher at {launcher_exe}")
+                        _log_debug(f"Using {bootstrapper['name']} launcher at {launcher_exe}")
                     else:
-                        print("[WARNING] Bloxstrap path detected but Bloxstrap.exe was not found; falling back to RobloxPlayerBeta.exe")
-
-                fishstrap_root_lower = fishstrap_root.lower()
-                if not launcher_exe and fishstrap_root_lower and effective_lower.startswith(fishstrap_root_lower):
-                    is_fishstrap_install = True
-                    if os.path.exists(fishstrap_launcher):
-                        launcher_exe = fishstrap_launcher
-                        launcher_name = "Fishstrap"
-                        launcher_requires_player_flag = True
-                        _log_debug(f"Using Fishstrap launcher at {launcher_exe}")
-                    else:
-                        print("[WARNING] Fishstrap path detected but Fishstrap.exe was not found; falling back to RobloxPlayerBeta.exe")
-
-                voidstrap_root_lower = voidstrap_root.lower()
-                if not launcher_exe and voidstrap_root_lower and effective_lower.startswith(voidstrap_root_lower):
-                    is_voidstrap_install = True
-                    if os.path.exists(voidstrap_launcher):
-                        launcher_exe = voidstrap_launcher
-                        launcher_name = "Voidstrap"
-                        launcher_requires_player_flag = True
-                        _log_debug(f"Using Voidstrap launcher at {launcher_exe}")
-                    else:
-                        print("[WARNING] Voidstrap path detected but Voidstrap.exe was not found; falling back to RobloxPlayerBeta.exe")
+                        print(
+                            f"[WARNING] {bootstrapper['name']} path detected but "
+                            f"{os.path.basename(bootstrapper['launcher'])} was not found; "
+                            "falling back to RobloxPlayerBeta.exe"
+                        )
+                    break
 
                 if not launcher_exe:
                     possible_launcher = os.path.join(effective_path, "RobloxPlayerLauncher.exe")

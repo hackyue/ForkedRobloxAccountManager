@@ -24,7 +24,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 - **Account Management**: View all accounts and their encryption status
 - **Roblox Installer**: Browse up to 5 previous Roblox versions available for download
 - **Auto Arrange Clients**: Automatically arrange as many Roblox clients as possible on one monitor
-- **Roblox Version Selector**: Use Roblox versions from Bloxstrap and Fishstrap
+- **Roblox Version Selector**: Use Roblox versions from Bloxstrap, Fishstrap, Voidstrap, and FrostStrap
 - **Multi Roblox Support**: Run multiple Roblox instances on the same device
 - **Import Cookie Feature**: Add accounts quickly using `.ROBLOSECURITY` cookie
 - **Game List**: Save up to 50 recently played games with Place IDs (configurable)
@@ -37,6 +37,7 @@ Forked by hackyue · Contact: [Discord Server](https://discord.gg/SpMTxg8YjJ) <b
 - **Bloxstrap**: https://bloxstraplabs.com/
 - **Fishstrap**: https://www.fishstrap.app/
 - **Voidstrap**: https://voidstrapweb.netlify.app/ (Recommended, Made for VoidStrap)
+- **FrostStrap**: https://github.com/Froststrap/Froststrap
 
 ## 🛠️ Installation
 ### Method 1: Direct EXE (Recommended for Users)
