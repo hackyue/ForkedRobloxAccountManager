@@ -2247,7 +2247,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.5.4 PR - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.5.4 PR2 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -3942,7 +3942,10 @@ class AccountManagerUI:
         )
 
     def _anti_afk_has_roblox_player_instance(self) -> bool:
-        return bool(self._anti_afk_find_roblox_windows(use_cache=False))
+        if platform.system() != "Windows":
+            return False
+        target_exes = self._normalize_tracked_executable_names(self.ANTI_AFK_TARGET_EXECUTABLES)
+        return bool(self._query_tracked_process_pid_map(target_exes, use_cache=True))
 
     def _cancel_anti_afk_wait_check(self) -> None:
         after_id = getattr(self, "_anti_afk_wait_after_id", None)
@@ -3976,26 +3979,43 @@ class AccountManagerUI:
             self._anti_afk_next_run_at = None
             self._refresh_anti_afk_next_label()
             return
+
         has_scheduled_maintenance = (
             getattr(self, "_anti_afk_next_run_at", None) is not None
             or getattr(self, "_anti_afk_after_id", None) is not None
         )
-        if not self._anti_afk_has_roblox_player_instance():
-            self._cancel_anti_afk_schedule()
-            self._anti_afk_next_run_at = None
-            self._refresh_anti_afk_next_label()
-            self._schedule_anti_afk_wait_check()
-            if has_scheduled_maintenance:
-                self._log_anti_afk(
-                    "RobloxPlayerBeta.exe is no longer detected; maintenance countdown paused.",
-                    debug=True,
-                )
-            return
-        if has_scheduled_maintenance:
-            self._schedule_anti_afk_wait_check()
-            return
-        self._schedule_anti_afk_maintenance()
-        self._log_anti_afk("RobloxPlayerBeta.exe detected; maintenance countdown started.", debug=True)
+
+        def worker() -> None:
+            has_roblox_instance = self._anti_afk_has_roblox_player_instance()
+
+            def apply() -> None:
+                if not self._anti_afk_config_valid():
+                    self._anti_afk_next_run_at = None
+                    self._refresh_anti_afk_next_label()
+                    return
+                if not has_roblox_instance:
+                    self._cancel_anti_afk_schedule()
+                    self._anti_afk_next_run_at = None
+                    self._refresh_anti_afk_next_label()
+                    self._schedule_anti_afk_wait_check()
+                    if has_scheduled_maintenance:
+                        self._log_anti_afk(
+                            "RobloxPlayerBeta.exe is no longer detected; maintenance countdown paused.",
+                            debug=True,
+                        )
+                    return
+                if has_scheduled_maintenance:
+                    self._schedule_anti_afk_wait_check()
+                    return
+                self._schedule_anti_afk_maintenance()
+                self._log_anti_afk("RobloxPlayerBeta.exe detected; maintenance countdown started.", debug=True)
+
+            try:
+                self.root.after(0, apply)
+            except (RuntimeError, tk.TclError):
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="anti-afk-wait-check").start()
 
     def _schedule_anti_afk_maintenance(self) -> None:
         self._cancel_anti_afk_schedule()
@@ -4233,7 +4253,7 @@ class AccountManagerUI:
         except (RuntimeError, tk.TclError):
             self._anti_afk_next_label_after_id = None
 
-    def _anti_afk_find_roblox_windows(self, use_cache: bool = False) -> list[AntiAfkWindow]:
+    def _anti_afk_find_roblox_windows(self, use_cache: bool = True) -> list[AntiAfkWindow]:
         if platform.system() != "Windows":
             return []
 
@@ -4304,7 +4324,7 @@ class AccountManagerUI:
             return False
 
     def _anti_afk_run_pass(self) -> AntiAfkPassSummary:
-        windows = self._anti_afk_find_roblox_windows(use_cache=False)
+        windows = self._anti_afk_find_roblox_windows(use_cache=True)
         key_name = self._get_anti_afk_key_name()
         key_code = self._get_anti_afk_key_code()
         successful_windows = 0
@@ -4536,12 +4556,7 @@ class AccountManagerUI:
 
     def _get_roblox_headless_pid_map(self) -> dict[int, str]:
         target_exes = self._normalize_tracked_executable_names(self.ROBLOX_HEADLESS_TARGET_EXECUTABLES)
-        snapshot = self._get_tracked_process_window_snapshot(use_cache=False, include_windows=True)
-        return {
-            int(pid_value): str(image_name or "").strip()
-            for pid_value, image_name in snapshot.pid_to_image.items()
-            if str(image_name or "").strip().lower() in target_exes
-        }
+        return self._query_tracked_process_pid_map(target_exes, use_cache=True)
 
     def _get_roblox_headless_windows(
         self,
@@ -12371,7 +12386,10 @@ class AccountManagerUI:
                 f"Roblox launch detected; scheduling activation check in {int(delay_ms)} ms.",
                 debug=True,
             )
-            self._schedule_anti_afk_wait_check(delay_ms=delay_ms)
+            anti_afk_delay_ms = int(delay_ms)
+            if self.settings.get("roblox_headless_mode_enabled", False):
+                anti_afk_delay_ms += 750
+            self._schedule_anti_afk_wait_check(delay_ms=anti_afk_delay_ms)
         if not self.settings.get("keep_roblox_clients_arranged", False):
             return
         self._schedule_keep_clients_arranged_check(
