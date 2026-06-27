@@ -1,4 +1,4 @@
-﻿"""
+"""
 UI Module for Roblox Account Manager
 Contains the main AccountManagerUI class
 """
@@ -2175,6 +2175,8 @@ class AccountManagerUI:
             "is_dragging": False,
         }
         self._account_list_index_usernames = {}
+        self._game_list_real_texts: dict[int, str] = {}
+        self._game_list_hover_index: Optional[int] = None
         self.account_drop_indicator = None
         self._pressed_multi_select_keys: set[str] = set()
 
@@ -2247,7 +2249,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.5.4 PR2 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.5.4 PR3 - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -2506,6 +2508,8 @@ class AccountManagerUI:
         )
         self.game_list.pack(side="left", fill="both", expand=True)
         self.game_list.bind("<<ListboxSelect>>", self.on_game_select)
+        self.game_list.bind("<Motion>", self._on_game_list_hover)
+        self.game_list.bind("<Leave>", self._on_game_list_leave)
         
         game_scrollbar = ttk.Scrollbar(game_list_frame, command=self.game_list.yview)
         game_scrollbar.pack(side="right", fill="y")
@@ -10878,7 +10882,10 @@ class AccountManagerUI:
     def refresh_game_list(self):
         """Refresh the game list display"""
         self.game_list.delete(0, tk.END)
+        self._game_list_real_texts.clear()
+        self._game_list_hover_index = None
         launch_mode = self._normalize_launch_input_mode(getattr(self, "launch_input_mode", "place_id"))
+        idx = 0
         if launch_mode == "join_user":
             for user in self.settings.get("recent_user_list", []):
                 if not isinstance(user, dict):
@@ -10896,7 +10903,9 @@ class AccountManagerUI:
                     if self._is_streamer_mode_enabled()
                     else display_text
                 )
+                self._game_list_real_texts[idx] = display_text
                 self.game_list.insert(tk.END, visible_text)
+                idx += 1
             return
 
         for game in self.settings["game_list"]:
@@ -10908,7 +10917,45 @@ class AccountManagerUI:
                 if self._is_streamer_mode_enabled()
                 else display_text
             )
+            self._game_list_real_texts[idx] = display_text
             self.game_list.insert(tk.END, visible_text)
+            idx += 1
+
+    def _on_game_list_hover(self, event):
+        if not self._is_streamer_mode_enabled():
+            return
+        index = self.game_list.nearest(event.y)
+        if index < 0 or index >= self.game_list.size():
+            self._on_game_list_leave(event)
+            return
+        bbox = self.game_list.bbox(index)
+        if bbox is None or event.y < bbox[1] or event.y > bbox[1] + bbox[3]:
+            self._on_game_list_leave(event)
+            return
+        if index == self._game_list_hover_index:
+            return
+        prev = self._game_list_hover_index
+        self._game_list_hover_index = index
+        if prev is not None and prev != index:
+            real = self._game_list_real_texts.get(prev)
+            if real is not None:
+                self.game_list.delete(prev)
+                self.game_list.insert(prev, self._streamer_mask_text(real))
+        real = self._game_list_real_texts.get(index)
+        if real is not None:
+            self.game_list.delete(index)
+            self.game_list.insert(index, real)
+
+    def _on_game_list_leave(self, event):
+        if not self._is_streamer_mode_enabled():
+            return
+        prev = self._game_list_hover_index
+        if prev is not None:
+            self._game_list_hover_index = None
+            real = self._game_list_real_texts.get(prev)
+            if real is not None:
+                self.game_list.delete(prev)
+                self.game_list.insert(prev, self._streamer_mask_text(real))
 
     def on_game_select(self, event=None):
         """Called when a game is selected from the list"""
