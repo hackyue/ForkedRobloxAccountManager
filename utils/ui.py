@@ -2097,7 +2097,7 @@ class AccountManagerUI:
         self.root = root
         self.manager = manager
         self.icon_path = icon_path
-        self.APP_VERSION = "2.5.3"
+        self.APP_VERSION = "2.5.4"
         self._game_name_after_id = None
         self._game_name_label_after_id = None
         self._game_name_request_token = 0
@@ -2174,6 +2174,7 @@ class AccountManagerUI:
             "start_y": None,
             "is_dragging": False,
         }
+        self._account_list_index_usernames = {}
         self.account_drop_indicator = None
         self._pressed_multi_select_keys: set[str] = set()
 
@@ -2246,7 +2247,7 @@ class AccountManagerUI:
             except:
                 pass
         
-        self.root.title("FRAM v2.5.3 - made by evanovar - modified by hackyue")
+        self.root.title("FRAM v2.5.4 PR - made by evanovar - modified by hackyue")
         self.root.geometry("600x600")
         self.root.configure(bg="#2b2b2b")
         self.root.resizable(True, True)
@@ -2509,7 +2510,7 @@ class AccountManagerUI:
         game_scrollbar = ttk.Scrollbar(game_list_frame, command=self.game_list.yview)
         game_scrollbar.pack(side="right", fill="y")
         self.game_list.config(yscrollcommand=game_scrollbar.set)
-        
+
         self.recent_list_edit_button = ttk.Button(
             right_frame,
             text="Edit",
@@ -2599,6 +2600,7 @@ class AccountManagerUI:
             "multi_select_keybind": MULTI_SELECT_KEYBIND_DEFAULT,
             "enable_debug_logging": False,
             "hide_sensitive_info": True,
+            "streamer_mode": False,
             "bug_issue_prompt_enabled": True,
             "selected_theme": "Synapse Neon",
             "disable_success_popups": False,
@@ -10843,6 +10845,21 @@ class AccountManagerUI:
         self.save_settings()
         self.refresh_game_list()
 
+    def _is_streamer_mode_enabled(self) -> bool:
+        return bool(self.settings.get("streamer_mode", False))
+
+    def _streamer_mask_text(self, seed_text: str = "") -> str:
+        digest = hashlib.sha256(str(seed_text or "streamer").encode("utf-8")).digest()
+        length = 3 + (digest[0] % 10)
+        return "*" * length
+
+    def _get_account_username_at_index(self, index: int) -> str:
+        if self._is_streamer_mode_enabled():
+            mapped = self._account_list_index_usernames.get(index)
+            if mapped:
+                return mapped
+        return self._extract_username(self.account_list.get(index))
+
     def refresh_game_list(self):
         """Refresh the game list display"""
         self.game_list.delete(0, tk.END)
@@ -10859,14 +10876,24 @@ class AccountManagerUI:
                     display_text = f"{username} ({user_id})"
                 else:
                     display_text = user_id
-                self.game_list.insert(tk.END, display_text)
+                visible_text = (
+                    self._streamer_mask_text(display_text)
+                    if self._is_streamer_mode_enabled()
+                    else display_text
+                )
+                self.game_list.insert(tk.END, visible_text)
             return
 
         for game in self.settings["game_list"]:
             private_server = game.get("private_server", "")
             prefix = "[P] " if private_server else ""
             display_text = f"{prefix}{game['name']} ({game['place_id']})"
-            self.game_list.insert(tk.END, display_text)
+            visible_text = (
+                self._streamer_mask_text(display_text)
+                if self._is_streamer_mode_enabled()
+                else display_text
+            )
+            self.game_list.insert(tk.END, visible_text)
 
     def on_game_select(self, event=None):
         """Called when a game is selected from the list"""
@@ -10929,11 +10956,12 @@ class AccountManagerUI:
         """Refresh the account list"""
         if selected_usernames is None:
             selected_usernames = [
-                self._extract_username(self.account_list.get(idx))
+                self._get_account_username_at_index(idx)
                 for idx in self.account_list.curselection()
             ]
 
         self.account_list.delete(0, tk.END)
+        self._account_list_index_usernames = {}
         active_group = self._get_active_group()
         active_client_usernames = self._get_active_client_usernames()
         display_items = []
@@ -10963,7 +10991,12 @@ class AccountManagerUI:
             rejoin_status = str(self._account_rejoin_status.get(username, "") or "").strip()
             is_monitored = self._is_account_auto_rejoin_monitored(username)
             has_active_client = username in active_client_usernames
-            display_text = f"{username}"
+            name_text = (
+                self._streamer_mask_text(username)
+                if self._is_streamer_mode_enabled()
+                else username
+            )
+            display_text = f"{name_text}"
             if is_monitored:
                 display_text = f"{AUTO_REJOIN_SYMBOL} {display_text}"
             if has_active_client:
@@ -10980,6 +11013,7 @@ class AccountManagerUI:
                 display_text += f" | {rejoin_status}"
 
             idx = len(display_items)
+            self._account_list_index_usernames[idx] = username
             display_items.append(display_text)
             username_to_indices.setdefault(username, []).append(idx)
             if self._account_validation_status.get(username) is False:
@@ -11051,8 +11085,7 @@ class AccountManagerUI:
             messagebox.showwarning("No Selection", "Please select an account first.")
             return None
         
-        display_text = self.account_list.get(selection[0])
-        return self._extract_username(display_text)
+        return self._get_account_username_at_index(selection[0])
     
     def get_selected_usernames(self):
         """Get all selected usernames (for multi-select mode)"""
@@ -11061,14 +11094,14 @@ class AccountManagerUI:
             messagebox.showwarning("No Selection", "Please select at least one account first.")
             return []
         
-        return [self._extract_username(self.account_list.get(index)) for index in selections]
+        return [self._get_account_username_at_index(index) for index in selections]
 
     def _get_selected_usernames_silent(self):
         """Get selected usernames without showing warning popups."""
         selections = self.account_list.curselection()
         if not selections:
             return []
-        return [self._extract_username(self.account_list.get(index)) for index in selections]
+        return [self._get_account_username_at_index(index) for index in selections]
 
     def _copy_text_to_clipboard(self, text):
         """Copy text to clipboard and return True on success."""
@@ -11232,11 +11265,10 @@ class AccountManagerUI:
         self.account_list.selection_clear(0, tk.END)
         self.account_list.selection_set(index)
         self.account_list.activate(index)
-        display_text = self.account_list.get(index)
         self.account_list_drag_data.update({
             "start_index": index,
             "drop_index": index,
-            "start_username": self._extract_username(display_text),
+            "start_username": self._get_account_username_at_index(index),
             "start_y": event.y,
             "is_dragging": False
         })
@@ -11378,7 +11410,10 @@ class AccountManagerUI:
             self.account_drop_indicator.place_forget()
 
     def _finalize_account_reorder(self, start_index, drop_index, moved_username):
-        visible_usernames = [self._extract_username(text) for text in self.account_list.get(0, tk.END)]
+        visible_usernames = [
+            self._get_account_username_at_index(index)
+            for index in range(self.account_list.size())
+        ]
         if not visible_usernames:
             return
 
@@ -14929,6 +14964,7 @@ class AccountManagerUI:
         rename_client_titles_var = tk.BooleanVar(value=self._get_rename_client_titles_enabled())
         debug_var = tk.BooleanVar(value=self.settings.get("enable_debug_logging", False))
         hide_sensitive_var = tk.BooleanVar(value=self.settings.get("hide_sensitive_info", False))
+        streamer_mode_var = tk.BooleanVar(value=self.settings.get("streamer_mode", False))
         bug_prompt_var = tk.BooleanVar(value=self.settings.get("bug_issue_prompt_enabled", True))
         disable_success_var = tk.BooleanVar(value=self.settings.get("disable_success_popups", False))
         auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update_enabled", True))
@@ -14976,6 +15012,9 @@ class AccountManagerUI:
                     self.root.attributes("-topmost", var.get())
                     settings_window.attributes("-topmost", var.get())
                     self.console_window.update_topmost(var.get())
+                if setting_name == "streamer_mode":
+                    self.refresh_accounts()
+                    self.refresh_game_list()
                 self.save_settings()
             return save
 
@@ -16946,7 +16985,7 @@ class AccountManagerUI:
         privacy_reports_card = create_settings_card(
             general_tab,
             "Privacy & Reports",
-            "Mask sensitive values and control bug report prompts",
+            "Mask sensitive values, streamer mode, and bug report prompts",
         )
 
         ttk.Checkbutton(
@@ -16955,6 +16994,14 @@ class AccountManagerUI:
             variable=hide_sensitive_var,
             style="Dark.TCheckbutton",
             command=auto_save_setting("hide_sensitive_info", hide_sensitive_var)
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            privacy_reports_card,
+            text="Streamer Mode",
+            variable=streamer_mode_var,
+            style="Dark.TCheckbutton",
+            command=auto_save_setting("streamer_mode", streamer_mode_var)
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
