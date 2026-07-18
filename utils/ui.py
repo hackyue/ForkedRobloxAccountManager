@@ -2088,6 +2088,9 @@ class AccountManagerUI:
     KEEP_CLIENTS_ARRANGED_INTERVAL_MS = 5000
     ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS = 2
     ROBLOX_HEADLESS_MEMORY_TRIM_INTERVAL_SECONDS = 30
+    ROBLOX_HEADLESS_DEFAULT_DETECTION_DELAY_SECONDS = 0
+    ROBLOX_HEADLESS_MIN_DETECTION_DELAY_SECONDS = 0
+    ROBLOX_HEADLESS_MAX_DETECTION_DELAY_SECONDS = 300
     _PROCESS_SET_INFORMATION = 0x0200
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     _IDLE_PRIORITY_CLASS = 0x00000040
@@ -2139,6 +2142,7 @@ class AccountManagerUI:
         self._roblox_headless_generation = 0
         self._roblox_headless_last_trim_ts = 0.0
         self._roblox_headless_seen_pids = set()
+        self._roblox_headless_first_seen_pids = {}
         self._roblox_headless_last_empty_log_ts = 0.0
         self._auto_update_check_started = False
         self._auto_update_prompt_shown = False
@@ -2655,6 +2659,7 @@ class AccountManagerUI:
             "roblox_headless_mode_enabled": False,
             "roblox_headless_idle_priority": True,
             "roblox_headless_trim_memory": True,
+            "roblox_headless_detection_delay_seconds": 0,
             "auto_update_enabled": True,
             "browser_preference": "auto",
         }
@@ -2827,6 +2832,20 @@ class AccountManagerUI:
         )
         self.settings["roblox_headless_trim_memory"] = bool(
             self.settings.get("roblox_headless_trim_memory", True)
+        )
+        try:
+            headless_detection_delay = int(
+                self.settings.get(
+                    "roblox_headless_detection_delay_seconds",
+                    self.ROBLOX_HEADLESS_DEFAULT_DETECTION_DELAY_SECONDS,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            headless_detection_delay = self.ROBLOX_HEADLESS_DEFAULT_DETECTION_DELAY_SECONDS
+        self.settings["roblox_headless_detection_delay_seconds"] = max(
+            self.ROBLOX_HEADLESS_MIN_DETECTION_DELAY_SECONDS,
+            min(self.ROBLOX_HEADLESS_MAX_DETECTION_DELAY_SECONDS, headless_detection_delay),
         )
 
         try:
@@ -4432,6 +4451,22 @@ class AccountManagerUI:
         level = "DEBUG" if debug else "INFO"
         print(f"[{level}] {message}")
 
+    def _get_roblox_headless_detection_delay_seconds(self):
+        try:
+            value = int(
+                self.settings.get(
+                    "roblox_headless_detection_delay_seconds",
+                    self.ROBLOX_HEADLESS_DEFAULT_DETECTION_DELAY_SECONDS,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            value = self.ROBLOX_HEADLESS_DEFAULT_DETECTION_DELAY_SECONDS
+        return max(
+            self.ROBLOX_HEADLESS_MIN_DETECTION_DELAY_SECONDS,
+            min(self.ROBLOX_HEADLESS_MAX_DETECTION_DELAY_SECONDS, value),
+        )
+
     def _roblox_headless_config_valid(self):
         if platform.system() != "Windows":
             return False
@@ -4470,6 +4505,7 @@ class AccountManagerUI:
         if not enabled:
             self._log_roblox_headless("NoClient mode disabled.")
             self._roblox_headless_seen_pids = set()
+            self._roblox_headless_first_seen_pids = {}
             if restore_when_disabled:
                 self.restore_roblox_headless_windows(show_feedback=False)
             return enabled
@@ -4479,6 +4515,7 @@ class AccountManagerUI:
             (
                 f"idle_priority={bool(self.settings.get('roblox_headless_idle_priority', True))}, "
                 f"trim_memory={bool(self.settings.get('roblox_headless_trim_memory', True))}, "
+                f"detection_delay={self._get_roblox_headless_detection_delay_seconds()}s, "
                 f"scan_interval={self.ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS}s."
             ),
             debug=True,
@@ -4650,6 +4687,7 @@ class AccountManagerUI:
                 self._log_roblox_headless("No Roblox clients detected.")
                 self._roblox_headless_last_empty_log_ts = now
             self._roblox_headless_seen_pids = set()
+            self._roblox_headless_first_seen_pids = {}
             return {
                 "pids": 0,
                 "hidden": 0,
@@ -4660,6 +4698,37 @@ class AccountManagerUI:
                 "trim_failures": [],
             }
 
+        now = time.monotonic()
+        delay_seconds = 0 if force_trim else self._get_roblox_headless_detection_delay_seconds()
+        first_seen = dict(getattr(self, "_roblox_headless_first_seen_pids", {}) or {})
+        for stale_pid in set(first_seen.keys()) - pids:
+            first_seen.pop(stale_pid, None)
+
+        for pid in pids:
+            if pid not in first_seen:
+                first_seen[pid] = now
+                if delay_seconds > 0:
+                    self._log_roblox_headless(
+                        f"Roblox client pid={pid} detected; waiting {delay_seconds}s before applying headless mode.",
+                    )
+
+        self._roblox_headless_first_seen_pids = first_seen
+
+        if delay_seconds > 0:
+            ready_pids = {
+                pid
+                for pid in pids
+                if (now - float(first_seen.get(pid, now))) >= delay_seconds
+            }
+            waiting_pids = sorted(pids - ready_pids)
+            if waiting_pids:
+                self._log_roblox_headless(
+                    f"Waiting for detection delay on pid(s): {waiting_pids}.",
+                    debug=True,
+                )
+        else:
+            ready_pids = set(pids)
+
         hidden_count = 0
         priority_count = 0
         trimmed_count = 0
@@ -4669,7 +4738,18 @@ class AccountManagerUI:
         new_pids = sorted(pids - previous_pids)
         self._roblox_headless_seen_pids = set(pids)
 
-        visible_windows = self._get_roblox_headless_windows(target_pids=pids, include_hidden=False)
+        if not ready_pids:
+            return {
+                "pids": len(pids),
+                "hidden": 0,
+                "priority": 0,
+                "trimmed": 0,
+                "new_pids": new_pids,
+                "priority_failures": [],
+                "trim_failures": [],
+            }
+
+        visible_windows = self._get_roblox_headless_windows(target_pids=ready_pids, include_hidden=False)
         for hwnd in visible_windows:
             if self._hide_roblox_headless_window(hwnd):
                 hidden_count += 1
@@ -4680,23 +4760,22 @@ class AccountManagerUI:
                 )
 
         if self.settings.get("roblox_headless_idle_priority", True):
-            for pid in pids:
+            for pid in ready_pids:
                 ok, msg = self._set_process_priority_class(pid, self._IDLE_PRIORITY_CLASS)
                 if ok:
                     priority_count += 1
                 else:
                     priority_failures.append((pid, msg))
         else:
-            for pid in pids:
+            for pid in ready_pids:
                 self._set_process_priority_class(pid, self._NORMAL_PRIORITY_CLASS)
 
         if self.settings.get("roblox_headless_trim_memory", True):
-            now = time.monotonic()
             should_trim = force_trim or (
                 now - float(getattr(self, "_roblox_headless_last_trim_ts", 0.0) or 0.0)
             ) >= self.ROBLOX_HEADLESS_MEMORY_TRIM_INTERVAL_SECONDS
             if should_trim:
-                for pid in pids:
+                for pid in ready_pids:
                     ok, msg = self._memtrim_pid(pid)
                     if ok:
                         trimmed_count += 1
@@ -4711,7 +4790,7 @@ class AccountManagerUI:
         if should_log_info_summary:
             self._log_roblox_headless(
                 (
-                    f"Processed {len(pids)} Roblox client(s): "
+                    f"Processed {len(ready_pids)} Roblox client(s): "
                     f"hidden {hidden_count} window(s), "
                     f"trimmed {trimmed_count} process(es)."
                 )
@@ -4809,6 +4888,7 @@ class AccountManagerUI:
                 priority_failures.append((pid, msg))
 
         self._roblox_headless_seen_pids = set()
+        self._roblox_headless_first_seen_pids = {}
         self._log_roblox_headless(
             (
                 f"Restore complete: clients={len(pids)}, "
@@ -15062,6 +15142,9 @@ class AccountManagerUI:
         roblox_headless_trim_memory_var = tk.BooleanVar(
             value=self.settings.get("roblox_headless_trim_memory", True)
         )
+        roblox_headless_detection_delay_var = tk.IntVar(
+            value=self._get_roblox_headless_detection_delay_seconds()
+        )
         auto_arrange_target_width_var = tk.IntVar(
             value=int(self.settings.get("auto_arrange_target_width", 800) or 800)
         )
@@ -15107,12 +15190,24 @@ class AccountManagerUI:
         def on_roblox_headless_option_change():
             self.settings["roblox_headless_idle_priority"] = bool(roblox_headless_idle_priority_var.get())
             self.settings["roblox_headless_trim_memory"] = bool(roblox_headless_trim_memory_var.get())
+            try:
+                detection_delay = int(roblox_headless_detection_delay_var.get())
+            except (tk.TclError, ValueError):
+                detection_delay = self.ROBLOX_HEADLESS_DEFAULT_DETECTION_DELAY_SECONDS
+            detection_delay = max(
+                self.ROBLOX_HEADLESS_MIN_DETECTION_DELAY_SECONDS,
+                min(self.ROBLOX_HEADLESS_MAX_DETECTION_DELAY_SECONDS, detection_delay),
+            )
+            if roblox_headless_detection_delay_var.get() != detection_delay:
+                roblox_headless_detection_delay_var.set(detection_delay)
+            self.settings["roblox_headless_detection_delay_seconds"] = detection_delay
             self.save_settings()
             self._log_roblox_headless(
                 (
                     "Options updated: "
                     f"idle_priority={self.settings['roblox_headless_idle_priority']}, "
-                    f"trim_memory={self.settings['roblox_headless_trim_memory']}."
+                    f"trim_memory={self.settings['roblox_headless_trim_memory']}, "
+                    f"detection_delay={detection_delay}s."
                 )
             )
             if self.settings.get("roblox_headless_mode_enabled", False):
@@ -16050,6 +16145,29 @@ class AccountManagerUI:
             command=on_roblox_headless_option_change,
             state=headless_control_state,
         ).pack(anchor="w", pady=2)
+
+        headless_detection_delay_frame = ttk.Frame(headless_mode_card, style="Dark.TFrame")
+        headless_detection_delay_frame.pack(fill="x", pady=(6, 0))
+        ttk.Label(
+            headless_detection_delay_frame,
+            text="Detection Delay (seconds)",
+            style="Dark.TLabel",
+        ).pack(side="left")
+        headless_detection_delay_spin = ttk.Spinbox(
+            headless_detection_delay_frame,
+            from_=self.ROBLOX_HEADLESS_MIN_DETECTION_DELAY_SECONDS,
+            to=self.ROBLOX_HEADLESS_MAX_DETECTION_DELAY_SECONDS,
+            increment=1,
+            textvariable=roblox_headless_detection_delay_var,
+            width=8,
+            justify="center",
+            style="Dark.TSpinbox",
+            command=on_roblox_headless_option_change,
+            state=headless_control_state,
+        )
+        headless_detection_delay_spin.pack(side="right")
+        headless_detection_delay_spin.bind("<FocusOut>", lambda _evt: on_roblox_headless_option_change())
+        headless_detection_delay_spin.bind("<Return>", lambda _evt: on_roblox_headless_option_change())
 
         headless_button_frame = ttk.Frame(headless_mode_card, style="Dark.TFrame")
         headless_button_frame.pack(fill="x", pady=(8, 0))
@@ -17132,6 +17250,10 @@ class AccountManagerUI:
             settings_window.destroy()
             self.open_browser_extensions_window()
 
+        def open_account_control_and_close_settings() -> None:
+            settings_window.destroy()
+            self.open_account_control()
+
         fastflags_card = create_settings_card(
             roblox_tab,
             "Fast Flags",
@@ -17171,6 +17293,19 @@ class AccountManagerUI:
             command=open_addons_and_close_settings
         ).pack(fill="x")
 
+        account_control_card = create_settings_card(
+            advanced_tab,
+            "Account Control",
+            "Perform account actions such as changing passwords or display names",
+        )
+
+        ttk.Button(
+            account_control_card,
+            text="Account Control",
+            style="Dark.TButton",
+            command=open_account_control_and_close_settings
+        ).pack(fill="x")
+
         footer_frame = ttk.Frame(main_frame, style="Dark.TFrame")
         footer_frame.pack(fill="x", pady=(8, 0))
 
@@ -17197,6 +17332,104 @@ class AccountManagerUI:
         final_h = max(req_h, min_h)
         self._center_window(settings_window, final_w, final_h)
         settings_window.deiconify()
+
+    def open_account_control(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("Account Control")
+        window.geometry("600x450")
+        window.configure(bg=self.BG_DARK)
+        self.register_toplevel(window)
+        if self.settings.get("enable_topmost", False):
+            window.attributes("-topmost", True)
+            
+        font_family = str(self.FONT[0]) if getattr(self, "FONT", None) else "Segoe UI"
+        font_size = int(self.FONT[1]) if getattr(self, "FONT", None) else 10
+        font_bold = (font_family, font_size, "bold")
+
+        main_frame = ttk.Frame(window, style="Dark.TFrame")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        left_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 20))
+
+        list_label = tk.Label(
+            left_frame,
+            text="Select Accounts",
+            bg=self.BG_DARK,
+            fg=self.FG_TEXT,
+            font=font_bold
+        )
+        list_label.pack(anchor="w", pady=(0, 10))
+
+        list_frame = ttk.Frame(left_frame, style="Dark.TFrame")
+        list_frame.pack(fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        accounts_listbox = tk.Listbox(
+            list_frame,
+            selectmode="extended",
+            bg=self.BG_MID,
+            fg=self.FG_TEXT,
+            selectbackground=self.HOVER_BG,
+            selectforeground=self.FG_TEXT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.BORDER_COLOR,
+            highlightcolor=self.BORDER_COLOR,
+            font=self.FONT,
+            yscrollcommand=scrollbar.set
+        )
+        accounts_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=accounts_listbox.yview)
+
+        for username in sorted(self.manager.get_accounts().keys()):
+            accounts_listbox.insert(tk.END, username)
+
+        right_frame = ttk.Frame(main_frame, style="Dark.TFrame")
+        right_frame.pack(side="right", fill="y")
+
+        actions_label = tk.Label(
+            right_frame,
+            text="Actions",
+            bg=self.BG_DARK,
+            fg=self.FG_TEXT,
+            font=font_bold
+        )
+        actions_label.pack(anchor="w", pady=(0, 10))
+        
+        actions = [
+            "Change Password",
+            "Change Email",
+            "Set Display Name",
+            "Add Friend",
+            "Block",
+            "Follow",
+        ]
+        
+        for action in actions:
+            btn = tk.Button(
+                right_frame,
+                text=action,
+                bg=self.BG_LIGHT,
+                fg=self.FG_TEXT,
+                activebackground=self.HOVER_BG,
+                activeforeground=self.FG_TEXT,
+                font=self.FONT,
+                bd=0,
+                padx=15,
+                pady=6,
+                cursor="hand2",
+                width=18,
+                command=lambda a=action: messagebox.showinfo("Not Implemented", f"Backend code for {a} is not added yet.", parent=window)
+            )
+            btn.configure(
+                highlightthickness=1,
+                highlightbackground=self.BORDER_COLOR,
+                highlightcolor=self.BORDER_COLOR,
+            )
+            btn.pack(pady=(0, 10))
 
     def open_instance_manager(self) -> None:
         if platform.system() != "Windows":
