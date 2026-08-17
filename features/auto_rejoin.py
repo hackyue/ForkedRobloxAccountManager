@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import random
+import psutil
 import requests
 from typing import Callable, Optional
 from classes.roblox_api import RobloxAPI
@@ -22,6 +23,11 @@ _CONFIG_LOCK = threading.RLock()
 _CONFIG_CACHE: dict | None = None
 _INTERNET_LOCK = threading.Lock()
 _INTERNET_CACHE = (0.0, False)
+_PID_UID_LOCK = threading.Lock()
+_PID_UID_CACHE: dict[tuple[int, float], str] = {}
+_LAUNCH_LOCK = threading.Lock()
+
+RobloxProcessIdentity = tuple[int, float]
 
 def load_configs() -> dict:
     global _CONFIG_CACHE
@@ -88,48 +94,120 @@ def _has_internet(timeout: int = 3) -> bool:
     return False
 
 
-def _get_roblox_pids() -> set:
-    return set(presence_mod.get_roblox_processes())
+def _get_roblox_processes(force: bool = False) -> dict[int, tuple[float, psutil.Process]]:
+    return presence_mod.get_roblox_processes(force=force)
 
 
-def _pid_alive(pid: int) -> bool:
-    return pid in presence_mod.get_roblox_processes()
+def _get_roblox_pids(force: bool = False) -> set[int]:
+    return set(_get_roblox_processes(force=force))
 
 
-def _kill_pid(pid: int) -> None:
-    try:
-        subprocess.run(
-            ["taskkill", "/F", "/PID", str(pid)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-    except Exception:
-        pass
+def _identity_matches(
+    identity: RobloxProcessIdentity,
+    processes: dict[int, tuple[float, psutil.Process]] | None = None,
+) -> bool:
+    if processes is None:
+        processes = _get_roblox_processes(force=True)
+    pid, create_time = identity
+    current = processes.get(pid)
+    return bool(current and abs(current[0] - create_time) <= 0.01)
 
-_pid_uid_lock = threading.Lock()
-_pid_uid_cache: dict[int, str] = {}   # pid -> resolved user_id, kept while the pid stays alive
 
-def scan_pid_uid_map(wanted_user_ids: set[str]) -> dict[str, int]:
-    global _pid_uid_cache
-    current_pids = _get_roblox_pids()
+def _pid_alive(
+    pid: int,
+    create_time: float | None = None,
+) -> bool:
+    processes = _get_roblox_processes(force=True)
+    if create_time is None:
+        return pid in processes
+    return _identity_matches((pid, create_time), processes)
+
+
+def _terminate_process(
+    identity: RobloxProcessIdentity,
+    account: str,
+    stop_event: threading.Event | None = None,
+) -> tuple[bool, str]:
+    pid, create_time = identity
+    last_detail = ""
+
+    for attempt in range(1, 4):
+        processes = _get_roblox_processes(force=True)
+        current = processes.get(pid)
+        if current is None or abs(current[0] - create_time) > 0.01:
+            return True, "Process already exited."
+
+        try:
+            result = subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=10,
+            )
+            output = (result.stdout or result.stderr or "").strip()
+            last_detail = output[-500:]
+            if result.returncode != 0:
+                print(
+                    f"[Auto-Rejoin] [{account}] taskkill failed for PID {pid} "
+                    f"(attempt {attempt}/3, exit {result.returncode})"
+                )
+                try:
+                    process = psutil.Process(pid)
+                    if abs(process.create_time() - create_time) <= 0.01:
+                        process.kill()
+                except (OSError, psutil.Error):
+                    pass
+        except Exception as exc:
+            last_detail = str(exc)
+            print(
+                f"[Auto-Rejoin] [{account}] Failed to terminate PID {pid} "
+                f"(attempt {attempt}/3): {exc}"
+            )
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if not _identity_matches(identity, _get_roblox_processes(force=True)):
+                print(f"[Auto-Rejoin] [{account}] Closed Roblox PID {pid}.")
+                return True, "Process closed."
+            if stop_event is not None and stop_event.wait(0.25):
+                return False, "Auto-Rejoin stopped while closing the process."
+            time.sleep(0.25)
+
+    print(
+        f"[Auto-Rejoin] [{account}] Could not confirm Roblox PID {pid} closed."
+    )
+    return False, last_detail or "The process is still running."
+
+
+def scan_pid_uid_map(
+    wanted_user_ids: set[str],
+) -> dict[str, set[RobloxProcessIdentity]]:
+    current_processes = _get_roblox_processes(force=True)
+    current_identities = {
+        (pid, process_data[0])
+        for pid, process_data in current_processes.items()
+    }
     used_logs: set[str] = set()
 
-    with _pid_uid_lock:
-        _pid_uid_cache = {p: u for p, u in _pid_uid_cache.items() if p in current_pids}
+    with _PID_UID_LOCK:
+        stale = set(_PID_UID_CACHE) - current_identities
+        for identity in stale:
+            _PID_UID_CACHE.pop(identity, None)
 
-        for pid in current_pids:
-            if pid in _pid_uid_cache:
+        for identity in sorted(current_identities, key=lambda item: item[1]):
+            if identity in _PID_UID_CACHE:
                 continue
-            uid = presence_mod._get_user_id_from_pid(pid, used_logs)
+            uid = presence_mod._get_user_id_from_pid(identity[0], used_logs)
             if uid:
-                _pid_uid_cache[pid] = uid
+                _PID_UID_CACHE[identity] = str(uid)
 
-        result: dict[str, int] = {}
-        for pid, uid in list(_pid_uid_cache.items()):
+        result: dict[str, set[RobloxProcessIdentity]] = {}
+        for identity, uid in _PID_UID_CACHE.items():
             if uid in wanted_user_ids:
-                result[uid] = pid
-            else:
-                del _pid_uid_cache[pid]
+                result.setdefault(uid, set()).add(identity)
 
     return result
 
@@ -145,9 +223,20 @@ def _get_configured_user_ids(manager) -> set[str]:
     return wanted
 
 
+def find_running_processes_for_user(
+    manager,
+    user_id: str,
+) -> set[RobloxProcessIdentity]:
+    normalized_user_id = str(user_id)
+    wanted = _get_configured_user_ids(manager) | {normalized_user_id}
+    return scan_pid_uid_map(wanted).get(normalized_user_id, set())
+
+
 def find_running_pid_for_user(manager, user_id: str) -> int | None:
-    wanted = _get_configured_user_ids(manager) | {user_id}
-    return scan_pid_uid_map(wanted).get(user_id)
+    identities = find_running_processes_for_user(manager, user_id)
+    if not identities:
+        return None
+    return max(identities, key=lambda item: item[1])[0]
 
 _presence_lock = threading.Lock()
 _presence_next_time = 0.0
@@ -180,8 +269,8 @@ class AutoRejoinWorker:
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._pid: Optional[int] = None 
-        self._launch_lock = threading.Lock()
+        self._process_identity: RobloxProcessIdentity | None = None
+        self._owned_processes: set[RobloxProcessIdentity] = set()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -218,9 +307,19 @@ class AutoRejoinWorker:
             return True
         return _has_internet()
 
-    def _launch_and_track(self, place_id: str, private_server: str, job_id: str) -> bool:
-        with self._launch_lock:
-            pids_before = _get_roblox_pids()
+    def _launch_and_track(
+        self,
+        user_id: str,
+        place_id: str,
+        private_server: str,
+        job_id: str,
+    ) -> bool:
+        with _LAUNCH_LOCK:
+            processes_before = _get_roblox_processes(force=True)
+            identities_before = {
+                (pid, process_data[0])
+                for pid, process_data in processes_before.items()
+            }
 
             ok = self.manager.launch_roblox(
                 self.account, place_id, private_server, "default", job_id, None
@@ -228,40 +327,93 @@ class AutoRejoinWorker:
             if not ok:
                 return False
 
-            if self._stop.wait(5):
-                return False
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if self._stop.wait(0.5):
+                    return False
 
-            pids_after = _get_roblox_pids()
-            new_pids = pids_after - pids_before
+                processes_after = _get_roblox_processes(force=True)
+                candidates: set[RobloxProcessIdentity] = set()
+                for pid, process_data in processes_after.items():
+                    identity = (pid, process_data[0])
+                    if identity in identities_before:
+                        continue
+                    resolved_user_id = presence_mod._get_user_id_from_pid(
+                        pid,
+                        set(),
+                    )
+                    if str(resolved_user_id or "") == str(user_id):
+                        candidates.add(identity)
 
-            if not new_pids:
-                return False
+                if candidates:
+                    self._owned_processes = candidates
+                    self._process_identity = max(
+                        candidates,
+                        key=lambda item: item[1],
+                    )
+                    print(
+                        f"[Auto-Rejoin] [{self.account}] Tracked PID "
+                        f"{self._process_identity[0]} for user {user_id}."
+                    )
+                    if len(candidates) > 1:
+                        print(
+                            f"[Auto-Rejoin] [{self.account}] Detected "
+                            f"{len(candidates)} matching Roblox processes."
+                        )
+                    return True
 
-            free = new_pids - {self._pid} if self._pid else new_pids
-            self._pid = max(free) if free else max(new_pids)
-            print(f"[Auto-Rejoin] [{self.account}] Tracked PID {self._pid}")
-            return True
+            processes_after = _get_roblox_processes(force=True)
+            identities_after = {
+                (pid, process_data[0])
+                for pid, process_data in processes_after.items()
+            }
+            matching_identities: set[RobloxProcessIdentity] = set()
+            for identity in identities_after - identities_before:
+                resolved_user_id = presence_mod._get_user_id_from_pid(
+                    identity[0],
+                    set(),
+                )
+                if str(resolved_user_id or "") == str(user_id):
+                    matching_identities.add(identity)
 
-    def _is_in_game(self, user_id, cookie: str, place_id: str) -> tuple:
+            for identity in matching_identities:
+                closed, detail = _terminate_process(
+                    identity,
+                    self.account,
+                    self._stop,
+                )
+                if not closed:
+                    print(
+                        f"[Auto-Rejoin] [{self.account}] Could not clean "
+                        f"unresolved PID {identity[0]}: {detail}"
+                    )
+
+            print(
+                f"[Auto-Rejoin] [{self.account}] Could not resolve the "
+                "new Roblox process to the account."
+            )
+            return False
+
+    def _is_in_game(self, user_id, cookie: str, place_id: str) -> tuple[str, str]:
         if not _wait_presence_slot(self._stop):
-            return False, None
+            return "unavailable", ""
         try:
             presence = RobloxAPI.get_player_presence(user_id, cookie)
             if not presence:
-                return False, None
+                return "unavailable", ""
             in_game = presence.get("in_game", False)
             cur_pid = presence.get("place_id")
             game_id = presence.get("game_id", "")
             if in_game:
                 try:
                     if int(cur_pid) == int(place_id):
-                        return True, game_id
+                        return "in_game", game_id
                 except (TypeError, ValueError):
                     pass
-            return False, game_id
+            return "disconnected", game_id
         except Exception as e:
             print(f"[Auto-Rejoin] [{self.account}] Presence error: {e}")
-            return False, None
+            return "unavailable", ""
 
     def _run(self) -> None:
         cfg = self.config
@@ -302,27 +454,48 @@ class AutoRejoinWorker:
         retry_count = 0
         consec_fails = 0
 
-        if not self._pid or not _pid_alive(self._pid):
-            existing_pid = find_running_pid_for_user(self.manager, user_id)
-            if existing_pid:
-                self._pid = existing_pid
-                print(f"[Auto-Rejoin] [{self.account}] Adopted existing PID {existing_pid} for user {user_id}")
-                self._emit(f"ACTIVE - Place {place_id} (existing client)")
-            else:
+        if not self._process_identity or not _identity_matches(self._process_identity):
+            while not self._stop.is_set():
+                existing_processes = find_running_processes_for_user(
+                    self.manager,
+                    str(user_id),
+                )
+                if existing_processes:
+                    self._owned_processes = existing_processes
+                    self._process_identity = max(
+                        existing_processes,
+                        key=lambda item: item[1],
+                    )
+                    print(
+                        f"[Auto-Rejoin] [{self.account}] Adopted existing PID "
+                        f"{self._process_identity[0]} for user {user_id}"
+                    )
+                    self._emit(f"ACTIVE - Place {place_id} (existing client)")
+                    break
+
                 self._emit(f"Launching... (Place {place_id})")
                 while not self._stop.is_set() and not self._can_launch():
                     if self._wait(check_interval):
                         return
-                ok = self._launch_and_track(place_id, private_server, job_id)
-                if not ok:
-                    retry_count += 1
-                    self._emit(f"Launch failed ({retry_count}/{max_retries})")
-                    if retry_count >= max_retries:
-                        self._emit("STOPPED: max retries")
-                        return
-                else:
+                if self._stop.is_set():
+                    return
+
+                ok = self._launch_and_track(
+                    str(user_id),
+                    place_id,
+                    private_server,
+                    job_id,
+                )
+                if ok:
                     self._emit(f"ACTIVE - Place {place_id}")
-                if self._stop.wait(10):
+                    break
+
+                retry_count += 1
+                self._emit(f"Launch failed ({retry_count}/{max_retries})")
+                if retry_count >= max_retries:
+                    self._emit("STOPPED: max retries")
+                    return
+                if self._wait(check_interval):
                     return
 
         self._emit(f"ACTIVE - Place {place_id}")
@@ -333,11 +506,20 @@ class AutoRejoinWorker:
                 game_id = ""
 
                 if check_presence:
-                    in_game, gid = self._is_in_game(user_id, cookie, place_id)
+                    presence_state, gid = self._is_in_game(
+                        user_id,
+                        cookie,
+                        place_id,
+                    )
                     game_id = gid or ""
-                    if in_game:
+                    if presence_state == "in_game":
                         disconnected = False
                         consec_fails = 0
+                    elif presence_state == "unavailable":
+                        consec_fails = 0
+                        if self._wait(check_interval):
+                            break
+                        continue
                     else:
                         consec_fails += 1
                         if consec_fails < 2:
@@ -346,7 +528,10 @@ class AutoRejoinWorker:
                             continue
                         disconnected = True
                 else:
-                    if self._pid and not _pid_alive(self._pid):
+                    if (
+                        self._process_identity
+                        and not _identity_matches(self._process_identity)
+                    ):
                         consec_fails += 1
                         if consec_fails < 2:
                             if self._wait(check_interval):
@@ -362,10 +547,41 @@ class AutoRejoinWorker:
                     print(f"[Auto-Rejoin] [{self.account}] Disconnect detected, attempt {retry_count}/{max_retries}")
                     self._emit(f"Rejoining... ({retry_count}/{max_retries})")
 
-                    if self._pid:
-                        _kill_pid(self._pid)
-                        self._stop.wait(1)
-                        self._pid = None
+                    identities_to_close = set(self._owned_processes)
+                    if self._process_identity:
+                        identities_to_close.add(self._process_identity)
+                    identities_to_close.update(
+                        find_running_processes_for_user(
+                            self.manager,
+                            str(user_id),
+                        )
+                    )
+
+                    cleanup_ok = True
+                    for identity in sorted(
+                        identities_to_close,
+                        key=lambda item: item[1],
+                    ):
+                        closed, detail = _terminate_process(
+                            identity,
+                            self.account,
+                            self._stop,
+                        )
+                        if not closed:
+                            cleanup_ok = False
+                            print(
+                                f"[Auto-Rejoin] [{self.account}] Cleanup "
+                                f"failed for PID {identity[0]}: {detail}"
+                            )
+
+                    if not cleanup_ok:
+                        self._emit("Rejoin delayed: closing old client")
+                        if self._wait(check_interval):
+                            break
+                        continue
+
+                    self._process_identity = None
+                    self._owned_processes.clear()
 
                     while not self._stop.is_set() and not self._can_launch():
                         if self._wait(check_interval):
@@ -375,13 +591,28 @@ class AutoRejoinWorker:
                         break
 
                     rejoin_jid = job_id if job_id else game_id
-                    existing_pid = find_running_pid_for_user(self.manager, user_id)
-                    if existing_pid:
-                        self._pid = existing_pid
+                    existing_processes = find_running_processes_for_user(
+                        self.manager,
+                        str(user_id),
+                    )
+                    if existing_processes:
+                        self._owned_processes = existing_processes
+                        self._process_identity = max(
+                            existing_processes,
+                            key=lambda item: item[1],
+                        )
                         ok = True
-                        print(f"[Auto-Rejoin] [{self.account}] Adopted existing PID {existing_pid} instead of relaunching")
+                        print(
+                            f"[Auto-Rejoin] [{self.account}] Adopted existing "
+                            f"PID {self._process_identity[0]} instead of relaunching"
+                        )
                     else:
-                        ok = self._launch_and_track(place_id, private_server, rejoin_jid)
+                        ok = self._launch_and_track(
+                            str(user_id),
+                            place_id,
+                            private_server,
+                            rejoin_jid,
+                        )
 
                     if ok:
                         print(f"[Auto-Rejoin] [{self.account}] Rejoin successful")
