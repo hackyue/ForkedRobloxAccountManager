@@ -5292,6 +5292,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
                 worker.stop(join_timeout=1.0)
         except Exception:
             pass
+        try:
+            if self._cv_validator is not None:
+                stopped = self._cv_validator.stop(join_timeout=2.0)
+                if not stopped:
+                    print("[WARNING] Cookie validator did not stop before UI shutdown.")
+                self._cv_validator = None
+        except Exception as exc:
+            print(f"[WARNING] Failed to stop cookie validator: {exc}")
         # Stop WebSocket server
         try:
             if self._ws_server:

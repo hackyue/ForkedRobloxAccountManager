@@ -114,8 +114,12 @@ class CookieValidator:
         )
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, join_timeout: float = 2.0) -> bool:
         self._stop_evt.set()
+        thread = self._thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, float(join_timeout)))
+        return not bool(thread and thread.is_alive())
 
     def _run(self) -> None:
         account_lock = getattr(self._manager, "_accounts_lock", None)
@@ -143,6 +147,8 @@ class CookieValidator:
                     continue
 
                 status, detail, rate_limited = _check(cookie, session)
+                if self._stop_evt.is_set():
+                    break
                 changed = _set_status(self._manager, username, status) or changed
                 checked += 1
 
@@ -159,10 +165,11 @@ class CookieValidator:
                         f"{detail} The account was not marked invalid."
                     )
 
-                try:
-                    self._on_result(username, status)
-                except Exception as exc:
-                    print(f"[WARNING] cookie_validator on_result error: {exc}")
+                if not self._stop_evt.is_set():
+                    try:
+                        self._on_result(username, status)
+                    except Exception as exc:
+                        print(f"[WARNING] cookie_validator on_result error: {exc}")
 
                 if rate_limited:
                     print(
@@ -174,7 +181,7 @@ class CookieValidator:
         finally:
             session.close()
 
-        if changed:
+        if changed and not self._stop_evt.is_set():
             try:
                 self._manager.save_accounts()
             except Exception as exc:
@@ -185,7 +192,8 @@ class CookieValidator:
             f"invalid {invalid}, unknown {unknown}."
         )
 
-        try:
-            self._on_done()
-        except Exception:
-            pass
+        if not self._stop_evt.is_set():
+            try:
+                self._on_done()
+            except Exception:
+                pass
