@@ -4394,6 +4394,10 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         )
         if path:
             self._sett_custom_launcher_edit.setText(path)
+            actions.save_ui_setting(
+                "custom_roblox_launcher_path",
+                path,
+            )
 
     def _on_sett_roblox_downloader_customizations(self, enabled: bool):
         if hasattr(self, "_sett_roblox_downloader_version_edit"):
