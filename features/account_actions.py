@@ -1732,18 +1732,69 @@ def is_roblox_running() -> bool:
     return False
 
 
-def kill_roblox():
+def kill_roblox() -> OperationResult:
     try:
         processes = presence_mod.get_roblox_processes(force=True)
-        for pid in processes:
-            subprocess.run(
-                ["taskkill", "/F", "/PID", str(pid)],
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+        pids = sorted(processes)
+        if not pids:
+            return OperationResult.success(
+                "No Roblox processes were found.",
+                data={"requested": 0, "closed": 0, "remaining": []},
             )
+
+        failed: dict[int, str] = {}
+        for pid in pids:
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if result.returncode != 0:
+                    failed[pid] = (
+                        (result.stderr or result.stdout or "")
+                        .strip()[-300:]
+                    )
+            except Exception as exc:
+                failed[pid] = f"{type(exc).__name__}: {exc}"
+
+        remaining: list[int] = []
+        for attempt in range(12):
+            remaining = sorted(
+                presence_mod.get_roblox_processes(force=True)
+            )
+            if not remaining:
+                break
+            if attempt < 11:
+                time.sleep(0.25)
+        closed = len(pids) - len([pid for pid in remaining if pid in pids])
+        if remaining:
+            detail_lines = [
+                f"Remaining PID: {pid}"
+                for pid in remaining
+            ]
+            for pid, detail in failed.items():
+                if detail:
+                    detail_lines.append(f"PID {pid}: {detail}")
+            return OperationResult.failure(
+                "ROBLOX_PROCESS_KILL_FAILED",
+                "Some Roblox Processes Could Not Be Closed",
+                f"Closed {closed} of {len(pids)} Roblox process(es).",
+                detail="\n".join(detail_lines),
+                retryable=True,
+            )
+
+        return OperationResult.success(
+            f"Closed {closed} Roblox process(es).",
+            data={"requested": len(pids), "closed": closed, "remaining": []},
+        )
     except Exception as e:
         print(f"[Multi Roblox] Error closing Roblox processes: {e}")
+        return unexpected_result("Closing Roblox processes", e)
 
 def disable_multi_roblox():
     global _mr_handle, _mr_h64_monitoring, _mr_h64_thread, _mr_h64_path

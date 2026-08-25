@@ -2224,6 +2224,14 @@ class AccountManagerUIQt(QMainWindow): # Main Window
         launch_delay_row.addWidget(self._sett_launch_delay_spin)
         f.addLayout(launch_delay_row)
 
+        f.addWidget(_sec("ROBLOX"))
+        kill_roblox_button = QPushButton("Kill All Roblox Process")
+        kill_roblox_button.setToolTip(
+            "Force close every detected Roblox game client."
+        )
+        kill_roblox_button.clicked.connect(self._on_kill_all_roblox)
+        f.addWidget(kill_roblox_button)
+
         f.addWidget(_sec("ACCOUNTS LIST"))
         self._sett_multisel_chk = _chk(
             "enable_multi_select", "Multi-Select (Ctrl / Shift + Click)",
@@ -6412,6 +6420,35 @@ class AccountManagerUIQt(QMainWindow): # Main Window
             self.manager, launch_accounts,
             on_done=self._emit_launch_done,
         )
+
+    def _on_kill_all_roblox(self):
+        if not actions.is_roblox_running():
+            _show_info(
+                self,
+                "Roblox Processes",
+                "No Roblox processes were found.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Kill Roblox Processes",
+            "Close every running Roblox process?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        result = actions.kill_roblox()
+        if result:
+            _show_info(
+                self,
+                "Roblox Processes Closed",
+                result.message,
+            )
+        else:
+            self._show_operation_error(result)
 
     def _emit_launch_done(self, success: bool, result):
         if isinstance(result, OperationResult):
