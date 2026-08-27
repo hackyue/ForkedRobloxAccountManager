@@ -1,7 +1,22 @@
-[![Latest Release](https://img.shields.io/github/v/release/hackyue/ForkedRobloxAccountManager)](https://github.com/hackyue/ForkedRobloxAccountManager/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/hackyue/ForkedRobloxAccountManager/total.svg)](https://github.com/hackyue/ForkedRobloxAccountManager/releases)
-[![License](https://img.shields.io/github/license/evanovar/RobloxAccountManager)](LICENSE)
-[![Discord](https://img.shields.io/discord/1449551915464790170)](https://discord.gg/SpMTxg8YjJ)
+<p align="center">
+  <a href="https://github.com/hackyue/ForkedRobloxAccountManager/releases/latest">
+    <img src="https://img.shields.io/github/v/release/hackyue/ForkedRobloxAccountManager?style=for-the-badge&color=7289da&logo=github" alt="Latest Release">
+  </a>
+  <a href="https://github.com/hackyue/ForkedRobloxAccountManager/releases">
+    <img src="https://img.shields.io/github/downloads/hackyue/ForkedRobloxAccountManager/total.svg?style=for-the-badge&color=34d399&logo=github" alt="Downloads">
+  </a>
+  <img src="https://komarev.com/ghpvc/?username=hackyue-ForkedRobloxAccountManager&label=Visitors&color=6366f1&style=for-the-badge" alt="Visitor Count">
+  <a href="https://www.youtube.com/@hackyue">
+    <img src="https://img.shields.io/badge/YouTube-@hackyue-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube Channel">
+  </a>
+  <a href="https://discord.gg/SpMTxg8YjJ">
+    <img src="https://img.shields.io/discord/1449551915464790170?style=for-the-badge&logo=discord&color=5865F2" alt="Discord Community">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/github/license/evanovar/RobloxAccountManager?style=for-the-badge&color=f59e0b" alt="License">
+  </a>
+</p>
+
 
 
 # 🚀 Forked Roblox Account Manager
