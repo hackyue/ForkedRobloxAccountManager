@@ -1,56 +1,65 @@
-# Python cache and bytecode
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+src-tauri/target/
+src-tauri/backend.exe
+src-tauri/resources/backend.exe
+backend/dist/
+backend/build/
+
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-
-# Virtual environments
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv
 env/
 venv/
 ENV/
-.venv/
+env.bak/
+venv.bak/
 
-# PyInstaller build artifacts
-build/
-dist/
-*.spec
-*.spec.log
-
-# Account data (SENSITIVE - DO NOT COMMIT!)
+FRAMdata/
+backend/FRAMdata/
+*.cookies
+*.cookie
 saved_accounts.json
-AccountManagerData/
+encryption_config.json
+accounts_data.json
+backend/accounts_data.json
+.api_token
 
-# IDE and editor files
+Useful Code/
+Website/
+account_manager_ui*.html
+*.bak
+
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# OS files
 .DS_Store
 Thumbs.db
-desktop.ini
-
-# Logs and temporary files
-*.log
 *.tmp
-temp/
-tmp/
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-debug/
-
-# My things
-handle64.exe
-CLAUDE.md
-website/
-.claude/
-AGENTS.md
-.agents/
-tests/
-PLAN.md
+*.log
+.env
+.env.local
+.env.*.local

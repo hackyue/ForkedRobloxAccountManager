@@ -1,237 +1,215 @@
-[![Version](https://img.shields.io/github/v/release/evanovar/RobloxAccountManager)](https://github.com/evanovar/RobloxAccountManager/releases/latest)
-![License](https://img.shields.io/github/license/evanovar/RobloxAccountManager)
-[![Discord](https://img.shields.io/discord/1436930121897476140?label=Discord)](https://discord.gg/TYnJXyEhgY)
-![DownloadCount](https://img.shields.io/github/downloads/evanovar/RobloxAccountManager/total)
-[![Website](https://img.shields.io/badge/website-online-1F58FF
-)](https://www.evanovarram.com/)<br>
-[![Download](https://img.shields.io/badge/Download-280ab?style=for-the-badge)](https://github.com/evanovar/RobloxAccountManager/releases/latest/download/RobloxAccountManager.exe)
+<div align="center">
+
+# 🚀 Forked Roblox Account Manager
+
+<p align="center">
+  <b>The Roblox account manager built with Tauri, Rust, Vite, and Python.</b>
+  <br>
+  Manage unlimited accounts, multiple instances, account creation, roblox settings, all in one place.
+</p>
+
+<p align="center">
+  <a href="https://github.com/hackyue/ForkedRobloxAccountManager/releases/latest">
+    <img src="https://img.shields.io/github/v/release/hackyue/ForkedRobloxAccountManager?style=for-the-badge&color=7289da&logo=github" alt="Latest Release">
+  </a>
+  <a href="https://github.com/hackyue/ForkedRobloxAccountManager/releases">
+    <img src="https://img.shields.io/github/downloads/hackyue/ForkedRobloxAccountManager/total.svg?style=for-the-badge&color=34d399&logo=github" alt="Downloads">
+  </a>
+  <img src="https://komarev.com/ghpvc/?username=hackyue-ForkedRobloxAccountManager&label=Visitors&color=6366f1&style=for-the-badge" alt="Visitor Count">
+  <a href="https://www.youtube.com/@hackyue">
+    <img src="https://img.shields.io/badge/YouTube-@hackyue-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube Channel">
+  </a>
+  <a href="https://discord.gg/SpMTxg8YjJ">
+    <img src="https://img.shields.io/discord/1449551915464790170?style=for-the-badge&logo=discord&color=5865F2" alt="Discord Community">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-GPL_v3-f59e0b?style=for-the-badge" alt="License">
+  </a>
+</p>
+
+<p align="center">
+  Forked & Maintained by <b>hackyue</b> · Contact: <a href="https://discord.gg/SpMTxg8YjJ">Discord Server</a>
+  <br>
+  ⭐ <i>If you find this project useful, please consider starring the repository!</i> ⭐
+</p>
+
+</div>
+
+---
+
+## 📷 Interface
+
+### Account List
+
+<p align="center">
+  <img src="https://i.ibb.co/x8Fv0z6c/image.png" alt="Account List" />
+</p>
+
+### Instance Manager
+
+<p align="center">
+  <img src="https://i.ibb.co/6J0c812M/image.png" alt="Instance Manager" />
+</p>
+
+### VIP Server Manager
+
+<p align="center">
+  <img src="https://i.ibb.co/VY8vcKR8/image.png" alt="VIP Server Manager" />
+</p>
+
+---
+
+## 🛠️ Installation & Getting Started
+
+### 🚀 Option 1: Release Installer (Recommended for Users)
+
+> [!TIP]
+> **No Python or Node.js setup required!** Download the installer bundle and install.
+
+1. Go to the [Releases Page](https://github.com/hackyue/ForkedRobloxAccountManager/releases).
+2. Download the installer bundle from the latest release:
+   - **`FRAM_<version>_x64-setup.exe`** (NSIS Installer - Recommended)
+   - or **`FRAM_<version>_x64_en-US.msi`** (Windows MSI Package)
+3. Run the installer and complete the setup.
+4. Launch **Forked Roblox Account Manager** from your Start Menu or Desktop!
+
+> [!NOTE]
+> **System Requirements**: Windows 10/11 with Google Chrome, Edge, Firefox, Waterfox, or Chromium installed.
+> If Windows Defender shows a SmartScreen warning, click **"More info" → "Run anyway"**.
+
+---
+
+### 💻 Option 2: Developer Setup (Build from Source)
 
 > [!IMPORTANT]
-> Before you see this as a **"Virus"** or **"Unofficial,"** please read:
-> - **Project Status:** This project was inspired by the original Roblox Account Manager by ic3w0lf22. I recreated it in Python as a personal project because I thought it would be fun to build and learn from. It is not intended to be an official continuation of the original project.<br><br>
-> - **100% Open Source:** Every line of code is transparent and available for everyone. If you don't trust the .exe, you are encouraged to run the script directly from the source code.<br><br>
-> - **Integrity:** The standalone .exe in the releases is compiled directly from this code with zero alterations.
+> **Prerequisites**: Node.js (v18+), Python (v3.8+), Rust (Cargo/Tauri toolchain), Git.
 
-# Evanovar RAM
-
-A powerful tool for managing multiple Roblox accounts with secure cookie extraction and modern UI interface.
-
-**Created by evanovar** · **Get Help:** [Discord Server](https://discord.gg/TYnJXyEhgY)<br>
-
-⭐ If you like this project, please consider starring the repository! ⭐<br>
-Or support the creator by donating via [Robux](https://www.roblox.com/games/718090786/donation#store) ♥️
-
-<img width="795" height="651" alt="image" src="https://github.com/user-attachments/assets/6dab4d69-11fd-47d0-9348-db2aef5211fb" />
-
-## 📑 Table of Contents
-
-- [Installation](#installation)
-- [Requirements](#requirements)
-- [Disclaimer](#disclaimer)
-- [Privacy Policy](#privacy-policy)
-- [System Changes and Uninstallation](#system-changes-and-uninstallation)
-- [Contributing](#contributing)
-- [License](#license)
-- [Support](#support)
-- [Features](#features)
-
-## Installation
-
-### Method 1: Direct EXE (Recommended for Users)
-
-**Quick & Easy - No Python Required!**
-
-1. Go to [Releases](https://github.com/evanovar/RobloxAccountManager/releases)
-2. Download `RobloxAccountManager.exe` from the latest release
-3. Put it in a folder
-4. Double-click to run - that's it!
-
-**Requirements:**
-
-- **Google Chrome browser**
-- **Windows** (currently optimized for Windows)
-
-> ⚠️ Windows Defender may flag the EXE as untrusted since it's not signed. Click "More info" → "Run anyway" to proceed.
-
-### Method 2: Clone Repository (For Developers, or for people that dont trust the EXE)
-
-**Full source code access and customization**
-**Requirements:**
-
-- **Python 3.7+**
-- **Google Chrome browser**
-- **Windows** (currently optimized for Windows)
-
-### Setup
-
-1. **Clone the repository**
-
+1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/evanovar/RobloxAccountManager
-   cd RobloxAccountManager
+   git clone https://github.com/hackyue/ForkedRobloxAccountManager.git
+   cd ForkedRobloxAccountManager
    ```
 
-2. **Install dependencies**
-
+2. **Install Frontend & Backend Dependencies**:
    ```bash
-   py -m pip install -r requirements.txt
+   npm install
+   cd backend
+   pip install -r requirements.txt
+   cd ..
    ```
 
-3. **Run the application**
+3. **Start Development Server**:
 
-   ```bash
-   py main.py
+   **PowerShell**:
+   ```powershell
+   .\start-tauri-dev.ps1
    ```
 
-## Requirements
+   **Command Prompt**:
+   ```cmd
+   .\start-tauri-dev.bat
+   ```
 
-The following Python packages are required:
-
-- `selenium` - Browser automation
-- `requests` - HTTP requests for account validation and game info
-- `webdriver-manager` - Automatic ChromeDriver management
-- `pycryptodome` - Encryption and cookie handling
-- `PySide6` - Main desktop UI framework
-- `pywin32` - Windows API access for Multi Roblox feature
-- `psutil` - Process monitoring for Multi Roblox handle64 mode
-- `pyautoit` - Window rotation and maintenance actions for Anti-AFK
-- `websockets` - WebSocket server support for developer features
-- `PyInstaller` - Required to build the standalone EXE
-
-## Disclaimer
-
-This tool is for educational purposes only. Users are responsible for complying with Roblox's Terms of Service. The developers are not responsible for any consequences resulting from the use of this tool.
-
-### Team Roles
-
-- Committers and reviewers: [evanovar](https://github.com/evanovar)
-- Approvers: [evanovar](https://github.com/evanovar)
-
-## Privacy Policy
-
-This program does not include hidden telemetry, ad SDKs, or analytics tracking.
-
-Network communication is limited to documented functionality:
-
-- Roblox API calls required for Roblox account and game features.
-- GitHub API/release checks for update-related features.
-- Discord webhook/bot endpoints only when Discord integration is configured by the operator.
-- Optional connectivity checks used by auto-rejoin safety logic.
-
-If Discord/webhook/auto-update features are not enabled, those related network requests are not performed.
-
-## System Changes and Uninstallation
-
-The program may make local system changes based on enabled settings:
-
-- Creates/updates local application data under AccountManagerData.
-- Can create/remove a Start Menu shortcut.
-- Can set Roblox settings files as read-only when the lock option is enabled.
-- Can download optional dependencies/features only when requested by the user.
-
-Uninstallation:
-
-1. Close the application.
-2. Delete the application folder containing RobloxAccountManager.exe.
-3. Delete AccountManagerData if you want to remove local data.
-4. Remove the Start Menu shortcut if it exists.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-This project is open source and available under the [GPL 3.0 License](LICENSE).
-
-## Support
-
-Have questions or need help? Join our **[Discord Server](https://discord.gg/TYnJXyEhgY)** where the community and developers can assist you!
-
-## Features
-
-### Account Management
-
-| Feature | Description | How to Use |
-| :--- | :--- | :--- |
-| **Browser Login** | Add accounts by logging in manually through Chrome | Click "Add Account" → browser opens → login to Roblox |
-| **Cookie Import** | Import accounts using `.ROBLOSECURITY` cookie | Click "Add Account" dropdown → "Import Cookie" → paste cookie |
-| **Multiple Cookie Import** | Import multiple accounts at once | Click "Add Account" dropdown → "Import Cookie" → paste multiple cookies |
-| **JavaScript Automation** | Bulk add accounts with custom JavaScript execution (up to 10 instances) | Click "Add Account" dropdown → "Javascript"|
-| **Password Capture** | Automatically captures and saves passwords during browser login | Automatic during browser login; right-click account → "Copy Password" |
-| **Cookie Validity Indicator** | Warning icon next to accounts with expired or invalid cookies | Automatically shown in the account list |
-| **Account Groups** | Organize and categorize your saved accounts into distinct groups | Click "+" above the list to create a group, then right-click an account → "Move to Group" |
-| **Account Notes** | Add custom notes/tags to accounts for organization | Right-click account → "Edit Note" |
-| **Account Deletion** | Remove accounts from your saved list | Right-click account → "Delete" → confirm |
-| **Multi-Select Mode** | Select and manage multiple accounts at once | Enable in Settings → Use Ctrl+Click to select multiple |
-| **Drag & Drop Reordering** | Reorder accounts by dragging and dropping in the list | Click & hold account for 0.5s, then drag to new position |
-
-### Game Launching
-
-| Feature | Description | How to Use |
-| :--- | :--- | :--- |
-| **Single Game Launch** | Launch Roblox game with one account | Enter Place ID → Click "Join Place" |
-| **Multi-Account Launch** | Launch the same game with multiple accounts simultaneously | Enable Multi-Select → Select accounts → Enter Place ID → Click "Join Place" |
-| **Private Server Support** | Save and launch private servers (marked with [P]) | Enter Private Server ID → Game automatically joins private server |
-| **VIP Link Parsing** | Paste a full Roblox VIP URL into the Private Server field to auto-extract Place ID and server code | Paste VIP URL into "Private Server" field |
-| **Join User** | Join a specific user's current game; last-used account saved across sessions | Select account → "Join Place" dropdown → "Join User" → enter username |
-| **Join by Job-ID** | Join a specific server instance using Job-ID | Enter Place ID & Job-ID → "Join Place" dropdown → "Job-ID" |
-| **Join Smallest Server** | Automatically join the server with the lowest player count | "Join Place" dropdown → "Small Server" |
-| **Game List (Recently Played)** | Auto-save recently played games for quick access | Games auto-save on launch (configurable 5-50 games) |
-| **Game Name Lookup** | Auto-fetch and display game names from Place IDs | Automatic when Place ID changes |
-| **Roblox Launcher Selection** | Choose your preferred Roblox launcher | Settings → Roblox → select Default, Bloxstrap, Fishstrap, Froststrap, or Roblox Client |
-
-### Multi Roblox
-
-| Feature | Description | How to Use |
-| :--- | :--- | :--- |
-| **Multi Roblox (Default Mode)** | Run multiple Roblox instances with mutex lock | Enable "Multi Roblox" → select "Default" method |
-| **Multi Roblox (Handle64 Mode)** | Advanced mode using handle64.exe — works alongside already-running instances | Enable "Multi Roblox" → select "Handle64" → run as administrator |
-| **Admin Relaunch Prompt** | Prompts to relaunch as admin when switching to Handle64 without elevated privileges | Automatic when selecting Handle64 without admin rights |
-| **Handle64 Custom Launcher Support** | Handle64 method works correctly with Bloxstrap, Fishstrap, and Froststrap | Automatic when custom launcher is selected |
-| **Error 773 Prevention** | Automatic lock of `RobloxCookies.dat` to prevent Error 773 | Activates when Multi Roblox is enabled |
-| **Running Instance Check** | Warns if Roblox is already running when enabling Multi Roblox | Prompts to close existing instances |
-
-### Auto-Rejoin System
-
-| Feature | Description | How to Use |
-| :--- | :--- | :--- |
-| **Auto-Rejoin Setup** | Configure automatic game rejoin for accounts | Click "Auto-Rejoin" → "Add" → select account & Place ID |
-| **Start/Stop Individual** | Control rejoin status per account | Select account → Right click → "Start Selected" / "Stop Selected" |
-| **Start/Stop All** | Bulk start/stop all rejoin configurations | Click "Start All" / "Stop All" buttons |
-| **Active Status Display** | See which accounts are actively monitored | [ACTIVE] / [INACTIVE] status shown in list |
-
-### Settings & Tools
-
-| Feature | Description | How to Use |
-| :--- | :--- | :--- |
-| **Switch Encryption Method** | Seamlessly switch between Hardware and Password encryption | Settings → Misc → "Switch Encryption Method" |
-| **Wipe Data** | Securely overwrite all data in `AccountManagerData` | Settings → Misc → "Wipe Data" |
-| **Start Menu Shortcut** | Add or remove a Windows Start Menu shortcut for the app | Settings → General → "Add to Start Menu" |
-| **Rename Roblox Windows** | Automatically renames Roblox window titles to the account's username | Settings → Roblox → "Rename Roblox Windows to username" |
-| **Console Output** | Real-time color-coded log of all operations with timestamps | Console Category |
-| **Update Checker** | Auto-checks for new releases on startup | Automatic; to disable, Settings → Uncheck "Check for Updates on Startup" |
-| **Auto Update** | Download and install the latest version automatically | Click "Auto Update" in the update notification |
-| **Roblox RAM Trim** | Clears the working set of newly detected Roblox processes | Settings → Roblox → enable **Optimize Roblox Ram** |
+4. **Build Release Bundle**:
+   ```cmd
+   .\build-release.bat
+   ```
 
 
-### Encryption & Data Security
+---
 
-| Feature | Description | How to Use |
-| :--- | :--- | :--- |
-| **Hardware Encryption** | Encryption tied to your PC's hardware — no password needed | Setup Wizard → choose "Hardware" |
-| **Password Encryption** | Portable encryption requiring a password — works on any PC | Setup Wizard → choose "Password" |
-| **No Encryption** | Store accounts unencrypted (not recommended) | Setup Wizard → choose "No Encryption" |
-| **Encryption Status Indicator** | Shows encryption type in the UI | Displayed as [HARDWARE ENCRYPTED] / [PASSWORD ENCRYPTED] / [NOT ENCRYPTED] |
-| **Password Prompt** | Prompts for password on startup when using password encryption | Automatic |
-| **Portable Chromium** | Built-in Chromium browser download for environments without Chrome | Settings → Misc → Browser Engine → download Chromium |
+## 🔐 Encryption 
 
-### Anti-AFK
+Forked Roblox Account Manager v3 uses **AES-256-GCM** encryption to protect account credentials:
 
-| Feature | Description | How to Use |
-| :--- | :--- | :--- |
-| **Anti-AFK Window** | Opens a dedicated maintenance window for anti-AFK controls | Anti AFK Category |
-| **Key Recording** | Record any keyboard or mouse input as the maintenance action | Anti AFK category → click the action key button |
-| **Press Count** | Set how much the chosen input is pressed during maintenance | Anti AFK category → press count |
-| **Configurable Interval** | Set how often maintenance runs | Anti AFK category → set interval |
-| **30s Countdown Tooltip** | Shows a countdown before each maintenance cycle | Anti AFK category → Show countdown tooltip |
+| Encryption Mode | Security | Portability | Password Required? | Description |
+| :--- | :---: | :---: | :---: | :--- |
+| **Hardware Encryption** | 🟢 High | 🔴 No | ❌ No | Encrypts data using your PC's unique Hardware ID. Automatic, zero-configuration. Cannot be read on another PC. |
+| **Password Encryption** | 🟢 High | 🟢 Yes | ✅ Yes | Encrypts data with a Master Password. Fully portable across PCs. **No password recovery exists if forgotten.** |
+| **No Encryption** | 🔴 Low | 🟢 Yes | ❌ No | Plaintext storage. Convenient for testing, but not recommended for sensitive accounts. |
+
+---
+
+## 📚 Frequently Asked Questions (FAQ)
+
+<details>
+<summary><b>Q: Is Forked Roblox Account Manager safe to use?</b></summary>
+<br>
+<b>A:</b> Yes! The application runs completely locally on your computer. Web requests are communicated directly between your machine and official Roblox API endpoints (<code>roblox.com</code>). Your account credentials are never sent to external servers.
+</details>
+
+<details>
+<summary><b>Q: How does Multi-Roblox work? Do I need third-party tools?</b></summary>
+<br>
+<b>A:</b> No additional software or injectors are required. FRAM has built-in multi-instance support by handling the Windows single-instance mutexes (<code>ROBLOX_singletonEvent</code> and <code>ROBLOX_singletonMutex</code>), allowing you to run multiple Roblox accounts simultaneously without conflicts.
+</details>
+
+<details>
+<summary><b>Q: How can I add or import my accounts?</b></summary>
+<br>
+<b>A:</b> FRAM supports several convenient import and login methods:
+<ul>
+  <li><b>Browser Login:</b> Launch a browser window (Chrome, Edge, Firefox, Waterfox, or Chromium) to sign in directly.</li>
+  <li><b>Cookie Import:</b> Paste a <code>.ROBLOSECURITY</code> cookie token or bulk import from text files.</li>
+  <li><b>User:Pass Combo:</b> Mass import account credentials formatted as <code>username:password</code>.</li>
+  <li><b>Quick Sign-In:</b> Connect instantly using Roblox 6-digit Quick Sign-In codes generated from an existing logged-in device.</li>
+</ul>
+</details>
+
+<details>
+<summary><b>Q: Which bootstrappers and Roblox versions are supported?</b></summary>
+<br>
+<b>A:</b> FRAM supports the standard Roblox Player alongside custom bootstrappers including <b>Voidstrap</b>, <b>Bloxstrap</b>, <b>Fishstrap</b>, <b>Froststrap</b>, and <b>ExploitStrap</b>. You can also use custom bootstrappers
+</details>
+
+<details>
+<summary><b>Q: What is Streamer Mode?</b></summary>
+<br>
+<b>A:</b> Streamer Mode censors sensitive account details (usernames, account IDs, avatars, and notes) in the UI to protect your privacy while streaming or recording. 
+</details>
+
+<details>
+<summary><b>Q: Where is my account data stored?</b></summary>
+<br>
+<b>A:</b> Application data (accounts, saved games, settings, VIP servers) is stored locally in <code>%LOCALAPPDATA%\Forked Account Manager\data\</code> (or in the directory configured via the <code>FRAM_APP_DIR</code> environment variable).
+</details>
+
+<details>
+<summary><b>Q: How do I move my accounts to a new computer?</b></summary>
+<br>
+<b>A:</b> The easiest way is using the built-in <b>Backup & Import</b> feature:
+<ol>
+  <li>On your current PC, navigate to <b>Settings → Data</b> and click <b>Backup</b> under <i>Backup & Import</i> to save your <code>accounts.json</code> file.</li>
+  <li>Transfer the exported JSON file to your new computer.</li>
+  <li>Install FRAM on the new PC, go to <b>Settings → Data</b>, click <b>Import</b>, and select your backup file.</li>
+</ol>
+Alternatively, you can manually copy the application data folder at <code>%LOCALAPPDATA%\Forked Account Manager\data\</code> to the same path on your new PC.
+<br><br>
+<b>Important:</b> If you use <b>Hardware Encryption</b> and manually copy the folder, the data is tied to your original machine's hardware ID and cannot be unlocked on another PC. Using the <b>Backup & Import</b> feature (or switching to <b>Password Encryption</b>) ensures your accounts transfer smoothly.
+</details>
+
+<details>
+<summary><b>Q: I forgot my Master Password. Can I recover my accounts?</b></summary>
+<br>
+<b>A:</b> No. AES-256-GCM encryption is cryptographically secure. There is no backdoor, developer key, or recovery method. If you lose your Master Password, password-encrypted data cannot be recovered.
+</details>
+
+<details>
+<summary><b>Q: Why does Windows Defender or SmartScreen show a warning?</b></summary>
+<br>
+<b>A:</b> Windows SmartScreen often displays warnings for newly released, open-source executables that are not signed with a commercial certificate. This is a false positive. You can safely proceed by clicking <b>"More info" → "Run anyway"</b>. The complete source code is open-source and can be inspected or compiled from source.
+</details>
+
+---
+
+## ⚠️ Disclaimer
+
+This tool is created for educational and utility purposes only. Users are responsible for complying with Roblox's Terms of Service. Project maintainers and contributors are not responsible for any misuse or consequences resulting from the use of this tool.
+
+---
+
+## 🤝 Contributing & License
+
+Contributions, bug reports, and feature suggestions are welcome! Feel free to open an issue or submit a Pull Request.
+
+This project is licensed under the [GPL-3.0 License](LICENSE).
