@@ -7,7 +7,7 @@
     "withGlobalTauri": true
   },
   "package": {
-    "productName": "FRAM",
+    "productName": "Forked Roblox Account Manager",
     "version": "3.0.0"
   },
   "tauri": {
@@ -55,6 +55,11 @@
       "active": true,
       "targets": "all",
       "identifier": "com.forkedaccountmanager.app",
+      "shortDescription": "Forked Roblox Account Manager (FRAM)",
+      "longDescription": "Forked Roblox Account Manager (FRAM) - Advanced account manager, multi-instance launcher, and utility suite for Roblox.",
+      "category": "Utility",
+      "copyright": "Copyright © 2026 hackyue",
+      "publisher": "hackyue",
       "resources": [
         "resources/backend.exe",
         "../backend/app.py",
@@ -66,8 +71,34 @@
         "icons/32x32.png",
         "icons/128x128.png",
         "icons/128x128@2x.png",
-        "icons/icon.ico"
-      ]
+        "icons/icon.ico",
+        "icons/icon.icns",
+        "icons/Square30x30Logo.png",
+        "icons/Square44x44Logo.png",
+        "icons/Square71x71Logo.png",
+        "icons/Square89x89Logo.png",
+        "icons/Square107x107Logo.png",
+        "icons/Square142x142Logo.png",
+        "icons/Square150x150Logo.png",
+        "icons/Square284x284Logo.png",
+        "icons/Square310x310Logo.png",
+        "icons/StoreLogo.png"
+      ],
+      "windows": {
+        "certificateThumbprint": null,
+        "digestAlgorithm": "sha256",
+        "timestampUrl": "",
+        "wix": {
+          "language": "en-US"
+        },
+        "nsis": {
+          "installerIcon": "icons/icon.ico",
+          "headerImage": null,
+          "sidebarImage": null,
+          "installMode": "currentUser",
+          "languages": ["English"]
+        }
+      }
     },
     "security": {
       "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.rbxcdn.com https://*.roblox.com https://tr.rbxcdn.com https://thumbnails.roblox.com http://127.0.0.1:5050; connect-src 'self' http://127.0.0.1:5050 https://*.roblox.com https://*.rbxcdn.com; font-src 'self' data:"
@@ -82,7 +113,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Account Manager",
+        "title": "Forked Roblox Account Manager",
         "width": 1200,
         "height": 800,
         "resizable": true,

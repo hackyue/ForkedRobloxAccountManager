@@ -124,5 +124,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=os.path.join(backend_dir, '..', 'src-tauri', 'icons', 'icon.ico'),
+    version=os.path.join(backend_dir, 'version_info.txt'),
 )
