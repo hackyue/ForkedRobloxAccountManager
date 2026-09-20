@@ -1,7 +1,7 @@
 [package]
 name = "forked-account-manager"
 version = "3.0.0"
-description = "A Tauri app for managing Roblox accounts"
+description = "FRAM - Forked Roblox Account Manager"
 authors = ["hackyue"]
 license = "GPL-3.0"
 repository = "https://github.com/hackyue/ForkedRobloxAccountManager"

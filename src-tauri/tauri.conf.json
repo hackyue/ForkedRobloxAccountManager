@@ -7,7 +7,7 @@
     "withGlobalTauri": true
   },
   "package": {
-    "productName": "Forked Roblox Account Manager",
+    "productName": "FRAM",
     "version": "3.0.0"
   },
   "tauri": {
@@ -55,8 +55,8 @@
       "active": true,
       "targets": "all",
       "identifier": "com.forkedaccountmanager.app",
-      "shortDescription": "Forked Roblox Account Manager (FRAM)",
-      "longDescription": "Forked Roblox Account Manager (FRAM) - Advanced account manager, multi-instance launcher, and utility suite for Roblox.",
+      "shortDescription": "FRAM - Forked Roblox Account Manager",
+      "longDescription": "FRAM (Forked Roblox Account Manager) - Advanced account manager, multi-instance launcher, and utility suite for Roblox.",
       "category": "Utility",
       "copyright": "Copyright © 2026 hackyue",
       "publisher": "hackyue",
@@ -95,7 +95,7 @@
           "installerIcon": "icons/icon.ico",
           "headerImage": null,
           "sidebarImage": null,
-          "installMode": "currentUser",
+          "installMode": "both",
           "languages": ["English"]
         }
       }
@@ -113,7 +113,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Forked Roblox Account Manager",
+        "title": "FRAM",
         "width": 1200,
         "height": 800,
         "resizable": true,

@@ -16,12 +16,12 @@ VSVersionInfo(
           '040904B0',
           [
             StringStruct('CompanyName', 'hackyue'),
-            StringStruct('FileDescription', 'Forked Roblox Account Manager Backend Service'),
+            StringStruct('FileDescription', 'FRAM Backend Service'),
             StringStruct('FileVersion', '3.0.0.0'),
             StringStruct('InternalName', 'backend.exe'),
             StringStruct('LegalCopyright', 'Copyright (C) 2026 hackyue'),
             StringStruct('OriginalFilename', 'backend.exe'),
-            StringStruct('ProductName', 'Forked Roblox Account Manager'),
+            StringStruct('ProductName', 'FRAM'),
             StringStruct('ProductVersion', '3.0.0.0')
           ]
         )
