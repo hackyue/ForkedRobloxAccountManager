@@ -160,6 +160,23 @@ class AppUpdaterManager:
 
         return result
 
+    def get_all_releases(self, force: bool = False) -> List[Dict[str, Any]]:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "FRAM-Desktop-App"
+        }
+        for repo in (self.PRIMARY_REPO, self.DEV_REPO):
+            api_url = f"https://api.github.com/repos/{repo}/releases"
+            try:
+                resp = requests.get(api_url, headers=headers, timeout=12)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        return data
+            except Exception:
+                continue
+        return []
+
     def get_status(self) -> Dict[str, Any]:
         with self.lock:
             return dict(self.download_state)

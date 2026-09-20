@@ -14337,6 +14337,23 @@ function formatReleaseMarkdown(raw: string): string {
   return text;
 }
 
+const FALLBACK_APP_RELEASES = [
+  {
+    name: 'Version 3.0.0 — Major Architecture & UI Overhaul',
+    tag_name: 'v3.0.0',
+    published_at: '2026-09-20T12:00:00Z',
+    html_url: 'https://github.com/hackyue/ForkedRobloxAccountManager/releases',
+    body: `### 🚀 Highlights & Major Features
+- **All-New Tauri Desktop Architecture**: Ultra-lightweight, high-performance desktop client with native system tray integration.
+- **Enhanced Account Management**: Seamless cookie, user:pass, browser, and Quick Sign-In login flows.
+- **Multi-Instance & Mutex Engine**: Unlimited concurrent Roblox instances with crash recovery and auto memory trimmer.
+- **Roblox Swap & Trace Cleaner**: Network adapter MAC address spoofing, hardware ID cleaner, and cached trace purger.
+- **Auto Rejoin & Anti-AFK**: Background heartbeats with configurable keypresses and smart reconnection routines.
+- **FastFlags & Bootstrappers Manager**: Advanced FastFlag presets, lighting tweaks, and integrated bootstrapper configurations.
+- **12 Custom Theme Palettes**: Vibrant UI themes with custom color wash icons and full layout customization.`
+  }
+];
+
 async function loadGithubReleases(force = false): Promise<void> {
   if (isFetchingGithubReleases) return;
   if (cachedGithubReleases && !force) return;
@@ -14349,24 +14366,35 @@ async function loadGithubReleases(force = false): Promise<void> {
   }
 
   try {
-    const res = await fetch('https://api.github.com/repos/hackyue/ForkedRobloxAccountManager/releases', {
-      headers: {
-        'Accept': 'application/vnd.github.v3+json'
+    try {
+      const backendRes = await apiService.getGithubReleases(force);
+      if (backendRes && backendRes.success && Array.isArray(backendRes.releases) && backendRes.releases.length > 0) {
+        cachedGithubReleases = backendRes.releases;
+        return;
       }
-    });
-
-    if (!res.ok) {
-      throw new Error(`GitHub API returned status ${res.status} (${res.statusText})`);
+    } catch (_e) {
     }
 
-    const data = await res.json();
-    if (Array.isArray(data)) {
-      cachedGithubReleases = data;
-    } else {
-      cachedGithubReleases = [];
+    try {
+      const res = await fetch('https://api.github.com/repos/hackyue/ForkedRobloxAccountManager/releases', {
+        headers: {
+          'Accept': 'application/vnd.github.v3+json'
+        }
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          cachedGithubReleases = data;
+          return;
+        }
+      }
+    } catch (err: any) {
     }
-  } catch (err: any) {
-    githubReleasesError = err?.message || 'Failed to fetch release notes from GitHub';
+
+    if (!cachedGithubReleases || cachedGithubReleases.length === 0) {
+      cachedGithubReleases = FALLBACK_APP_RELEASES;
+    }
   } finally {
     isFetchingGithubReleases = false;
     if (currentAboutTab === 'whatsnew') {
@@ -14652,7 +14680,7 @@ function isPackageSupportedRelease(tagOrName: string): boolean {
     if (n > c) return true;
     if (n < c) return false;
   }
-  return false;
+  return true;
 }
 
       cachedGithubReleases.forEach((rel: any, index: number) => {

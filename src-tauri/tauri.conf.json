@@ -101,7 +101,7 @@
       }
     },
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.rbxcdn.com https://*.roblox.com https://tr.rbxcdn.com https://thumbnails.roblox.com http://127.0.0.1:5050; connect-src 'self' http://127.0.0.1:5050 https://*.roblox.com https://*.rbxcdn.com; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.rbxcdn.com https://*.roblox.com https://tr.rbxcdn.com https://thumbnails.roblox.com https://avatars.githubusercontent.com https://*.githubusercontent.com https://github.com http://127.0.0.1:5050; connect-src 'self' http://127.0.0.1:5050 https://*.roblox.com https://*.rbxcdn.com https://api.github.com https://github.com https://raw.githubusercontent.com; font-src 'self' data:"
     },
     "updater": {
       "active": false

@@ -1147,6 +1147,10 @@ class ApiService {
     return this.request<UpdateCheckResult>(`/updater/check?force=${force}`);
   }
 
+  async getGithubReleases(force = false): Promise<{ success: boolean; releases?: any[]; error?: string }> {
+    return this.request<{ success: boolean; releases?: any[]; error?: string }>(`/updater/releases?force=${force}`);
+  }
+
   async startUpdateDownload(options?: { download_url?: string; asset_name?: string; sha256?: string; total_bytes?: number }): Promise<{ success: boolean; message?: string; error?: string }> {
     return this.request<{ success: boolean; message?: string; error?: string }>('/updater/download', 'POST', options || {});
   }

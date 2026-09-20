@@ -293,6 +293,7 @@ def enforce_vault_lock():
             '/api/roblox/launch-app',
             '/api/roblox/uninstall-version',
             '/api/updater/check',
+            '/api/updater/releases',
             '/api/updater/download',
             '/api/updater/status',
             '/api/updater/apply',
@@ -4746,6 +4747,15 @@ def apply_app_update():
         return jsonify(res)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/updater/releases', methods=['GET'])
+def get_app_releases():
+    try:
+        force = request.args.get('force', 'false').lower() == 'true'
+        releases = updater_manager.get_all_releases(force=force)
+        return jsonify({'success': True, 'releases': releases})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e), 'releases': []}), 500
 
 @app.route('/api/system/logs', methods=['GET'])
 def get_system_logs():
