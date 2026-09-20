@@ -1,0 +1,10 @@
+flask==3.0.0
+flask-cors==4.0.0
+werkzeug==3.0.1
+selenium==4.15.2
+webdriver-manager==4.0.1
+requests==2.31.0
+pycryptodome==3.20.0
+pywin32==306
+psutil>=5.9.0
+Pillow>=10.0.0

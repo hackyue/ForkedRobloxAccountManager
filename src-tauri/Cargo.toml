@@ -1,0 +1,22 @@
+[package]
+name = "forked-account-manager"
+version = "3.0.0"
+description = "A Tauri app for managing Roblox accounts"
+authors = ["hackyue"]
+license = "GPL-3.0"
+repository = "https://github.com/hackyue/ForkedRobloxAccountManager"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = [ "window-set-icon", "icon-png", "icon-ico", "window-set-always-on-top", "system-tray", "dialog-all", "fs-write-file", "fs-read-file", "fs-read-dir", "fs-create-dir", "fs-remove-file", "fs-remove-dir", "fs-exists", "window-minimize", "window-hide", "http-all", "window-maximize", "window-close", "window-unminimize", "window-unmaximize", "window-start-dragging", "window-show", "shell-open"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

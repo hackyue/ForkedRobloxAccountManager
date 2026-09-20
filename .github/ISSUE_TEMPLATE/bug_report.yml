@@ -1,0 +1,93 @@
+name: 🐛 Bug Report
+description: Report an issue or bug with Forked Roblox Account Manager
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+        **Security Notice:** Never post your `.ROBLOSECURITY` cookies, passwords, or personal credentials in issue reports.
+
+  - type: input
+    id: version
+    attributes:
+      label: FRAM Version
+      description: What version of Forked Roblox Account Manager are you using? (Check settings or release tag)
+      placeholder: "e.g. v3.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_type
+    attributes:
+      label: Installation Method
+      description: How did you install or run FRAM?
+      options:
+        - "Installer (.exe NSIS)"
+        - "Installer (.msi)"
+        - "Built from source / Developer mode"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - "Windows 11"
+        - "Windows 10"
+        - "Other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+      placeholder: "When I click on..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps To Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '....'
+        3. Scroll down to '....'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs_media
+    attributes:
+      label: Logs (.txt) & Screenshots
+      description: |
+        Drag and drop your `.txt` log file here, or paste relevant error/console logs. You can also attach screenshots or recordings.
+      placeholder: Drag and drop your .txt log file or paste logs here...
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have searched for existing issues to ensure this is not a duplicate.
+          required: true
+        - label: I have verified that no sensitive information (passwords, .ROBLOSECURITY cookies) is included in this report.
+          required: true
