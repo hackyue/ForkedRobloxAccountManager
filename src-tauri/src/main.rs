@@ -324,6 +324,35 @@ fn get_backend_status(state: tauri::State<BackendStartStatus>) -> Result<Backend
 }
 
 #[tauri::command]
+async fn relaunch_backend(
+    app_handle: tauri::AppHandle,
+    process_state: tauri::State<'_, BackendProcess>,
+    auth_token_state: tauri::State<'_, AuthToken>,
+    status_state: tauri::State<'_, BackendStartStatus>,
+) -> Result<BackendStatus, String> {
+    shutdown_backend_process(&app_handle);
+    std::thread::sleep(Duration::from_millis(300));
+
+    let app_dir = get_root_app_dir();
+    let (child, backend_status) = start_backend_if_needed(&app_dir);
+
+    if let Ok(mut lock) = process_state.0.lock() {
+        *lock = child;
+    }
+
+    if let Ok(mut lock) = status_state.0.lock() {
+        *lock = backend_status.clone();
+    }
+
+    let new_token = read_auth_token(&app_dir);
+    if let Ok(mut lock) = auth_token_state.0.lock() {
+        *lock = new_token;
+    }
+
+    Ok(backend_status)
+}
+
+#[tauri::command]
 async fn get_api_token(
     state: tauri::State<'_, AuthToken>,
     http_client: tauri::State<'_, HttpClient>,
@@ -570,7 +599,8 @@ fn main() {
             show_window,
             python_backend_request,
             get_api_token,
-            get_backend_status
+            get_backend_status,
+            relaunch_backend
         ])
         .on_window_event(|event| match event.event() {
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {

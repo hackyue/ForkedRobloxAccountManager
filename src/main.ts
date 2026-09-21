@@ -430,7 +430,7 @@ function showLoaderError(reason: string): void {
     const continueBtn = document.getElementById('loader-continue-btn');
 
     if (retryBtn) {
-      retryBtn.onclick = () => {
+      retryBtn.onclick = async () => {
         if (bar) {
           bar.classList.remove('error');
         }
@@ -438,6 +438,18 @@ function showLoaderError(reason: string): void {
           status.classList.remove('error');
         }
         errorContainer.style.display = 'none';
+        updateAppLoaderProgress(15, 'Relaunching backend...');
+        addLog('Attempting to relaunch backend process...', 'info');
+        try {
+          const relaunchRes = await apiService.relaunchBackend();
+          if (relaunchRes && !relaunchRes.started) {
+            addLog('Failed to relaunch backend: ' + relaunchRes.reason, 'error');
+            showLoaderError(relaunchRes.reason);
+            return;
+          }
+        } catch (e: any) {
+          addLog('Backend relaunch error: ' + (e?.message || String(e)), 'warning');
+        }
         loadFromBackend(5, 600);
       };
     }

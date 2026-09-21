@@ -889,6 +889,17 @@ class ApiService {
     return this.request('/health');
   }
 
+  async relaunchBackend(): Promise<{ started: boolean; reason: string }> {
+    this._authToken = null;
+    this._tokenPromise = null;
+    try {
+      const res = await invoke<{ started: boolean; reason: string }>('relaunch_backend');
+      return res;
+    } catch (e: any) {
+      return { started: false, reason: e?.message || String(e) };
+    }
+  }
+
   async getInstallerAvailableVersions(): Promise<{ success: boolean; versions: InstallerVersionEntry[]; error?: string }> {
     return this.request<{ success: boolean; versions: InstallerVersionEntry[]; error?: string }>('/installer/available-versions');
   }
