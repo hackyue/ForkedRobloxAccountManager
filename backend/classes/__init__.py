@@ -5,6 +5,7 @@ from .auto_rejoin import AutoRejoinMonitor
 from .browser_extensions import BrowserExtension, BrowserExtensionError, BrowserExtensionManager
 from .auto_arranger import AutoArranger
 from .headless_manager import HeadlessManager
+from .anti_afk import AntiAfkManager
 
 __all__ = [
     'HardwareEncryption',
@@ -18,5 +19,6 @@ __all__ = [
     'BrowserExtensionManager',
     'AutoArranger',
     'HeadlessManager',
+    'AntiAfkManager',
 ]
 

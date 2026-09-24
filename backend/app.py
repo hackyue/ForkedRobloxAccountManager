@@ -49,9 +49,12 @@ headless_manager.auto_arranger = auto_arranger
 anti_afk_manager = AntiAfkManager(
     settings_getter=lambda: load_data().get('settings', {}),
     accounts_getter=lambda: load_data().get('accounts', []),
-    launch_info_getter=lambda: last_launch_info
+    launch_info_getter=lambda: last_launch_info,
+    headless_manager=headless_manager,
+    log_callback=lambda msg: print(msg),
 )
 anti_afk_manager.start_loop()
+
 extension_manager = BrowserExtensionManager(get_data_folder())
 roblox_swap_manager = RobloxSwapManager(get_data_folder())
 
@@ -434,6 +437,7 @@ def init_auto_rejoin_monitor(manager):
         )
         manager.set_auto_rejoin_monitor(monitor)
         monitor.start()
+        anti_afk_manager.auto_rejoin_monitor = monitor
         return monitor
     except Exception as e:
         print(f"Failed to start AutoRejoinMonitor: {e}")

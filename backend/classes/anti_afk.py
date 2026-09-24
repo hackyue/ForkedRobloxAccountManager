@@ -4,7 +4,7 @@ import time
 import platform
 import threading
 import re
-from typing import Dict, List, Set, Any, Optional, Tuple
+from typing import Dict, List, Set, Any, Optional, Tuple, Callable
 
 try:
     import win32gui
@@ -14,23 +14,35 @@ except ImportError:
     win32gui = win32con = win32process = None
 
 
+ROBLOX_CLIENT_EXECUTABLES: Set[str] = {
+    "robloxplayerbeta.exe",
+    "robloxplayer.exe",
+}
+
+BOOTSTRAPPER_EXECUTABLES: Set[str] = {
+    "robloxplayerlauncher.exe",
+    "bloxstrap.exe",
+    "fishstrap.exe",
+    "voidstrap.exe",
+    "froststrap.exe",
+    "exploitstrap.exe",
+}
+
+ALL_TARGET_EXECUTABLES: Set[str] = ROBLOX_CLIENT_EXECUTABLES | BOOTSTRAPPER_EXECUTABLES
+
+
 class AntiAfkManager:
     """Manages periodic background input injection into active Roblox client windows to prevent idle timeouts."""
 
-    TARGET_EXECUTABLES: Set[str] = {
-        "robloxplayerbeta.exe",
-        "robloxplayer.exe",
-        "robloxplayerlauncher.exe",
-        "bloxstrap.exe",
-        "fishstrap.exe",
-        "voidstrap.exe",
-        "froststrap.exe",
-        "exploitstrap.exe",
-    }
+    TARGET_EXECUTABLES: Set[str] = ALL_TARGET_EXECUTABLES
     DEFAULT_INTERVAL_MINUTES: int = 10
     MIN_INTERVAL_MINUTES: int = 1
     MAX_INTERVAL_MINUTES: int = 19
     DEFAULT_KEY_NAME: str = "M1"
+    LOOP_SLEEP_SECONDS: float = 2.0
+    INPUT_PRESS_DURATION: float = 0.05
+    PID_CACHE_TTL_SECONDS: float = 2.0
+    STAGGER_DELAY_SECONDS: float = 0.08
 
     MOUSE_ALIASES: Dict[str, str] = {
         "m1": "M1",
@@ -69,11 +81,23 @@ class AntiAfkManager:
         "ctrl": "Control",
     }
 
-    def __init__(self, settings_getter=None, accounts_getter=None, launch_info_getter=None):
+    def __init__(
+        self,
+        settings_getter=None,
+        accounts_getter=None,
+        launch_info_getter=None,
+        headless_manager=None,
+        auto_rejoin_monitor=None,
+        log_callback: Optional[Callable[[str], None]] = None,
+    ):
         self.settings_getter = settings_getter
         self.accounts_getter = accounts_getter
         self.launch_info_getter = launch_info_getter
+        self.headless_manager = headless_manager
+        self.auto_rejoin_monitor = auto_rejoin_monitor
+        self.log_callback = log_callback
         self.lock = threading.Lock()
+        self._stop_event = threading.Event()
         self.worker_thread: Optional[threading.Thread] = None
         self.running: bool = False
         self.last_run_ts: Optional[float] = None
@@ -82,6 +106,14 @@ class AntiAfkManager:
         self.in_progress: bool = False
         self._pids_cache: Set[int] = set()
         self._pids_cache_ts: float = 0.0
+        self._suppressed_hwnds: Dict[int, float] = {}
+
+    def _log(self, message: str) -> None:
+        if callable(self.log_callback):
+            try:
+                self.log_callback(message)
+            except Exception:
+                pass
 
     def get_settings(self) -> Dict[str, Any]:
         if callable(self.settings_getter):
@@ -209,13 +241,96 @@ class AntiAfkManager:
 
         return 0x20
 
+    def _is_bootstrapper_window(self, hwnd: int, proc_name: str) -> bool:
+        """Detect bootstrapper/launcher windows that should not receive anti-AFK input."""
+        name_lower = str(proc_name or "").lower()
+        if name_lower in BOOTSTRAPPER_EXECUTABLES:
+            return True
+        for token in ("bloxstrap", "fishstrap", "voidstrap", "froststrap", "exploitstrap", "launcher", "installer", "crashhandler"):
+            if token in name_lower:
+                return True
+        if win32gui:
+            try:
+                title = (win32gui.GetWindowText(hwnd) or "").lower()
+                cls_name = (win32gui.GetClassName(hwnd) or "").lower()
+                for kw in ("bloxstrap", "fishstrap", "voidstrap", "froststrap", "exploitstrap", "launcher", "installer", "crash handler"):
+                    if kw in title or kw in cls_name:
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def _is_session_mid_rejoin(self, pid: int, title: str) -> bool:
+        """Check if the auto-rejoin monitor considers this window's session to be mid-rejoin."""
+        monitor = self.auto_rejoin_monitor
+        if monitor is None:
+            return False
+        try:
+            lock = getattr(monitor, "_lock", None)
+            sessions = getattr(monitor, "active_sessions", None)
+            if lock is None or sessions is None:
+                return False
+            with lock:
+                for _uname, session in sessions.items():
+                    if getattr(session, "rejoin_in_progress", False):
+                        session_pid = int(getattr(session, "pid", 0) or 0)
+                        if session_pid == pid:
+                            return True
+                        session_username = str(getattr(session, "username", "") or "").lower()
+                        if session_username and session_username in str(title or "").lower():
+                            return True
+        except Exception:
+            pass
+        return False
+
+    def _is_process_alive(self, pid: int) -> bool:
+        """Quick check whether a PID still exists."""
+        if pid <= 0:
+            return False
+        try:
+            import psutil
+            return psutil.pid_exists(pid)
+        except Exception:
+            return True
+
+    def suppress_hwnd(self, hwnd: int, duration_seconds: float = 30.0) -> None:
+        """Temporarily suppress anti-AFK input for a specific window handle."""
+        with self.lock:
+            self._suppressed_hwnds[hwnd] = time.time() + duration_seconds
+
+    def unsuppress_hwnd(self, hwnd: int) -> None:
+        """Remove a suppression on a specific window handle."""
+        with self.lock:
+            self._suppressed_hwnds.pop(hwnd, None)
+
+    def _is_hwnd_suppressed(self, hwnd: int) -> bool:
+        """Check if a window handle is temporarily suppressed."""
+        with self.lock:
+            expires_at = self._suppressed_hwnds.get(hwnd)
+            if expires_at is None:
+                return False
+            if time.time() >= expires_at:
+                self._suppressed_hwnds.pop(hwnd, None)
+                return False
+            return True
+
+    def _cleanup_suppressed(self) -> None:
+        """Remove expired suppressions."""
+        now = time.time()
+        with self.lock:
+            expired = [h for h, t in self._suppressed_hwnds.items() if now >= t]
+            for h in expired:
+                self._suppressed_hwnds.pop(h, None)
+
     def get_roblox_windows(self, include_hidden: bool = True) -> List[Tuple[int, int, str]]:
         if platform.system() != "Windows" or not win32gui or not win32process:
             return []
 
         now = time.time()
         pids: Set[int] = set()
-        if (now - self._pids_cache_ts) < 2.0:
+        pid_names: Dict[int, str] = {}
+
+        if (now - self._pids_cache_ts) < self.PID_CACHE_TTL_SECONDS and self._pids_cache:
             pids = set(self._pids_cache)
         else:
             try:
@@ -224,7 +339,9 @@ class AntiAfkManager:
                     try:
                         name = str(proc.info.get('name') or '').lower()
                         if name in self.TARGET_EXECUTABLES:
-                            pids.add(int(proc.info['pid']))
+                            p = int(proc.info['pid'])
+                            pids.add(p)
+                            pid_names[p] = name
                     except Exception:
                         continue
                 self._pids_cache = set(pids)
@@ -235,20 +352,43 @@ class AntiAfkManager:
         if not pids:
             return []
 
+        headless_hidden_hwnds: Set[int] = set()
+        if self.headless_manager is not None:
+            try:
+                hidden = getattr(self.headless_manager, "hidden_hwnds", None)
+                if isinstance(hidden, set):
+                    headless_hidden_hwnds = set(hidden)
+            except Exception:
+                pass
+
         windows: List[Tuple[int, int, str]] = []
 
         def enum_win_cb(hwnd, _):
             if not win32gui.IsWindow(hwnd):
                 return True
             if not include_hidden and not win32gui.IsWindowVisible(hwnd):
-                return True
+                if hwnd not in headless_hidden_hwnds:
+                    return True
             try:
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                if pid in pids:
-                    title = win32gui.GetWindowText(hwnd) or "Roblox"
-                    cls = win32gui.GetClassName(hwnd) or ""
-                    if "Roblox" in title or "Roblox" in cls or "WINDOWSCLIENT" in cls or "ApplicationFrame" in cls or cls == "Win32Window0":
-                        windows.append((hwnd, pid, title))
+                if pid not in pids:
+                    return True
+
+                proc_name = pid_names.get(pid, "")
+                if not proc_name:
+                    try:
+                        import psutil
+                        proc_name = psutil.Process(pid).name().lower()
+                    except Exception:
+                        proc_name = ""
+
+                if proc_name in BOOTSTRAPPER_EXECUTABLES or self._is_bootstrapper_window(hwnd, proc_name):
+                    return True
+
+                title = win32gui.GetWindowText(hwnd) or "Roblox"
+                cls = win32gui.GetClassName(hwnd) or ""
+                if "Roblox" in title or "Roblox" in cls or "WINDOWSCLIENT" in cls or "ApplicationFrame" in cls or cls == "Win32Window0":
+                    windows.append((hwnd, pid, title))
             except Exception:
                 pass
             return True
@@ -287,56 +427,100 @@ class AntiAfkManager:
                 }
                 msg_down, msg_up, wparam = mouse_map[key_name]
                 win32gui.PostMessage(hwnd, msg_down, wparam, lparam)
-                time.sleep(0.05)
+                time.sleep(self.INPUT_PRESS_DURATION)
                 win32gui.PostMessage(hwnd, msg_up, 0, lparam)
                 return True
             else:
                 code = self.get_key_code(key_name)
                 if code > 0:
                     win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYDOWN", 0x0100), code, 0)
-                    time.sleep(0.05)
+                    time.sleep(self.INPUT_PRESS_DURATION)
                     win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYUP", 0x0101), code, 0xC0000001)
                     return True
         except Exception as e:
-            print(f"AntiAFK PostMessage error for hwnd {hwnd}: {e}")
+            self._log(f"AntiAFK PostMessage error for hwnd {hwnd}: {e}")
 
         return False
 
     def trigger_pass(self) -> Dict[str, Any]:
         with self.lock:
+            if self.in_progress:
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "pass_already_in_progress",
+                    "total_windows": 0,
+                    "successful_windows": 0,
+                    "failed_windows": 0,
+                    "key_used": self.get_key_name(),
+                    "timestamp": time.time(),
+                }
             self.in_progress = True
 
         try:
+            self._cleanup_suppressed()
             windows = self.get_roblox_windows()
             key_name = self.get_key_name()
             total = len(windows)
             success = 0
             failed = 0
+            skipped = 0
 
-            for hwnd, pid, title in windows:
+            for i, (hwnd, pid, title) in enumerate(windows):
+                if self._stop_event.is_set():
+                    break
+
                 if not self.is_window_afk_enabled(hwnd, pid, title):
+                    skipped += 1
                     continue
+
+                if self._is_hwnd_suppressed(hwnd):
+                    skipped += 1
+                    continue
+
+                if self._is_session_mid_rejoin(pid, title):
+                    skipped += 1
+                    continue
+
+                if not self._is_process_alive(pid):
+                    skipped += 1
+                    continue
+
+                try:
+                    if not win32gui or not win32gui.IsWindow(hwnd):
+                        skipped += 1
+                        continue
+                except Exception:
+                    skipped += 1
+                    continue
+
                 if self.post_window_input(hwnd, key_name):
                     success += 1
                 else:
                     failed += 1
 
-            now = time.time()
-            self.last_run_ts = now
-            self.last_pass_summary = {
-                "total_windows": total,
-                "successful_windows": success,
-                "failed_windows": failed,
-            }
+                if i < len(windows) - 1:
+                    time.sleep(self.STAGGER_DELAY_SECONDS)
 
-            interval_sec = self.get_interval_minutes() * 60
-            self.next_run_ts = now + interval_sec
+            now = time.time()
+
+            with self.lock:
+                self.last_run_ts = now
+                self.last_pass_summary = {
+                    "total_windows": total,
+                    "successful_windows": success,
+                    "failed_windows": failed,
+                    "skipped_windows": skipped,
+                }
+                interval_sec = self.get_interval_minutes() * 60
+                self.next_run_ts = now + interval_sec
 
             return {
                 "success": True,
                 "total_windows": total,
                 "successful_windows": success,
                 "failed_windows": failed,
+                "skipped_windows": skipped,
                 "key_used": key_name,
                 "timestamp": now,
             }
@@ -345,32 +529,44 @@ class AntiAfkManager:
                 self.in_progress = False
 
     def start_loop(self):
-        if self.running:
-            return
-        self.running = True
-        self.worker_thread = threading.Thread(target=self._loop, daemon=True)
-        self.worker_thread.start()
+        with self.lock:
+            if self.running:
+                return
+            self.running = True
+            self._stop_event.clear()
+            self.worker_thread = threading.Thread(target=self._loop, daemon=True, name="anti-afk-worker")
+            self.worker_thread.start()
 
-    def stop_loop(self):
-        self.running = False
-        self.worker_thread = None
+    def stop_loop(self, timeout: float = 5.0):
+        with self.lock:
+            if not self.running:
+                return
+            self.running = False
+            self._stop_event.set()
+            thread = self.worker_thread
+            self.worker_thread = None
+
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.0, timeout))
 
     def _loop(self):
-        while self.running:
+        while not self._stop_event.is_set():
             try:
                 if self.is_enabled():
                     now = time.time()
-                    interval_sec = self.get_interval_minutes() * 60
-                    if self.next_run_ts is None:
-                        self.next_run_ts = now + interval_sec
+                    with self.lock:
+                        interval_sec = self.get_interval_minutes() * 60
+                        if self.next_run_ts is None:
+                            self.next_run_ts = now + interval_sec
+                        due = now >= self.next_run_ts
 
-                    if now >= self.next_run_ts:
+                    if due:
                         self.trigger_pass()
 
-                time.sleep(2)
+                self._stop_event.wait(self.LOOP_SLEEP_SECONDS)
             except Exception as e:
-                print(f"AntiAFK worker error: {e}")
-                time.sleep(5)
+                self._log(f"AntiAFK worker error: {e}")
+                self._stop_event.wait(5.0)
 
     def get_status(self) -> Dict[str, Any]:
         windows = self.get_roblox_windows()
@@ -379,9 +575,22 @@ class AntiAfkManager:
         enabled = self.is_enabled()
         now = time.time()
 
+        with self.lock:
+            last_run = self.last_run_ts
+            next_run = self.next_run_ts
+            summary = dict(self.last_pass_summary) if self.last_pass_summary else None
+            currently_in_progress = self.in_progress
+
         remaining_sec = 0
-        if enabled and self.next_run_ts:
-            remaining_sec = max(0, int(self.next_run_ts - now))
+        if enabled and next_run:
+            remaining_sec = max(0, int(next_run - now))
+
+        headless_active = False
+        if self.headless_manager is not None:
+            try:
+                headless_active = bool(getattr(self.headless_manager, "watchdog_running", False))
+            except Exception:
+                pass
 
         return {
             "success": True,
@@ -390,9 +599,10 @@ class AntiAfkManager:
             "key_name": key_name,
             "key_code": self.get_key_code(key_name),
             "roblox_instance_count": len(windows),
-            "last_run_ts": self.last_run_ts,
-            "next_run_ts": self.next_run_ts,
+            "last_run_ts": last_run,
+            "next_run_ts": next_run,
             "seconds_until_next_run": remaining_sec,
-            "last_pass_summary": self.last_pass_summary,
-            "in_progress": self.in_progress,
+            "last_pass_summary": summary,
+            "in_progress": currently_in_progress,
+            "headless_mode_active": headless_active,
         }
