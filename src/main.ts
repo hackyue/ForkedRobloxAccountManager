@@ -10748,6 +10748,8 @@ function applyAllSettingsLayout(): void {
 }
 
 let lastRenderedView: string = 'accounts';
+let instancesAutoRefreshTimer: any = null;
+let consoleLogsAutoRefreshTimer: any = null;
 
 function renderAll(): void {
   if (showSetup) {
@@ -10865,15 +10867,16 @@ function renderAll(): void {
     btnBloxgen.classList.toggle('active', state.view === 'bloxgen');
   }
 
+  if (state.view !== 'instances' && instancesAutoRefreshTimer) {
+    clearInterval(instancesAutoRefreshTimer);
+    instancesAutoRefreshTimer = null;
+  }
+  if (state.view !== 'console' && consoleLogsAutoRefreshTimer) {
+    clearInterval(consoleLogsAutoRefreshTimer);
+    consoleLogsAutoRefreshTimer = null;
+  }
+
   if (state.view === 'accounts') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
     renderStats();
     renderGroupFilter();
     renderTable();
@@ -10884,49 +10887,21 @@ function renderAll(): void {
   }
 
   if (state.view === 'webhooks') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
     fetchWebhookConfig();
     return;
   }
 
   if (state.view === 'extensions') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
     renderExtensionsView();
     return;
   }
 
   if (state.view === 'bloxgen') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
     renderBloxgenView();
     return;
   }
 
   if (state.view === 'console') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
     fetchBackendLogs().then(() => renderConsoleView());
     if (!consoleLogsAutoRefreshTimer) {
       consoleLogsAutoRefreshTimer = setInterval(() => {
@@ -10937,66 +10912,29 @@ function renderAll(): void {
       }, 3000);
     }
     return;
-  } else {
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
   }
 
   if (state.view === 'fastflags') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
     renderFastFlagsView();
     return;
   }
 
   if (state.view === 'clientsettings') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
     renderClientSettingsView();
     return;
   }
 
   if (state.view === 'about') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
-    if (consoleLogsAutoRefreshTimer) {
-      clearInterval(consoleLogsAutoRefreshTimer);
-      consoleLogsAutoRefreshTimer = null;
-    }
     renderAboutView();
     return;
   }
 
   if (state.view === 'settings') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
     renderSettingsView();
     return;
   }
 
   if (state.view === 'vip') {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
     renderVipView();
     return;
   }
@@ -11013,11 +10951,6 @@ function renderAll(): void {
       }, 3500);
     }
     return;
-  } else {
-    if (instancesAutoRefreshTimer) {
-      clearInterval(instancesAutoRefreshTimer);
-      instancesAutoRefreshTimer = null;
-    }
   }
 }
 
@@ -11715,8 +11648,6 @@ async function exportVipCsv(): Promise<void> {
 }
 
 
-let instancesAutoRefreshTimer: any = null;
-let consoleLogsAutoRefreshTimer: any = null;
 let lastInstancesDataJson: string = '';
 
 async function renderInstancesView(forceRedraw: boolean = false): Promise<void> {
@@ -14311,7 +14242,7 @@ function renderFastFlagsMaintenanceTab(contentArea: HTMLElement): void {
   });
 }
 
-let currentAboutTab: 'overview' | 'whatsnew' | 'license' = 'overview';
+let currentAboutTab: 'overview' | 'whatsnew' = 'overview';
 let cachedGithubReleases: any[] | null = null;
 let isFetchingGithubReleases = false;
 let githubReleasesError: string | null = null;
@@ -14421,7 +14352,6 @@ function renderAboutView(): void {
 
   const tabBtnOverview = document.getElementById('btn-about-tab-overview');
   const tabBtnWhatsnew = document.getElementById('btn-about-tab-whatsnew');
-  const tabBtnLicense = document.getElementById('btn-about-tab-license');
   const backBtn = document.getElementById('btn-about-back');
 
   if (backBtn && !backBtn.dataset.initialized) {
@@ -14454,17 +14384,6 @@ function renderAboutView(): void {
         if (!cachedGithubReleases && !isFetchingGithubReleases) {
           loadGithubReleases();
         }
-      });
-    }
-  }
-
-  if (tabBtnLicense) {
-    tabBtnLicense.className = 'btn btn-sm ' + (currentAboutTab === 'license' ? 'btn-primary' : 'btn-secondary');
-    if (!tabBtnLicense.dataset.initialized) {
-      tabBtnLicense.dataset.initialized = 'true';
-      tabBtnLicense.addEventListener('click', () => {
-        currentAboutTab = 'license';
-        renderAboutView();
       });
     }
   }
@@ -14505,13 +14424,6 @@ function renderAboutView(): void {
           <div class="about-spec-info">
             <span class="about-spec-val">Version 3.0.0</span>
             <span style="font-size:12px; color:var(--muted); margin-top:2px;">Click to view What's New changelogs &rarr;</span>
-          </div>
-        </div>
-
-        <div class="about-spec-card" id="btn-about-card-license" style="cursor:pointer;" title="View License Terms">
-          <div class="about-spec-info">
-            <span class="about-spec-val">GNU General Public License v3.0</span>
-            <span style="font-size:12px; color:var(--muted); margin-top:2px;">Click to view full license terms &rarr;</span>
           </div>
         </div>
       </div>
@@ -14624,11 +14536,6 @@ function renderAboutView(): void {
       if (!cachedGithubReleases && !isFetchingGithubReleases) {
         loadGithubReleases();
       }
-    });
-
-    document.getElementById('btn-about-card-license')?.addEventListener('click', () => {
-      currentAboutTab = 'license';
-      renderAboutView();
     });
   } else if (currentAboutTab === 'whatsnew') {
     if (isFetchingGithubReleases && !cachedGithubReleases) {
@@ -14796,60 +14703,6 @@ function isPackageSupportedRelease(tagOrName: string): boolean {
         </div>
       `;
     }
-  } else if (currentAboutTab === 'license') {
-    container.innerHTML = `
-      <div class="about-license-container">
-        <div class="about-license-card">
-          <h3 style="font-size:16px; font-weight:700; color:var(--text-bright); margin:0 0 8px 0;">GNU General Public License v3.0</h3>
-          <p class="about-license-text">
-            Forked Roblox Account Manager is free and open-source software licensed under the GNU General Public License v3.0 (GPL-3.0).
-            You have the freedom to run, study, share, and modify the software.
-          </p>
-          <div class="about-license-pre">
-Forked Roblox Account Manager (FRAM)
-Copyright (C) 2026 hackyue
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU General Public License for more details.
-          </div>
-          <div style="margin-top:16px;">
-            <a href="https://github.com/hackyue/ForkedRobloxAccountManager/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" class="about-link-chip" style="display:inline-flex;">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
-              <span>View Full LICENSE File on GitHub</span>
-            </a>
-          </div>
-        </div>
-
-        <div class="about-license-card">
-          <h3 style="font-size:15px; font-weight:700; color:var(--text-bright); margin:0 0 12px 0;">Third-Party Open Source Software</h3>
-          <div style="display:grid; grid-template-columns:repeat(2, 1fr); gap:12px;">
-            <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-size:13px; font-weight:600; color:var(--fg);">Tauri Framework</span>
-              <span style="font-size:11.5px; color:var(--muted); font-family:monospace;">MIT / Apache-2.0</span>
-            </div>
-            <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-size:13px; font-weight:600; color:var(--fg);">Vite & TypeScript</span>
-              <span style="font-size:11.5px; color:var(--muted); font-family:monospace;">MIT License</span>
-            </div>
-            <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-size:13px; font-weight:600; color:var(--fg);">Lucide Icons</span>
-              <span style="font-size:11.5px; color:var(--muted); font-family:monospace;">ISC License</span>
-            </div>
-            <div style="background:var(--bg-2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-size:13px; font-weight:600; color:var(--fg);">IBM Plex Mono & Inter</span>
-              <span style="font-size:11.5px; color:var(--muted); font-family:monospace;">SIL OFL 1.1</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
   }
 }
 
@@ -17830,7 +17683,7 @@ function initApp(): void {
                   <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Webhook Connection</h3>
                   <label class="toggle-switch" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
                     <input type="checkbox" id="webhook-enable-toggle">
-                    <span style="font-size:13px; font-weight:600;" id="webhook-status-label">Disabled</span>
+                    <span style="font-size:13px; font-weight:600; color:var(--muted);" id="webhook-status-label">Disabled</span>
                   </label>
                 </div>
 
@@ -17898,7 +17751,7 @@ function initApp(): void {
                   <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Monitor Screenshots</h3>
                   <label class="toggle-switch" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
                     <input type="checkbox" id="webhook-screenshot-enable-toggle">
-                    <span style="font-size:13px; font-weight:600;" id="webhook-screenshot-status-label">Disabled</span>
+                    <span style="font-size:13px; font-weight:600; color:var(--muted);" id="webhook-screenshot-status-label">Disabled</span>
                   </label>
                 </div>
 
@@ -17931,7 +17784,7 @@ function initApp(): void {
                   <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Roblox Instance Reports</h3>
                   <label class="toggle-switch" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
                     <input type="checkbox" id="webhook-instance-summary-toggle">
-                    <span style="font-size:13px; font-weight:600;" id="webhook-instance-status-label">Disabled</span>
+                    <span style="font-size:13px; font-weight:600; color:var(--muted);" id="webhook-instance-status-label">Disabled</span>
                   </label>
                 </div>
 
@@ -18067,7 +17920,6 @@ function initApp(): void {
             <div class="about-header-actions" style="display:flex; gap:8px; align-items:center;">
               <button class="btn btn-secondary btn-sm" id="btn-about-tab-overview">Overview</button>
               <button class="btn btn-secondary btn-sm" id="btn-about-tab-whatsnew">What's New</button>
-              <button class="btn btn-secondary btn-sm" id="btn-about-tab-license">License</button>
               <button class="btn btn-secondary btn-sm" id="btn-about-back" title="Back to Accounts" style="margin-left:6px;">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:12px; height:12px; margin-right:4px;"><polyline points="15 18 9 12 15 6"/></svg>
                 Back
@@ -18873,7 +18725,6 @@ function initApp(): void {
   if (webhookScreenshotToggle && webhookScreenshotStatusLabel) {
     webhookScreenshotToggle.addEventListener('change', () => {
       webhookScreenshotStatusLabel.textContent = webhookScreenshotToggle.checked ? 'Enabled' : 'Disabled';
-      webhookScreenshotStatusLabel.style.background = webhookScreenshotToggle.checked ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)';
       webhookScreenshotStatusLabel.style.color = webhookScreenshotToggle.checked ? 'var(--green)' : 'var(--muted)';
     });
   }
@@ -18883,7 +18734,6 @@ function initApp(): void {
   if (webhookEnableToggle && webhookStatusLabel) {
     webhookEnableToggle.addEventListener('change', () => {
       webhookStatusLabel.textContent = webhookEnableToggle.checked ? 'Enabled' : 'Disabled';
-      webhookStatusLabel.style.background = webhookEnableToggle.checked ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)';
       webhookStatusLabel.style.color = webhookEnableToggle.checked ? 'var(--green)' : 'var(--muted)';
     });
   }
@@ -18893,7 +18743,6 @@ function initApp(): void {
   if (webhookInstanceToggle && webhookInstanceStatusLabel) {
     webhookInstanceToggle.addEventListener('change', () => {
       webhookInstanceStatusLabel.textContent = webhookInstanceToggle.checked ? 'Enabled' : 'Disabled';
-      webhookInstanceStatusLabel.style.background = webhookInstanceToggle.checked ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)';
       webhookInstanceStatusLabel.style.color = webhookInstanceToggle.checked ? 'var(--green)' : 'var(--muted)';
     });
   }
@@ -19514,7 +19363,6 @@ async function fetchWebhookConfig() {
       if (screenshotAllMonitorsToggle) screenshotAllMonitorsToggle.checked = Boolean(cfg.screenshot_all_monitors);
       if (screenshotStatusLabel) {
         screenshotStatusLabel.textContent = cfg.screenshot_enabled ? 'Enabled' : 'Disabled';
-        screenshotStatusLabel.style.background = cfg.screenshot_enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)';
         screenshotStatusLabel.style.color = cfg.screenshot_enabled ? 'var(--green)' : 'var(--muted)';
       }
       if (instanceSummaryToggle) instanceSummaryToggle.checked = Boolean(cfg.instance_summary_enabled);
@@ -19525,7 +19373,6 @@ async function fetchWebhookConfig() {
       }
       if (statusLabel) {
         statusLabel.textContent = cfg.enabled ? 'Enabled' : 'Disabled';
-        statusLabel.style.background = cfg.enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)';
         statusLabel.style.color = cfg.enabled ? 'var(--green)' : 'var(--muted)';
       }
 

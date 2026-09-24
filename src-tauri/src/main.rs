@@ -5,6 +5,7 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::{CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem};
@@ -484,7 +485,13 @@ async fn python_backend_request(
     }
 }
 
+static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
+
 fn shutdown_backend_process(app_handle: &tauri::AppHandle) {
+    if SHUTDOWN_CALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
     let token = {
         if let Some(token_state) = app_handle.try_state::<AuthToken>() {
             if let Ok(lock) = token_state.0.lock() {
@@ -553,6 +560,7 @@ fn main() {
     let http_client = reqwest::Client::builder()
         .tcp_nodelay(true)
         .pool_idle_timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 

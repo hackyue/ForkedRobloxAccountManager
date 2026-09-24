@@ -396,12 +396,11 @@ class ApiService {
         }
       } catch (_) { }
 
+      this._tokenPromise = null;
       return '';
     })();
 
-    const result = await this._tokenPromise;
-    this._tokenPromise = null;
-    return result;
+    return this._tokenPromise;
   }
 
   private async request<T>(

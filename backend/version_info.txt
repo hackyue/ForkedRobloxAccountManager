@@ -19,7 +19,7 @@ VSVersionInfo(
             StringStruct('FileDescription', 'FRAM Backend Service'),
             StringStruct('FileVersion', '3.0.0.0'),
             StringStruct('InternalName', 'backend.exe'),
-            StringStruct('LegalCopyright', 'Copyright (C) 2026 hackyue'),
+            StringStruct('LegalCopyright', ' Copyright (C) 2007 Free Software Foundation, Inc'),
             StringStruct('OriginalFilename', 'backend.exe'),
             StringStruct('ProductName', 'FRAM'),
             StringStruct('ProductVersion', '3.0.0.0')

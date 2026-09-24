@@ -688,7 +688,46 @@ def load_data(force_reload: bool = False) -> Dict[str, Any]:
 
     return _clone_data_fast(data)
 
-_SAVE_DATA_LOCK = threading.Lock()
+_SAVE_DATA_LOCK = threading.RLock()
+
+
+class _DataTransaction:
+    """Context manager for atomic read-modify-write operations on app data.
+    
+    Acquires _SAVE_DATA_LOCK on entry, loads fresh data, and provides save()
+    to persist changes before releasing the lock. This prevents concurrent
+    requests from overwriting each other's mutations.
+    
+    Usage:
+        with data_transaction() as txn:
+            txn.data['accounts'].append(new_account)
+            txn.save()
+            return jsonify(new_account)
+    """
+
+    def __init__(self):
+        self.data: Optional[Dict[str, Any]] = None
+        self._saved = False
+
+    def __enter__(self):
+        _SAVE_DATA_LOCK.acquire()
+        self.data = load_data(force_reload=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _SAVE_DATA_LOCK.release()
+        return False
+
+    def save(self):
+        if self.data is not None:
+            save_data(self.data)
+            self._saved = True
+
+
+def data_transaction() -> _DataTransaction:
+    """Create a transaction for atomic read-modify-write on app data."""
+    return _DataTransaction()
+
 
 def _atomic_json_write(target_path: str, data_obj: Any):
     tmp_path = f"{target_path}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.tmp"
@@ -851,11 +890,7 @@ def get_accounts():
 
 @app.route('/api/accounts', methods=['POST'])
 def create_account():
-    data = load_data()
     account_data = request.json or {}
-
-    max_id = max([acc.get('id', 0) for acc in data['accounts']] + [0])
-    account_data['id'] = max_id + 1
 
     cookie = account_data.get('cookie', '')
     if cookie:
@@ -884,8 +919,11 @@ def create_account():
     if 'cookie' not in account_data:
         account_data['cookie'] = ''
 
-    data['accounts'].append(account_data)
-    save_data(data)
+    with data_transaction() as txn:
+        max_id = max([acc.get('id', 0) for acc in txn.data['accounts']] + [0])
+        account_data['id'] = max_id + 1
+        txn.data['accounts'].append(account_data)
+        txn.save()
     return jsonify(account_data), 201
 
 @app.route('/api/accounts/bulk-import-cookies', methods=['POST'])
@@ -898,10 +936,6 @@ def bulk_import_cookies():
 
         if not isinstance(items, list) or len(items) == 0:
             return jsonify({'success': False, 'error': 'No accounts or cookies provided'}), 400
-
-        data = load_data()
-        existing_accounts = data.get('accounts', [])
-        max_id = max([acc.get('id', 0) for acc in existing_accounts] + [0])
 
         imported_accounts = []
         errors = []
@@ -953,30 +987,35 @@ def bulk_import_cookies():
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             results = list(executor.map(process_item, items))
 
-        for acc_record, err in results:
-            if acc_record:
-                max_id += 1
-                acc_record['id'] = max_id
+        with data_transaction() as txn:
+            data = txn.data
+            existing_accounts = data.get('accounts', [])
+            max_id = max([acc.get('id', 0) for acc in existing_accounts] + [0])
 
-                norm_cookie = RobloxAPI._normalize_roblosecurity_cookie(acc_record['cookie'])
-                existing_idx = -1
-                for idx, existing in enumerate(data['accounts']):
-                    ex_cookie = RobloxAPI._normalize_roblosecurity_cookie(existing.get('cookie', ''))
-                    if (ex_cookie and norm_cookie and ex_cookie == norm_cookie) or (acc_record['username'] and existing.get('username') == acc_record['username']):
-                        existing_idx = idx
-                        break
+            for acc_record, err in results:
+                if acc_record:
+                    max_id += 1
+                    acc_record['id'] = max_id
 
-                if existing_idx >= 0:
-                    acc_record['id'] = data['accounts'][existing_idx]['id']
-                    data['accounts'][existing_idx] = acc_record
-                else:
-                    data['accounts'].append(acc_record)
+                    norm_cookie = RobloxAPI._normalize_roblosecurity_cookie(acc_record['cookie'])
+                    existing_idx = -1
+                    for idx, existing in enumerate(data['accounts']):
+                        ex_cookie = RobloxAPI._normalize_roblosecurity_cookie(existing.get('cookie', ''))
+                        if (ex_cookie and norm_cookie and ex_cookie == norm_cookie) or (acc_record['username'] and existing.get('username') == acc_record['username']):
+                            existing_idx = idx
+                            break
 
-                imported_accounts.append(acc_record)
-            elif err:
-                errors.append(err)
+                    if existing_idx >= 0:
+                        acc_record['id'] = data['accounts'][existing_idx]['id']
+                        data['accounts'][existing_idx] = acc_record
+                    else:
+                        data['accounts'].append(acc_record)
 
-        save_data(data)
+                    imported_accounts.append(acc_record)
+                elif err:
+                    errors.append(err)
+
+            txn.save()
 
         return jsonify({
             'success': True,
@@ -998,65 +1037,66 @@ def get_account(account_id):
 
 @app.route('/api/accounts/<int:account_id>', methods=['PUT'])
 def update_account(account_id):
-    data = load_data()
-    account = next((acc for acc in data['accounts'] if acc['id'] == account_id), None)
-
-    if not account:
-        return jsonify({'error': 'Account not found'}), 404
-
     update_data = request.json or {}
     allowed_fields = {'username', 'display_name', 'avatar_url', 'cookie', 'password',
                       'note', 'group', 'vip_server', 'vip_place_id', 'vip_game_name',
                       'auto_rejoin_enabled', 'user_id', 'status', 'added_date'}
-    for key, value in update_data.items():
-        if key in allowed_fields:
-            account[key] = value
 
+    cookie_info = None
     if 'cookie' in update_data:
-        account['cookie'] = RobloxAPI._normalize_roblosecurity_cookie(account.get('cookie', ''))
-        status, found_uid, found_user, found_display, avatar_url = RobloxAPI.get_account_status_and_info(
-            cookie=account.get('cookie', ''),
-            username=account.get('username', ''),
-            user_id=account.get('user_id', ''),
-            existing_status=account.get('status', 'valid')
+        raw_cookie = RobloxAPI._normalize_roblosecurity_cookie(update_data.get('cookie', ''))
+        cookie_info = RobloxAPI.get_account_status_and_info(
+            cookie=raw_cookie,
+            username=update_data.get('username', ''),
+            user_id=update_data.get('user_id', ''),
+            existing_status=update_data.get('status', 'valid')
         )
-        account['status'] = status
-        if found_uid: account['user_id'] = found_uid
-        if found_user and found_user != 'Unknown': account['username'] = found_user
-        if found_display: account['display_name'] = found_display
-        if avatar_url: account['avatar_url'] = avatar_url
 
-    save_data(data)
+    with data_transaction() as txn:
+        account = next((acc for acc in txn.data['accounts'] if acc['id'] == account_id), None)
+        if not account:
+            return jsonify({'error': 'Account not found'}), 404
+
+        for key, value in update_data.items():
+            if key in allowed_fields:
+                account[key] = value
+
+        if cookie_info is not None:
+            account['cookie'] = RobloxAPI._normalize_roblosecurity_cookie(account.get('cookie', ''))
+            status, found_uid, found_user, found_display, avatar_url = cookie_info
+            account['status'] = status
+            if found_uid: account['user_id'] = found_uid
+            if found_user and found_user != 'Unknown': account['username'] = found_user
+            if found_display: account['display_name'] = found_display
+            if avatar_url: account['avatar_url'] = avatar_url
+
+        txn.save()
     return jsonify(account)
 
 @app.route('/api/accounts/<int:account_id>', methods=['DELETE'])
 def delete_account(account_id):
-    data = load_data()
-    account = next((acc for acc in data['accounts'] if acc['id'] == account_id), None)
-    
-    if not account:
-        return jsonify({'error': 'Account not found'}), 404
-    
-    data['accounts'].remove(account)
-    save_data(data)
+    with data_transaction() as txn:
+        account = next((acc for acc in txn.data['accounts'] if acc['id'] == account_id), None)
+        if not account:
+            return jsonify({'error': 'Account not found'}), 404
+        txn.data['accounts'].remove(account)
+        txn.save()
     return jsonify({'message': 'Account deleted'})
 
 @app.route('/api/accounts/bulk-delete', methods=['POST'])
 def bulk_delete_accounts():
-    data = load_data()
     req_data = request.json or {}
     account_ids = req_data.get('ids', [])
     if not isinstance(account_ids, list):
         return jsonify({'error': 'ids must be a list'}), 400
-    
-    data['accounts'] = [acc for acc in data['accounts'] if acc['id'] not in account_ids]
-    save_data(data)
+    with data_transaction() as txn:
+        txn.data['accounts'] = [acc for acc in txn.data['accounts'] if acc['id'] not in account_ids]
+        txn.save()
     return jsonify({'message': f'Deleted {len(account_ids)} accounts'})
 
 @app.route('/api/accounts/reorder', methods=['POST'])
 def reorder_accounts():
     try:
-        data = load_data()
         req_data = request.json or {}
         ordered_ids = req_data.get('ids')
         ordered_usernames = req_data.get('usernames')
@@ -1064,32 +1104,33 @@ def reorder_accounts():
         if not ordered_ids and not ordered_usernames:
             return jsonify({'error': 'ids or usernames required'}), 400
 
-        acc_map_by_id = {acc['id']: acc for acc in data.get('accounts', [])}
-        acc_map_by_uname = {acc['username']: acc for acc in data.get('accounts', [])}
+        with data_transaction() as txn:
+            acc_map_by_id = {acc['id']: acc for acc in txn.data.get('accounts', [])}
+            acc_map_by_uname = {acc['username']: acc for acc in txn.data.get('accounts', [])}
 
-        new_accounts = []
-        seen_ids = set()
+            new_accounts = []
+            seen_ids = set()
 
-        if ordered_ids:
-            for aid in ordered_ids:
-                if aid in acc_map_by_id and aid not in seen_ids:
-                    new_accounts.append(acc_map_by_id[aid])
-                    seen_ids.add(aid)
-        elif ordered_usernames:
-            for uname in ordered_usernames:
-                if uname in acc_map_by_uname:
-                    acc = acc_map_by_uname[uname]
-                    if acc['id'] not in seen_ids:
-                        new_accounts.append(acc)
-                        seen_ids.add(acc['id'])
+            if ordered_ids:
+                for aid in ordered_ids:
+                    if aid in acc_map_by_id and aid not in seen_ids:
+                        new_accounts.append(acc_map_by_id[aid])
+                        seen_ids.add(aid)
+            elif ordered_usernames:
+                for uname in ordered_usernames:
+                    if uname in acc_map_by_uname:
+                        acc = acc_map_by_uname[uname]
+                        if acc['id'] not in seen_ids:
+                            new_accounts.append(acc)
+                            seen_ids.add(acc['id'])
 
-        for acc in data.get('accounts', []):
-            if acc['id'] not in seen_ids:
-                new_accounts.append(acc)
-                seen_ids.add(acc['id'])
+            for acc in txn.data.get('accounts', []):
+                if acc['id'] not in seen_ids:
+                    new_accounts.append(acc)
+                    seen_ids.add(acc['id'])
 
-        data['accounts'] = new_accounts
-        save_data(data)
+            txn.data['accounts'] = new_accounts
+            txn.save()
 
         try:
             manager = get_account_manager()
@@ -1098,32 +1139,33 @@ def reorder_accounts():
         except Exception:
             pass
 
-        return jsonify({'success': True, 'accounts': data['accounts']})
+        return jsonify({'success': True, 'accounts': new_accounts})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/accounts/bulk-vip', methods=['POST'])
 def bulk_vip_accounts():
-    data = load_data()
     req_data = request.json or {}
     mapping = req_data.get('mapping', {})
     changed = 0
-    for acc in data['accounts']:
-        uname = acc.get('username', '')
-        acc_id = str(acc.get('id', ''))
-        val = mapping.get(uname) if uname in mapping else mapping.get(acc_id)
-        if val is not None:
-            if isinstance(val, dict):
-                acc['vip_server'] = str(val.get('vip_server', '') or '')
-                if 'vip_place_id' in val:
-                    acc['vip_place_id'] = str(val.get('vip_place_id', '') or '')
-                if 'vip_game_name' in val:
-                    acc['vip_game_name'] = str(val.get('vip_game_name', '') or '')
-            else:
-                acc['vip_server'] = str(val)
-            changed += 1
-    if changed > 0:
-        save_data(data)
+    with data_transaction() as txn:
+        data = txn.data
+        for acc in data.get('accounts', []):
+            uname = acc.get('username', '')
+            acc_id = str(acc.get('id', ''))
+            val = mapping.get(uname) if uname in mapping else mapping.get(acc_id)
+            if val is not None:
+                if isinstance(val, dict):
+                    acc['vip_server'] = str(val.get('vip_server', '') or '')
+                    if 'vip_place_id' in val:
+                        acc['vip_place_id'] = str(val.get('vip_place_id', '') or '')
+                    if 'vip_game_name' in val:
+                        acc['vip_game_name'] = str(val.get('vip_game_name', '') or '')
+                else:
+                    acc['vip_server'] = str(val)
+                changed += 1
+        if changed > 0:
+            txn.save()
     return jsonify({'success': True, 'changed': changed})
 
 @app.route('/api/accounts/launch', methods=['POST'])
@@ -1509,24 +1551,29 @@ def validate_all_accounts():
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             results = list(executor.map(validate_single, accounts))
 
-        for acc, (status, found_uid, found_user, found_display, avatar_url) in zip(accounts, results):
-            acc['status'] = status
-            if found_uid:
-                acc['user_id'] = found_uid
-            if found_user and found_user != 'Unknown':
-                acc['username'] = found_user
-            if found_display:
-                acc['display_name'] = found_display
-            if avatar_url:
-                acc['avatar_url'] = avatar_url
+        with data_transaction() as txn:
+            data = txn.data
+            accounts_by_id = {acc.get('id'): acc for acc in data.get('accounts', []) if isinstance(acc, dict) and acc.get('id')}
+            for acc, (status, found_uid, found_user, found_display, avatar_url) in zip(accounts, results):
+                target = accounts_by_id.get(acc.get('id'))
+                if target:
+                    target['status'] = status
+                    if found_uid:
+                        target['user_id'] = found_uid
+                    if found_user and found_user != 'Unknown':
+                        target['username'] = found_user
+                    if found_display:
+                        target['display_name'] = found_display
+                    if avatar_url:
+                        target['avatar_url'] = avatar_url
 
-            if status in summary:
-                summary[status] += 1
-            else:
-                summary['expired'] += 1
+                if status in summary:
+                    summary[status] += 1
+                else:
+                    summary['expired'] += 1
 
-        save_data(data)
-        return jsonify({'accounts': data['accounts'], 'summary': summary})
+            txn.save()
+            return jsonify({'accounts': data['accounts'], 'summary': summary})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1572,18 +1619,23 @@ def validate_single_account(account_id):
             existing_status=existing_status
         )
 
-        account['status'] = status
-        if found_uid:
-            account['user_id'] = found_uid
-        if found_user and found_user != 'Unknown':
-            account['username'] = found_user
-        if found_display:
-            account['display_name'] = found_display
-        if avatar_url:
-            account['avatar_url'] = avatar_url
+        with data_transaction() as txn:
+            target = next((acc for acc in txn.data.get('accounts', []) if acc.get('id') == account_id), None)
+            if not target:
+                return jsonify({'error': 'Account not found'}), 404
 
-        save_data(data)
-        return jsonify({'account': account, 'status': status, 'valid': status == 'valid'})
+            target['status'] = status
+            if found_uid:
+                target['user_id'] = found_uid
+            if found_user and found_user != 'Unknown':
+                target['username'] = found_user
+            if found_display:
+                target['display_name'] = found_display
+            if avatar_url:
+                target['avatar_url'] = avatar_url
+
+            txn.save()
+            return jsonify({'account': target, 'status': status, 'valid': status == 'valid'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1594,37 +1646,42 @@ def get_games():
 
 @app.route('/api/games', methods=['POST'])
 def create_game():
-    data = load_data()
     game_data = request.json
     if not game_data or not isinstance(game_data, dict):
         return jsonify({'error': 'Invalid game data'}), 400
-    
-    max_id = 0
-    for game in data['games']:
-        game_id = game.get('id', '')
-        if isinstance(game_id, str) and game_id.startswith('g'):
-            try:
-                num_id = int(game_id[1:])
-                max_id = max(max_id, num_id)
-            except ValueError:
-                pass
-    
-    game_data['id'] = f'g{max_id + 1}'
-    
-    data['games'].append(game_data)
-    save_data(data)
+
+    with data_transaction() as txn:
+        data = txn.data
+        if 'games' not in data or not isinstance(data['games'], list):
+            data['games'] = []
+
+        max_id = 0
+        for game in data['games']:
+            game_id = game.get('id', '')
+            if isinstance(game_id, str) and game_id.startswith('g'):
+                try:
+                    num_id = int(game_id[1:])
+                    max_id = max(max_id, num_id)
+                except ValueError:
+                    pass
+
+        game_data['id'] = f'g{max_id + 1}'
+        data['games'].append(game_data)
+        txn.save()
+
     return jsonify(game_data), 201
 
 @app.route('/api/games/<string:game_id>', methods=['DELETE'])
 def delete_game(game_id):
-    data = load_data()
-    game = next((g for g in data['games'] if g['id'] == game_id), None)
-    
-    if not game:
-        return jsonify({'error': 'Game not found'}), 404
-    
-    data['games'].remove(game)
-    save_data(data)
+    with data_transaction() as txn:
+        data = txn.data
+        games = data.get('games', [])
+        game = next((g for g in games if g.get('id') == game_id), None)
+        if not game:
+            return jsonify({'error': 'Game not found'}), 404
+        games.remove(game)
+        txn.save()
+
     return jsonify({'message': 'Game deleted'})
 
 @app.route('/api/saved-users', methods=['GET'])
@@ -1634,15 +1691,14 @@ def get_saved_users():
 
 @app.route('/api/saved-users', methods=['POST'])
 def create_saved_user():
-    data = load_data()
     user_data = request.json or {}
     if not isinstance(user_data, dict):
         return jsonify({'error': 'Invalid user data'}), 400
-    
+
     username = str(user_data.get('username', '') or '').strip().lstrip('@')
     if not username:
         return jsonify({'error': 'Username is required'}), 400
-    
+
     user_id = str(user_data.get('user_id', '') or user_data.get('userId', '') or '').strip()
     display_name = str(user_data.get('display_name', '') or user_data.get('displayName', '') or '').strip()
     icon_url = str(user_data.get('icon_url', '') or user_data.get('avatar_url', '') or '').strip()
@@ -1664,40 +1720,44 @@ def create_saved_user():
         except Exception as e:
             print(f"Error fetching roblox info for saved user: {e}")
 
-    max_num = 0
-    for u in data.get('saved_users', []):
-        uid_str = str(u.get('id', ''))
-        if uid_str.startswith('u'):
-            try:
-                max_num = max(max_num, int(uid_str[1:]))
-            except ValueError:
-                pass
+    with data_transaction() as txn:
+        data = txn.data
+        if 'saved_users' not in data or not isinstance(data['saved_users'], list):
+            data['saved_users'] = []
 
-    record = {
-        'id': f'u{max_num + 1}',
-        'username': username,
-        'display_name': display_name or username,
-        'user_id': user_id,
-        'icon_url': icon_url
-    }
+        max_num = 0
+        for u in data['saved_users']:
+            uid_str = str(u.get('id', ''))
+            if uid_str.startswith('u'):
+                try:
+                    max_num = max(max_num, int(uid_str[1:]))
+                except ValueError:
+                    pass
 
-    if 'saved_users' not in data:
-        data['saved_users'] = []
+        record = {
+            'id': f'u{max_num + 1}',
+            'username': username,
+            'display_name': display_name or username,
+            'user_id': user_id,
+            'icon_url': icon_url
+        }
 
-    data['saved_users'].append(record)
-    save_data(data)
+        data['saved_users'].append(record)
+        txn.save()
+
     return jsonify(record), 201
 
 @app.route('/api/saved-users/<string:user_id>', methods=['DELETE'])
 def delete_saved_user(user_id):
-    data = load_data()
-    saved = data.get('saved_users', [])
-    item = next((u for u in saved if str(u.get('id')) == str(user_id) or str(u.get('user_id')) == str(user_id) or str(u.get('username')).lower() == str(user_id).lower()), None)
-    if not item:
-        return jsonify({'error': 'Saved user not found'}), 404
-    saved.remove(item)
-    data['saved_users'] = saved
-    save_data(data)
+    with data_transaction() as txn:
+        data = txn.data
+        saved = data.get('saved_users', [])
+        item = next((u for u in saved if str(u.get('id')) == str(user_id) or str(u.get('user_id')) == str(user_id) or str(u.get('username')).lower() == str(user_id).lower()), None)
+        if not item:
+            return jsonify({'error': 'Saved user not found'}), 404
+        saved.remove(item)
+        txn.save()
+
     return jsonify({'message': 'Saved user deleted', 'success': True})
 
 @app.route('/api/settings', methods=['GET'])
@@ -1707,17 +1767,15 @@ def get_settings():
 
 @app.route('/api/settings', methods=['PUT'])
 def update_settings():
-    data = load_data()
     settings_data = request.json or {}
-
-    if 'settings' not in data or not isinstance(data['settings'], dict):
-        data['settings'] = {}
-
-    for key, value in settings_data.items():
-        data['settings'][key] = value
-
-    save_data(data)
-    return jsonify(data['settings'])
+    with data_transaction() as txn:
+        if 'settings' not in txn.data or not isinstance(txn.data['settings'], dict):
+            txn.data['settings'] = {}
+        for key, value in settings_data.items():
+            txn.data['settings'][key] = value
+        txn.save()
+        result_settings = txn.data['settings']
+    return jsonify(result_settings)
 
 def bloxgen_api_request(endpoint, method='GET', params=None, body_data=None):
     base_url = 'https://core.bloxgen.net'
@@ -1832,21 +1890,24 @@ def get_multi_instance_status():
 @app.route('/api/multi-instance/toggle', methods=['POST'])
 def toggle_multi_instance():
     """Toggle multi-instance state and persist setting"""
-    data = load_data()
     req_data = request.json or {}
     new_state = req_data.get('enabled')
-    if new_state is None:
-        new_state = not data['settings'].get('multiInstance', False)
-    
-    data['settings']['multiInstance'] = bool(new_state)
-    multi_instance_controller.sync_state(data['settings']['multiInstance'])
-    save_data(data)
-    
+    with data_transaction() as txn:
+        data = txn.data
+        if 'settings' not in data or not isinstance(data['settings'], dict):
+            data['settings'] = {}
+        if new_state is None:
+            new_state = not data['settings'].get('multiInstance', False)
+
+        data['settings']['multiInstance'] = bool(new_state)
+        multi_instance_controller.sync_state(data['settings']['multiInstance'])
+        txn.save()
+
     return jsonify({
         'success': True,
-        'enabled': data['settings']['multiInstance'],
+        'enabled': new_state,
         'active': len(multi_instance_controller.mutex_handles) > 0,
-        'message': f"Multi-instance {'enabled' if data['settings']['multiInstance'] else 'disabled'}"
+        'message': f"Multi-instance {'enabled' if new_state else 'disabled'}"
     })
 
 @app.route('/api/headless/status', methods=['GET'])
@@ -1868,16 +1929,19 @@ def toggle_headless_mode():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        data = load_data()
         req_data = request.json or {}
         new_state = req_data.get('enabled')
-        if new_state is None:
-            new_state = not data.get('settings', {}).get('headlessMode', False)
+        with data_transaction() as txn:
+            data = txn.data
+            if 'settings' not in data or not isinstance(data['settings'], dict):
+                data['settings'] = {}
+            if new_state is None:
+                new_state = not data['settings'].get('headlessMode', False)
 
-        data['settings']['headlessMode'] = bool(new_state)
-        save_data(data)
+            data['settings']['headlessMode'] = bool(new_state)
+            txn.save()
 
-        if data['settings']['headlessMode']:
+        if new_state:
             headless_manager.trigger_delayed_headless([0.5, 2.0])
         else:
             headless_manager.restore_all_windows()
@@ -1937,20 +2001,23 @@ def update_anti_afk_settings():
         return '', 200
     try:
         req_data = request.json or {}
-        data = load_data()
-        settings = data.get('settings', {})
-        if 'antiAfkEnabled' in req_data:
-            settings['antiAfkEnabled'] = bool(req_data['antiAfkEnabled'])
-        if 'antiAfkIntervalMinutes' in req_data:
-            try:
-                settings['antiAfkIntervalMinutes'] = max(1, min(19, int(req_data['antiAfkIntervalMinutes'])))
-            except (TypeError, ValueError):
-                pass
-        if 'antiAfkKeyName' in req_data:
-            settings['antiAfkKeyName'] = str(req_data['antiAfkKeyName'])
-        if 'antiAfkShowNextLabel' in req_data:
-            settings['antiAfkShowNextLabel'] = bool(req_data['antiAfkShowNextLabel'])
-        save_data(data)
+        with data_transaction() as txn:
+            data = txn.data
+            if 'settings' not in data or not isinstance(data['settings'], dict):
+                data['settings'] = {}
+            settings = data['settings']
+            if 'antiAfkEnabled' in req_data:
+                settings['antiAfkEnabled'] = bool(req_data['antiAfkEnabled'])
+            if 'antiAfkIntervalMinutes' in req_data:
+                try:
+                    settings['antiAfkIntervalMinutes'] = max(1, min(19, int(req_data['antiAfkIntervalMinutes'])))
+                except (TypeError, ValueError):
+                    pass
+            if 'antiAfkKeyName' in req_data:
+                settings['antiAfkKeyName'] = str(req_data['antiAfkKeyName'])
+            if 'antiAfkShowNextLabel' in req_data:
+                settings['antiAfkShowNextLabel'] = bool(req_data['antiAfkShowNextLabel'])
+            txn.save()
         return jsonify(anti_afk_manager.get_status())
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2127,29 +2194,18 @@ def record_launch_event(username):
 def get_currently_running_usernames():
     running = set()
     try:
-        if platform.system() == "Windows":
-            ps_script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'RobloxPlayerBeta' } | Select-Object ProcessId, CreationDate | ConvertTo-Json -Compress"
-            res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            if res.returncode == 0 and res.stdout.strip():
-                try:
-                    data = json.loads(res.stdout.strip())
-                    if isinstance(data, dict):
-                        data = [data]
-                    for item in data:
-                        pid = int(item.get("ProcessId"))
-                        creation_date = item.get("CreationDate") or ""
-                        creation_time_sec = None
-                        if creation_date and isinstance(creation_date, str) and '/Date(' in creation_date:
-                            try:
-                                ms_str = re.search(r'/Date\((\d+)', creation_date).group(1)
-                                creation_time_sec = float(ms_str) / 1000.0
-                            except Exception:
-                                pass
-                        acc_info = resolve_pid_account(pid, creation_time_sec)
-                        if acc_info and acc_info.get("username"):
-                            running.add(acc_info["username"].lower())
-                except Exception:
-                    pass
+        for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+            try:
+                pname = str(proc.info.get('name') or '')
+                if 'robloxplayerbeta' not in pname.lower():
+                    continue
+                pid = proc.info['pid']
+                creation_time_sec = proc.info.get('create_time') or None
+                acc_info = resolve_pid_account(pid, creation_time_sec)
+                if acc_info and acc_info.get("username"):
+                    running.add(acc_info["username"].lower())
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
     except Exception:
         pass
     return running
@@ -2422,21 +2478,25 @@ def update_auto_relaunch_settings():
         return '', 200
     try:
         req_data = request.json or {}
-        data = load_data()
-        settings = data.get('settings', {})
-        if 'auto_relaunch_enabled' in req_data or 'autoRelaunchEnabled' in req_data:
-            val = bool(req_data.get('auto_relaunch_enabled', req_data.get('autoRelaunchEnabled')))
-            settings['auto_relaunch_enabled'] = val
-            settings['autoRelaunchEnabled'] = val
-        if 'auto_relaunch_interval_minutes' in req_data or 'autoRelaunchIntervalMinutes' in req_data:
-            val = max(1, int(req_data.get('auto_relaunch_interval_minutes', req_data.get('autoRelaunchIntervalMinutes', 60))))
-            settings['auto_relaunch_interval_minutes'] = val
-            settings['autoRelaunchIntervalMinutes'] = val
-        if 'auto_relaunch_group' in req_data or 'autoRelaunchGroup' in req_data:
-            val = str(req_data.get('auto_relaunch_group', req_data.get('autoRelaunchGroup', ''))).strip()
-            settings['auto_relaunch_group'] = val
-            settings['autoRelaunchGroup'] = val
-        save_data(data)
+        with data_transaction() as txn:
+            data = txn.data
+            if 'settings' not in data or not isinstance(data['settings'], dict):
+                data['settings'] = {}
+            settings = data['settings']
+            if 'auto_relaunch_enabled' in req_data or 'autoRelaunchEnabled' in req_data:
+                val = bool(req_data.get('auto_relaunch_enabled', req_data.get('autoRelaunchEnabled')))
+                settings['auto_relaunch_enabled'] = val
+                settings['autoRelaunchEnabled'] = val
+            if 'auto_relaunch_interval_minutes' in req_data or 'autoRelaunchIntervalMinutes' in req_data:
+                val = max(1, int(req_data.get('auto_relaunch_interval_minutes', req_data.get('autoRelaunchIntervalMinutes', 60))))
+                settings['auto_relaunch_interval_minutes'] = val
+                settings['autoRelaunchIntervalMinutes'] = val
+            if 'auto_relaunch_group' in req_data or 'autoRelaunchGroup' in req_data:
+                val = str(req_data.get('auto_relaunch_group', req_data.get('autoRelaunchGroup', ''))).strip()
+                settings['auto_relaunch_group'] = val
+                settings['autoRelaunchGroup'] = val
+            txn.save()
+
         with group_auto_relaunch_lock:
             interval_min = max(1, int(settings.get('auto_relaunch_interval_minutes', 60)))
             group_auto_relaunch_state['next_run_ts'] = time.time() + (interval_min * 60)
@@ -2986,20 +3046,24 @@ def toggle_auto_arrange_endpoint():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        data = load_data()
         req_data = request.json or {}
         new_state = req_data.get('enabled')
-        if new_state is None:
-            new_state = not data.get('settings', {}).get('keepClientsArranged', False)
+        with data_transaction() as txn:
+            data = txn.data
+            if 'settings' not in data or not isinstance(data['settings'], dict):
+                data['settings'] = {}
+            if new_state is None:
+                new_state = not data.get('settings', {}).get('keepClientsArranged', False)
 
-        data['settings']['keepClientsArranged'] = bool(new_state)
-        save_data(data)
-        auto_arranger.sync_watchdog(data['settings']['keepClientsArranged'])
+            data['settings']['keepClientsArranged'] = bool(new_state)
+            txn.save()
+
+        auto_arranger.sync_watchdog(new_state)
 
         return jsonify({
             'success': True,
-            'enabled': data['settings']['keepClientsArranged'],
-            'message': f"Auto-arrange {'enabled' if data['settings']['keepClientsArranged'] else 'disabled'}"
+            'enabled': bool(new_state),
+            'message': f"Auto-arrange {'enabled' if new_state else 'disabled'}"
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -4013,9 +4077,9 @@ if exist "{root_dir}" (
 @app.route('/api/clear-accounts', methods=['POST'])
 def clear_accounts():
     """Clear only accounts, not settings or games"""
-    data = load_data()
-    data['accounts'] = []
-    save_data(data)
+    with data_transaction() as txn:
+        txn.data['accounts'] = []
+        txn.save()
     
     manager = get_account_manager()
     if manager:
@@ -4357,20 +4421,21 @@ def validate_cookie():
 
         status, user_id, username, display_name, avatar_url = RobloxAPI.get_account_status_and_info(cookie=cookie)
 
-        all_data = load_data()
-        updated_any = False
-        norm_cookie = RobloxAPI._normalize_roblosecurity_cookie(cookie)
-        for acc in all_data['accounts']:
-            acc_cookie = RobloxAPI._normalize_roblosecurity_cookie(acc.get('cookie', ''))
-            if (acc_cookie and norm_cookie and acc_cookie == norm_cookie) or (username and username != 'Unknown' and acc.get('username') == username):
-                acc['status'] = status
-                if user_id: acc['user_id'] = user_id
-                if username and username != 'Unknown': acc['username'] = username
-                if display_name: acc['display_name'] = display_name
-                if avatar_url: acc['avatar_url'] = avatar_url
-                updated_any = True
-        if updated_any:
-            save_data(all_data)
+        with data_transaction() as txn:
+            all_data = txn.data
+            updated_any = False
+            norm_cookie = RobloxAPI._normalize_roblosecurity_cookie(cookie)
+            for acc in all_data.get('accounts', []):
+                acc_cookie = RobloxAPI._normalize_roblosecurity_cookie(acc.get('cookie', ''))
+                if (acc_cookie and norm_cookie and acc_cookie == norm_cookie) or (username and username != 'Unknown' and acc.get('username') == username):
+                    acc['status'] = status
+                    if user_id: acc['user_id'] = user_id
+                    if username and username != 'Unknown': acc['username'] = username
+                    if display_name: acc['display_name'] = display_name
+                    if avatar_url: acc['avatar_url'] = avatar_url
+                    updated_any = True
+            if updated_any:
+                txn.save()
 
         if status == 'expired' or (status != 'banned' and (not username or username == 'Unknown')):
             return jsonify({'valid': False, 'status': 'expired', 'error': 'Invalid or expired cookie'}), 400
