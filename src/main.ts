@@ -7106,6 +7106,24 @@ function renderSettingsView(): void {
       keyRow.appendChild(keySel);
       antiAfkCard.appendChild(keyRow);
 
+      const overlayRow = el('div', { class: 'setting-row' }, []);
+      const overlayTextWrap = el('div', {}, []);
+      overlayTextWrap.appendChild(el('div', { class: 'setting-label' }, [document.createTextNode('Show Timer on Roblox Window')]));
+      overlayTextWrap.appendChild(el('div', { class: 'setting-desc' }, [document.createTextNode('Display a live countdown overlay on the top-right of each Roblox client')]));
+      overlayRow.appendChild(overlayTextWrap);
+      const overlaySw = el('button', {
+        class: 'switch' + (state.settings.antiAfkShowNextLabel ? ' on' : ''),
+        type: 'button'
+      }, [el('span', { class: 'knob' }, [])]) as HTMLButtonElement;
+      overlaySw.addEventListener('click', async () => {
+        const nextVal = !state.settings.antiAfkShowNextLabel;
+        overlaySw.className = 'switch' + (nextVal ? ' on' : '');
+        await updateSetting('antiAfkShowNextLabel', nextVal);
+        await apiService.updateAntiAfkSettings({ antiAfkShowNextLabel: nextVal });
+      });
+      overlayRow.appendChild(overlaySw);
+      antiAfkCard.appendChild(overlayRow);
+
       let initialAntiAfkText = 'Checking...';
       let initialAntiAfkColor = 'var(--fg)';
       let initialAntiAfkDesc = 'Connecting to Anti-AFK engine...';

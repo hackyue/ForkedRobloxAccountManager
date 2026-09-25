@@ -1709,44 +1709,38 @@ ConvertTo-Json -Compress @{
                     for v_dir_name in b.get("version_dirs", ["Versions", "RblxVersions"]):
                         v_dir = os.path.join(b_root, v_dir_name)
                         if os.path.exists(v_dir):
-                            if not delete_studio:
-                                try:
-                                    for item in os.listdir(v_dir):
-                                        vf = os.path.join(v_dir, item)
-                                        if os.path.isdir(vf):
-                                            if os.path.exists(os.path.join(vf, "RobloxStudioBeta.exe")):
-                                                logs.append({"level": "info", "msg": f"Preserved Studio directory in {b_name}: {item}"})
-                                            else:
-                                                self._remove_path(vf)
-                                                logs.append({"level": "success", "msg": f"Removed {b_name} version: {item}"})
-                                except Exception:
-                                    pass
-                            else:
-                                self._remove_path(v_dir)
-                                logs.append({"level": "success", "msg": f"Removed {b_name} versions directory: {v_dir_name}"})
+                            try:
+                                for item in os.listdir(v_dir):
+                                    vf = os.path.join(v_dir, item)
+                                    is_studio = os.path.isdir(vf) and (os.path.exists(os.path.join(vf, "RobloxStudioBeta.exe")) or os.path.exists(os.path.join(vf, "RobloxStudioLauncherBeta.exe")))
+                                    if not delete_studio and is_studio:
+                                        logs.append({"level": "info", "msg": f"Preserved Studio directory in {b_name}: {item}"})
+                                    else:
+                                        if self._remove_path(vf):
+                                            logs.append({"level": "success", "msg": f"Removed {b_name} version: {item}"})
+                            except Exception:
+                                pass
 
             if local_app_data:
                 target_local_roblox = os.path.join(local_app_data, "Roblox")
                 if os.path.exists(target_local_roblox):
-                    if not delete_studio:
-                        v_dir = os.path.join(target_local_roblox, "Versions")
-                        if os.path.exists(v_dir):
-                            try:
-                                for item in os.listdir(v_dir):
-                                    vf = os.path.join(v_dir, item)
-                                    if os.path.isdir(vf):
-                                        if os.path.exists(os.path.join(vf, "RobloxStudioBeta.exe")):
-                                            logs.append({"level": "info", "msg": f"Preserved Roblox Studio: {item}"})
-                                        else:
-                                            self._remove_path(vf)
-                                            logs.append({"level": "success", "msg": f"Cleaned version: {item}"})
-                            except Exception:
-                                pass
-                        self._remove_path(os.path.join(target_local_roblox, "Downloads"))
-                        self._remove_path(os.path.join(target_local_roblox, "Logs"))
-                    else:
-                        self._remove_path(target_local_roblox)
-                        logs.append({"level": "success", "msg": "Removed full LocalAppData Roblox directory"})
+                    v_dir = os.path.join(target_local_roblox, "Versions")
+                    if os.path.exists(v_dir):
+                        try:
+                            for item in os.listdir(v_dir):
+                                vf = os.path.join(v_dir, item)
+                                is_studio = os.path.isdir(vf) and (os.path.exists(os.path.join(vf, "RobloxStudioBeta.exe")) or os.path.exists(os.path.join(vf, "RobloxStudioLauncherBeta.exe")))
+                                if not delete_studio and is_studio:
+                                    logs.append({"level": "info", "msg": f"Preserved Roblox Studio: {item}"})
+                                else:
+                                    if self._remove_path(vf):
+                                        logs.append({"level": "success", "msg": f"Cleaned version: {item}"})
+                        except Exception:
+                            pass
+                    for sub in ["Downloads", "Logs", "logs", "Analytics", "analytics", "rbxcache", "HttpCache", "httpcache", "CrashDumps", "crashdumps"]:
+                        sp = os.path.join(target_local_roblox, sub)
+                        if self._remove_path(sp):
+                            logs.append({"level": "success", "msg": f"Cleaned LocalAppData Roblox / {sub}"})
 
             set_progress(55, "Cleaning Roaming AppData and caches...")
             if app_data:
@@ -1838,7 +1832,7 @@ ConvertTo-Json -Compress @{
                     ("roblox" in norm_w or "version-" in norm_w or any(b["name"].lower() in norm_w for b in discovered_bootstrappers))
                 )
                 if is_safe_dir:
-                    for d in ["content", "ExtraContent", "PlatformContent", "RobloxPlayerBeta.exe.WebView2", "shaders", "ssl", "WebView2RuntimeInstaller"]:
+                    for d in ["content", "ExtraContent", "PlatformContent", "RobloxPlayerBeta.exe.WebView2", "shaders", "ssl", "WebView2RuntimeInstaller", "Logs", "logs", "Temp", "temp", "CrashDumps", "crashdumps", "rbxcache", "HttpCache", "httpcache"]:
                         self._remove_path(os.path.join(weblauncher_dir, d))
                     for f in ["RobloxCrashHandler.exe", "RobloxPlayerBeta.dll", "RobloxPlayerBeta.exe", "WebView2Loader.dll"]:
                         self._remove_path(os.path.join(weblauncher_dir, f))

@@ -2022,6 +2022,7 @@ def update_anti_afk_settings():
             if 'antiAfkShowNextLabel' in req_data:
                 settings['antiAfkShowNextLabel'] = bool(req_data['antiAfkShowNextLabel'])
             txn.save()
+        anti_afk_manager.sync_overlay()
         return jsonify(anti_afk_manager.get_status())
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
