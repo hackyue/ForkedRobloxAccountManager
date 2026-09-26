@@ -215,6 +215,7 @@ export interface Settings {
   antiAfkIntervalMinutes?: number;
   antiAfkKeyName?: string;
   antiAfkKeyCode?: number;
+  antiAfkDuration?: number;
   antiAfkShowNextLabel?: boolean;
   lastPlaceId?: string;
   lastUserId?: string;
@@ -261,6 +262,7 @@ export interface AntiAfkStatus {
   interval_minutes: number;
   key_name: string;
   key_code: number;
+  duration_seconds?: number;
   roblox_instance_count: number;
   last_run_ts?: number;
   next_run_ts?: number;
@@ -802,6 +804,7 @@ class ApiService {
     antiAfkEnabled?: boolean;
     antiAfkIntervalMinutes?: number;
     antiAfkKeyName?: string;
+    antiAfkDuration?: number;
     antiAfkShowNextLabel?: boolean;
   }): Promise<AntiAfkStatus> {
     return this.request<AntiAfkStatus>('/anti-afk/settings', 'POST', settings);

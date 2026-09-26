@@ -35,13 +35,13 @@ ALL_TARGET_EXECUTABLES: Set[str] = ROBLOX_CLIENT_EXECUTABLES | BOOTSTRAPPER_EXEC
 class AntiAfkManager:
     """Manages periodic background input injection into active Roblox client windows to prevent idle timeouts."""
 
-    TARGET_EXECUTABLES: Set[str] = ALL_TARGET_EXECUTABLES
+    TARGET_EXECUTABLES: Set[str] = ROBLOX_CLIENT_EXECUTABLES
     DEFAULT_INTERVAL_MINUTES: int = 10
     MIN_INTERVAL_MINUTES: int = 1
     MAX_INTERVAL_MINUTES: int = 19
     DEFAULT_KEY_NAME: str = "M1"
     LOOP_SLEEP_SECONDS: float = 2.0
-    INPUT_PRESS_DURATION: float = 0.05
+    INPUT_PRESS_DURATION: float = 1.0
     PID_CACHE_TTL_SECONDS: float = 2.0
     STAGGER_DELAY_SECONDS: float = 0.08
 
@@ -180,6 +180,25 @@ class AntiAfkManager:
             except Exception:
                 pass
 
+        if self.auto_rejoin_monitor is not None:
+            try:
+                sessions = getattr(self.auto_rejoin_monitor, "active_sessions", None)
+                lock = getattr(self.auto_rejoin_monitor, "_lock", None)
+                if isinstance(sessions, dict):
+                    if lock is not None:
+                        with lock:
+                            for uname, session in sessions.items():
+                                if str(uname).lower() in afk_usernames:
+                                    if getattr(session, "pid", None) == pid:
+                                        return True
+                    else:
+                        for uname, session in sessions.items():
+                            if str(uname).lower() in afk_usernames:
+                                if getattr(session, "pid", None) == pid:
+                                    return True
+            except Exception:
+                pass
+
         try:
             import psutil
             proc = psutil.Process(pid)
@@ -200,6 +219,15 @@ class AntiAfkManager:
             return max(self.MIN_INTERVAL_MINUTES, min(self.MAX_INTERVAL_MINUTES, val))
         except (TypeError, ValueError):
             return self.DEFAULT_INTERVAL_MINUTES
+
+    def get_press_duration(self) -> float:
+        settings = self.get_settings()
+        raw_val = settings.get("antiAfkDuration", settings.get("anti_afk_duration", self.INPUT_PRESS_DURATION))
+        try:
+            val = float(raw_val if raw_val is not None else self.INPUT_PRESS_DURATION)
+            return max(0.05, min(10.0, val))
+        except (TypeError, ValueError):
+            return float(self.INPUT_PRESS_DURATION)
 
     def get_key_name(self) -> str:
         settings = self.get_settings()
@@ -280,7 +308,7 @@ class AntiAfkManager:
                 return False
             with lock:
                 for _uname, session in sessions.items():
-                    if getattr(session, "rejoin_in_progress", False):
+                    if getattr(session, "rejoin_in_progress", False) or getattr(session, "intentionally_stopped", False):
                         session_pid = int(getattr(session, "pid", 0) or 0)
                         if session_pid == pid:
                             return True
@@ -330,7 +358,7 @@ class AntiAfkManager:
             for h in expired:
                 self._suppressed_hwnds.pop(h, None)
 
-    def get_roblox_windows(self, include_hidden: bool = True) -> List[Tuple[int, int, str]]:
+    def get_roblox_windows(self, include_hidden: bool = False) -> List[Tuple[int, int, str]]:
         if platform.system() != "Windows" or not win32gui or not win32process:
             return []
 
@@ -369,15 +397,27 @@ class AntiAfkManager:
             except Exception:
                 pass
 
-        windows: List[Tuple[int, int, str]] = []
+        candidates_by_pid: Dict[int, List[Tuple[int, int, str, str, int, int, bool]]] = {}
 
         def enum_win_cb(hwnd, _):
             if not win32gui.IsWindow(hwnd):
                 return True
-            if not include_hidden and not win32gui.IsWindowVisible(hwnd):
-                if hwnd not in headless_hidden_hwnds:
-                    return True
             try:
+                if win32gui.GetParent(hwnd) != 0:
+                    return True
+
+                rect = win32gui.GetWindowRect(hwnd)
+                width = int(rect[2] - rect[0])
+                height = int(rect[3] - rect[1])
+                if width < 100 or height < 100:
+                    return True
+
+                is_vis = bool(win32gui.IsWindowVisible(hwnd))
+                is_headless = hwnd in headless_hidden_hwnds
+
+                if not is_vis and not is_headless and not include_hidden:
+                    return True
+
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
                 if pid not in pids:
                     return True
@@ -393,10 +433,18 @@ class AntiAfkManager:
                 if proc_name in BOOTSTRAPPER_EXECUTABLES or self._is_bootstrapper_window(hwnd, proc_name):
                     return True
 
-                title = win32gui.GetWindowText(hwnd) or "Roblox"
-                cls = win32gui.GetClassName(hwnd) or ""
-                if "Roblox" in title or "Roblox" in cls or "WINDOWSCLIENT" in cls or "ApplicationFrame" in cls or cls == "Win32Window0":
-                    windows.append((hwnd, pid, title))
+                raw_title = str(win32gui.GetWindowText(hwnd) or "").strip()
+                cls = str(win32gui.GetClassName(hwnd) or "").strip()
+
+                is_roblox_window = (
+                    cls in ("WINDOWSCLIENT", "RobloxPlayerBeta", "RobloxPlayer", "ApplicationFrameWindow", "Win32Window0")
+                    or "roblox" in raw_title.lower()
+                    or "roblox" in cls.lower()
+                )
+
+                if is_roblox_window:
+                    title = raw_title if raw_title else "Roblox"
+                    candidates_by_pid.setdefault(pid, []).append((hwnd, pid, title, cls, width, height, is_vis))
             except Exception:
                 pass
             return True
@@ -406,9 +454,242 @@ class AntiAfkManager:
         except Exception:
             pass
 
+        windows: List[Tuple[int, int, str]] = []
+        for pid, candidate_list in candidates_by_pid.items():
+            if not candidate_list:
+                continue
+
+            def candidate_score(c):
+                chwnd, _cpid, ctitle, ccls, cw, ch, cvis = c
+                score = 0
+                if ccls == "WINDOWSCLIENT":
+                    score += 1000
+                elif ccls in ("RobloxPlayerBeta", "RobloxPlayer", "ApplicationFrameWindow", "Win32Window0"):
+                    score += 500
+                if ctitle.lower().startswith("roblox"):
+                    score += 200
+                elif "roblox" in ctitle.lower():
+                    score += 100
+                if cvis or chwnd in headless_hidden_hwnds:
+                    score += 150
+                score += min(100, (cw * ch) // 10000)
+                return score
+
+            best = max(candidate_list, key=candidate_score)
+            windows.append((best[0], best[1], best[2]))
+
+        windows.sort(key=lambda item: item[0])
         return windows
 
-    def post_window_input(self, hwnd: int, key_name: str) -> bool:
+    def _activate_window(self, hwnd: int) -> bool:
+        if platform.system() != "Windows" or not win32gui or not win32process:
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            if not win32gui.IsWindow(hwnd):
+                return False
+
+            if user32.IsIconic(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                return False
+
+            if user32.GetForegroundWindow() == hwnd:
+                return True
+
+            our_tid = kernel32.GetCurrentThreadId()
+            fg_hwnd = user32.GetForegroundWindow()
+            fg_tid = win32process.GetWindowThreadProcessId(fg_hwnd)[0] if fg_hwnd else 0
+            target_tid, _ = win32process.GetWindowThreadProcessId(hwnd)
+
+            attached_fg = False
+            attached_target = False
+            if fg_tid and fg_tid != our_tid:
+                try:
+                    attached_fg = bool(user32.AttachThreadInput(our_tid, fg_tid, True))
+                except Exception:
+                    attached_fg = False
+
+            if target_tid and target_tid != our_tid:
+                try:
+                    attached_target = bool(user32.AttachThreadInput(our_tid, target_tid, True))
+                except Exception:
+                    attached_target = False
+
+            try:
+                user32.LockSetForegroundWindow(2)
+            except Exception:
+                pass
+
+            try:
+                user32.AllowSetForegroundWindow(-1)
+            except Exception:
+                pass
+
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.SetActiveWindow(hwnd)
+            user32.SetFocus(hwnd)
+
+            if user32.GetForegroundWindow() != hwnd:
+                try:
+                    user32.keybd_event(0x12, 0, 0, 0)
+                    user32.keybd_event(0x12, 0, 2, 0)
+                    user32.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
+
+            if attached_target:
+                try:
+                    user32.AttachThreadInput(our_tid, target_tid, False)
+                except Exception:
+                    pass
+
+            if attached_fg:
+                try:
+                    user32.AttachThreadInput(our_tid, fg_tid, False)
+                except Exception:
+                    pass
+
+            return user32.GetForegroundWindow() == hwnd
+        except Exception:
+            return False
+
+    def _send_hardware_key(self, code: int, scan_code: int, is_extended: bool, duration: float = 0.0) -> None:
+        user32 = ctypes.windll.user32
+        ULONG_PTR = ctypes.c_ulonglong
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", ctypes.c_ushort),
+                ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", ctypes.c_long),
+                ("dy", ctypes.c_long),
+                ("mouseData", ctypes.c_ulong),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", ctypes.c_ulong),
+                ("wParamL", ctypes.c_ushort),
+                ("wParamH", ctypes.c_ushort),
+            ]
+
+        class INPUT_UNION(ctypes.Union):
+            _fields_ = [
+                ("mi", MOUSEINPUT),
+                ("ki", KEYBDINPUT),
+                ("hi", HARDWAREINPUT),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [
+                ("type", ctypes.c_ulong),
+                ("union", INPUT_UNION),
+            ]
+
+        press_time = duration if duration > 0 else self.get_press_duration()
+
+        flags_down = 0x0008 if scan_code > 0 else 0
+        if is_extended:
+            flags_down |= 0x0001
+        flags_up = flags_down | 0x0002
+
+        inp_down = INPUT()
+        inp_down.type = 1
+        inp_down.union.ki.wVk = 0 if scan_code > 0 else code
+        inp_down.union.ki.wScan = scan_code
+        inp_down.union.ki.dwFlags = flags_down
+
+        inp_up = INPUT()
+        inp_up.type = 1
+        inp_up.union.ki.wVk = 0 if scan_code > 0 else code
+        inp_up.union.ki.wScan = scan_code
+        inp_up.union.ki.dwFlags = flags_up
+
+        user32.SendInput(1, ctypes.byref(inp_down), ctypes.sizeof(INPUT))
+        try:
+            user32.keybd_event(code, scan_code, 0 if not is_extended else 1, 0)
+        except Exception:
+            pass
+
+        time.sleep(press_time)
+
+        user32.SendInput(1, ctypes.byref(inp_up), ctypes.sizeof(INPUT))
+        try:
+            user32.keybd_event(code, scan_code, 2 if not is_extended else 3, 0)
+        except Exception:
+            pass
+
+    def _send_hardware_mouse(self, key_name: str, duration: float = 0.0) -> None:
+        user32 = ctypes.windll.user32
+        ULONG_PTR = ctypes.c_ulonglong
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", ctypes.c_long),
+                ("dy", ctypes.c_long),
+                ("mouseData", ctypes.c_ulong),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", ctypes.c_ushort),
+                ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", ctypes.c_ulong),
+                ("wParamL", ctypes.c_ushort),
+                ("wParamH", ctypes.c_ushort),
+            ]
+
+        class INPUT_UNION(ctypes.Union):
+            _fields_ = [
+                ("mi", MOUSEINPUT),
+                ("ki", KEYBDINPUT),
+                ("hi", HARDWAREINPUT),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [
+                ("type", ctypes.c_ulong),
+                ("union", INPUT_UNION),
+            ]
+
+        press_time = duration if duration > 0 else self.get_press_duration()
+        down_flag = 0x0002 if key_name == "M1" else (0x0008 if key_name == "M2" else 0x0020)
+        up_flag = 0x0004 if key_name == "M1" else (0x0010 if key_name == "M2" else 0x0040)
+
+        inp_down = INPUT()
+        inp_down.type = 0
+        inp_down.union.mi.dwFlags = down_flag
+
+        inp_up = INPUT()
+        inp_up.type = 0
+        inp_up.union.mi.dwFlags = up_flag
+
+        user32.SendInput(1, ctypes.byref(inp_down), ctypes.sizeof(INPUT))
+        time.sleep(press_time)
+        user32.SendInput(1, ctypes.byref(inp_up), ctypes.sizeof(INPUT))
+
+    def post_window_input(self, hwnd: int, key_name: str, restore_focus: bool = True) -> bool:
         if platform.system() != "Windows" or not win32gui or not win32con:
             return False
         try:
@@ -425,7 +706,37 @@ class AntiAfkManager:
             y_val = max(0, min(height - 1, int(height / 2)))
             lparam = (y_val << 16) | x_val
 
-            win32gui.PostMessage(hwnd, getattr(win32con, "WM_MOUSEMOVE", 0x0200), 0, lparam)
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+
+            is_headless = False
+            if self.headless_manager is not None:
+                try:
+                    hidden = getattr(self.headless_manager, "hidden_hwnds", None)
+                    if isinstance(hidden, set) and hwnd in hidden:
+                        is_headless = True
+                except Exception:
+                    pass
+
+            prev_fg = 0
+            try:
+                prev_fg = user32.GetForegroundWindow()
+            except Exception:
+                prev_fg = 0
+
+            is_visible = bool(win32gui.IsWindowVisible(hwnd))
+            was_already_foreground = (prev_fg == hwnd)
+            if not is_headless and is_visible and not user32.IsIconic(hwnd) and not was_already_foreground:
+                self._activate_window(hwnd)
+                time.sleep(0.04)
+
+            is_foreground = False
+            try:
+                is_foreground = (user32.GetForegroundWindow() == hwnd)
+            except Exception:
+                pass
+
+            duration = self.get_press_duration()
 
             if key_name in {"M1", "M2", "M3"}:
                 mouse_map = {
@@ -434,17 +745,74 @@ class AntiAfkManager:
                     "M3": (0x0207, 0x0208, 0x0010),
                 }
                 msg_down, msg_up, wparam = mouse_map[key_name]
+
+                if is_foreground:
+                    try:
+                        self._send_hardware_mouse(key_name, duration)
+                    except Exception:
+                        pass
+
+                win32gui.PostMessage(hwnd, getattr(win32con, "WM_MOUSEMOVE", 0x0200), 0, lparam)
                 win32gui.PostMessage(hwnd, msg_down, wparam, lparam)
-                time.sleep(self.INPUT_PRESS_DURATION)
+                if key_name == "M2":
+                    nudge_lparam = (y_val << 16) | ((x_val + 4) & 0xFFFF)
+                    win32gui.PostMessage(hwnd, getattr(win32con, "WM_MOUSEMOVE", 0x0200), wparam, nudge_lparam)
+                time.sleep(duration)
                 win32gui.PostMessage(hwnd, msg_up, 0, lparam)
-                return True
             else:
                 code = self.get_key_code(key_name)
                 if code > 0:
-                    win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYDOWN", 0x0100), code, 0)
-                    time.sleep(self.INPUT_PRESS_DURATION)
-                    win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYUP", 0x0101), code, 0xC0000001)
-                    return True
+                    scan_code = user32.MapVirtualKeyW(code, 0)
+                    is_extended = code in (0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22)
+
+                    lparam_down = 1 | (scan_code << 16)
+                    lparam_up = 1 | (scan_code << 16) | (1 << 30) | (1 << 31)
+                    if is_extended:
+                        lparam_down |= (1 << 24)
+                        lparam_up |= (1 << 24)
+
+                    our_tid = kernel32.GetCurrentThreadId()
+                    target_tid, _ = win32process.GetWindowThreadProcessId(hwnd)
+                    attached = False
+                    if target_tid and target_tid != our_tid:
+                        try:
+                            attached = bool(user32.AttachThreadInput(our_tid, target_tid, True))
+                        except Exception:
+                            attached = False
+
+                    try:
+                        win32gui.PostMessage(hwnd, 0x0006, 1, 0)
+                        win32gui.PostMessage(hwnd, 0x0007, 0, 0)
+                        win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYDOWN", 0x0100), code, lparam_down)
+
+                        char_code = user32.MapVirtualKeyW(code, 2)
+                        if char_code > 0:
+                            win32gui.PostMessage(hwnd, 0x0102, char_code, lparam_down)
+
+                        if is_foreground:
+                            try:
+                                self._send_hardware_key(code, scan_code, is_extended, duration)
+                            except Exception:
+                                time.sleep(duration)
+                        else:
+                            time.sleep(duration)
+
+                        win32gui.PostMessage(hwnd, getattr(win32con, "WM_KEYUP", 0x0101), code, lparam_up)
+                    finally:
+                        if attached:
+                            try:
+                                user32.AttachThreadInput(our_tid, target_tid, False)
+                            except Exception:
+                                pass
+
+            if restore_focus and prev_fg and prev_fg != hwnd and not was_already_foreground:
+                try:
+                    if win32gui.IsWindow(prev_fg):
+                        self._activate_window(prev_fg)
+                except Exception:
+                    pass
+
+            return True
         except Exception as e:
             self._log(f"AntiAFK PostMessage error for hwnd {hwnd}: {e}")
 
@@ -474,6 +842,13 @@ class AntiAfkManager:
             failed = 0
             skipped = 0
 
+            original_fg = 0
+            if platform.system() == "Windows":
+                try:
+                    original_fg = ctypes.windll.user32.GetForegroundWindow()
+                except Exception:
+                    original_fg = 0
+
             for i, (hwnd, pid, title) in enumerate(windows):
                 if self._stop_event.is_set():
                     break
@@ -502,13 +877,20 @@ class AntiAfkManager:
                     skipped += 1
                     continue
 
-                if self.post_window_input(hwnd, key_name):
+                if self.post_window_input(hwnd, key_name, restore_focus=False):
                     success += 1
                 else:
                     failed += 1
 
                 if i < len(windows) - 1:
                     time.sleep(self.STAGGER_DELAY_SECONDS)
+
+            if original_fg and platform.system() == "Windows":
+                try:
+                    if win32gui and win32gui.IsWindow(original_fg) and ctypes.windll.user32.GetForegroundWindow() != original_fg:
+                        self._activate_window(original_fg)
+                except Exception:
+                    pass
 
             now = time.time()
 
@@ -643,6 +1025,7 @@ class AntiAfkManager:
             "interval_minutes": interval_min,
             "key_name": key_name,
             "key_code": self.get_key_code(key_name),
+            "duration_seconds": self.get_press_duration(),
             "roblox_instance_count": len(windows),
             "last_run_ts": last_run,
             "next_run_ts": next_run,
@@ -986,6 +1369,10 @@ class _AntiAfkOverlayManager:
 
         try:
             roblox_windows = self.afk_manager.get_roblox_windows(include_hidden=False)
+            roblox_windows = [
+                w for w in roblox_windows
+                if self.afk_manager.is_window_afk_enabled(w[0], w[1], w[2])
+            ]
         except Exception:
             roblox_windows = []
 

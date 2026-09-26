@@ -7106,6 +7106,21 @@ function renderSettingsView(): void {
       keyRow.appendChild(keySel);
       antiAfkCard.appendChild(keyRow);
 
+      const durationRow = el('div', { class: 'setting-row' }, []);
+      const durationText = el('div', {}, [
+        el('div', { class: 'setting-label' }, [document.createTextNode('Input Hold Duration')]),
+        el('div', { class: 'setting-desc' }, [document.createTextNode('Duration in seconds the simulated key or mouse click is held (0.1 - 5.0s)')])
+      ]);
+      durationRow.appendChild(durationText);
+      const durationInput = el('input', { type: 'number', min: '0.1', max: '5.0', step: '0.1', value: String(state.settings.antiAfkDuration ?? 1.0), style: 'width:80px; text-align:right;' }, []) as HTMLInputElement;
+      durationInput.addEventListener('change', async (e) => {
+        const val = Math.max(0.05, Math.min(10.0, Number((e.target as HTMLInputElement).value) || 1.0));
+        await updateSetting('antiAfkDuration', val);
+        await apiService.updateAntiAfkSettings({ antiAfkDuration: val });
+      });
+      durationRow.appendChild(durationInput);
+      antiAfkCard.appendChild(durationRow);
+
       const overlayRow = el('div', { class: 'setting-row' }, []);
       const overlayTextWrap = el('div', {}, []);
       overlayTextWrap.appendChild(el('div', { class: 'setting-label' }, [document.createTextNode('Show Timer on Roblox Window')]));
@@ -7144,7 +7159,8 @@ function renderSettingsView(): void {
           initialAntiAfkText = 'Disabled';
           initialAntiAfkColor = 'var(--text-muted)';
         }
-        initialAntiAfkDesc = `Targeting ${count} running Roblox client window(s). Key: ${lastAntiAfkStatus.key_name || 'M1'}. Interval: ${lastAntiAfkStatus.interval_minutes} min.`;
+        const initDur = lastAntiAfkStatus.duration_seconds || 1;
+        initialAntiAfkDesc = `Targeting ${count} running Roblox client window(s). Key: ${lastAntiAfkStatus.key_name || 'M1'} (${initDur}s hold). Interval: ${lastAntiAfkStatus.interval_minutes} min.`;
       }
 
       const statusRow = el('div', { class: 'setting-row' }, []);
@@ -7185,7 +7201,8 @@ function renderSettingsView(): void {
               badgeEl.textContent = 'Disabled';
               badgeEl.style.color = 'var(--text-muted)';
             }
-            descEl.textContent = `Targeting ${count} running Roblox client window(s). Key: ${s.key_name || 'M1'}. Interval: ${s.interval_minutes} min.`;
+            const dur = s.duration_seconds || 1;
+            descEl.textContent = `Targeting ${count} running Roblox client window(s). Key: ${s.key_name || 'M1'} (${dur}s hold). Interval: ${s.interval_minutes} min.`;
           }
         } catch (_) { }
       };

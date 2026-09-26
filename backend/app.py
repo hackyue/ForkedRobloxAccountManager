@@ -2021,6 +2021,11 @@ def update_anti_afk_settings():
                 settings['antiAfkKeyName'] = str(req_data['antiAfkKeyName'])
             if 'antiAfkShowNextLabel' in req_data:
                 settings['antiAfkShowNextLabel'] = bool(req_data['antiAfkShowNextLabel'])
+            if 'antiAfkDuration' in req_data:
+                try:
+                    settings['antiAfkDuration'] = max(0.05, min(10.0, float(req_data['antiAfkDuration'])))
+                except (TypeError, ValueError):
+                    pass
             txn.save()
         anti_afk_manager.sync_overlay()
         return jsonify(anti_afk_manager.get_status())
