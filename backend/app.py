@@ -526,6 +526,8 @@ def load_data(force_reload: bool = False) -> Dict[str, Any]:
             'robloxPath': '',
             'launchClient': 'standard',
             'autoUpdateCheck': True,
+            'autoUpdateToPreReleases': False,
+            'autoUpdateToLatestRelease': True,
             'autoCheckRobloxUpdates': True,
             'disableExecutorPresets': False,
             'swapPreserveSettings': True,
@@ -3889,6 +3891,8 @@ def clear_all_data():
         'robloxPath': '',
         'launchClient': 'standard',
         'autoUpdateCheck': True,
+        'autoUpdateToPreReleases': False,
+        'autoUpdateToLatestRelease': True,
         'autoCheckRobloxUpdates': True,
         'disableExecutorPresets': False,
         'encryptionEnabled': False,
@@ -4784,7 +4788,22 @@ def get_installer_weao_exploits():
 def check_app_updates():
     try:
         force = request.args.get('force', 'false').lower() == 'true'
-        res = updater_manager.check_for_updates(force=force)
+        prerelease_arg = request.args.get('prerelease')
+        latest_arg = request.args.get('latest')
+        settings = load_data().get('settings', {})
+        if prerelease_arg is not None:
+            include_prereleases = prerelease_arg.lower() == 'true'
+        else:
+            include_prereleases = bool(settings.get('autoUpdateToPreReleases', False))
+        if latest_arg is not None:
+            include_latest = latest_arg.lower() == 'true'
+        else:
+            include_latest = bool(settings.get('autoUpdateToLatestRelease', True))
+        res = updater_manager.check_for_updates(
+            force=force,
+            include_prereleases=include_prereleases,
+            include_latest=include_latest
+        )
         return jsonify(res)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

@@ -6096,6 +6096,18 @@ kbd {
   border: 1px solid rgba(74, 222, 128, 0.3);
 }
 
+.updater-badge.prerelease {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.setting-row.setting-subrow {
+  padding-left: 36px;
+  background: rgba(255, 255, 255, 0.012);
+  border-left: 3px solid var(--accent);
+}
+
 .updater-arrow {
   color: var(--muted);
   font-size: 12px;

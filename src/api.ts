@@ -139,6 +139,7 @@ export interface UpdateCheckResult {
   sha256?: string;
   repo?: string;
   error?: string;
+  prerelease?: boolean;
 }
 
 export interface UpdateDownloadStatus {
@@ -180,6 +181,8 @@ export interface Settings {
   robloxPath: string;
   launchClient: 'standard' | 'player';
   autoUpdateCheck: boolean;
+  autoUpdateToPreReleases?: boolean;
+  autoUpdateToLatestRelease?: boolean;
   autoCheckRobloxUpdates?: boolean;
   disableExecutorPresets?: boolean;
   encryptionEnabled: boolean;
@@ -1156,8 +1159,15 @@ class ApiService {
     return this.request('/bloxgen/botting/create', 'POST', { apiKey, target, amount });
   }
 
-  async checkForUpdates(force = false): Promise<UpdateCheckResult> {
-    return this.request<UpdateCheckResult>(`/updater/check?force=${force}`);
+  async checkForUpdates(force = false, options?: { prerelease?: boolean; latest?: boolean }): Promise<UpdateCheckResult> {
+    let url = `/updater/check?force=${force}`;
+    if (options && options.prerelease !== undefined) {
+      url += `&prerelease=${options.prerelease}`;
+    }
+    if (options && options.latest !== undefined) {
+      url += `&latest=${options.latest}`;
+    }
+    return this.request<UpdateCheckResult>(url);
   }
 
   async getGithubReleases(force = false): Promise<{ success: boolean; releases?: any[]; error?: string }> {

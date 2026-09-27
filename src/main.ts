@@ -225,6 +225,8 @@ const state: State = {
     robloxPath: "",
     launchClient: "standard",
     autoUpdateCheck: true,
+    autoUpdateToPreReleases: false,
+    autoUpdateToLatestRelease: true,
     autoCheckRobloxUpdates: true,
     encryptionEnabled: false,
     encryptionMethod: "none",
@@ -1708,6 +1710,8 @@ async function executeDeleteAllData(): Promise<void> {
         robloxPath: "",
         launchClient: "standard",
         autoUpdateCheck: true,
+        autoUpdateToPreReleases: false,
+        autoUpdateToLatestRelease: true,
         autoCheckRobloxUpdates: true,
         encryptionEnabled: false,
         encryptionMethod: "none",
@@ -1833,6 +1837,7 @@ async function executeUninstall(): Promise<void> {
 }
 
 const SETTINGS_SUBSETTING_PARENT_KEYS: (keyof Settings)[] = [
+  'autoUpdateCheck',
   'headlessMode',
   'keepClientsArranged',
   'autoArrangeDimensionMode',
@@ -4033,6 +4038,8 @@ const ALL_SETTINGS_ITEMS: SettingItemDefinition[] = [
   { id: 'setting-multi-select', tab: 'general', get label() { return state.settings.multiSelect ? `Multi Select (${getMultiSelectBindText()})` : 'Multi Select'; }, desc: 'Enable selecting multiple accounts for bulk actions' },
   { id: 'setting-account-sorting', tab: 'general', label: 'Account List Default Sorting', desc: 'Sort accounts automatically by status or username' },
   { id: 'setting-auto-update-checks', tab: 'general', label: 'Automatic Update Checks', desc: 'Check for new FRAM versions on launch' },
+  { id: 'setting-auto-update-pre-releases', tab: 'general', label: 'Auto update to pre-releases', desc: 'Check for and notify about beta and pre-release updates', dependsOn: { key: 'autoUpdateCheck' } },
+  { id: 'setting-auto-update-latest-release', tab: 'general', label: 'Auto Update to Latest Release', desc: 'Check for and notify about official stable releases', dependsOn: { key: 'autoUpdateCheck' } },
   { id: 'setting-rerun-setup', tab: 'general', label: 'Rerun Setup Wizard', desc: 'Reopen the initial setup and onboarding wizard' },
 
   // 2. Roblox
@@ -4434,17 +4441,24 @@ function settingsToggleRow(label: string, desc: string, key: keyof Settings): HT
   }
   row.appendChild(textWrap);
 
+  const isEnabled = key === 'autoUpdateToLatestRelease'
+    ? (state.settings.autoUpdateToLatestRelease !== false)
+    : Boolean(state.settings[key]);
+
   const sw = el('button', {
-    class: 'switch' + (state.settings[key] ? ' on' : ''),
+    class: 'switch' + (isEnabled ? ' on' : ''),
     type: 'button'
   }, [el('span', { class: 'knob' }, [])]) as HTMLButtonElement;
   sw.addEventListener('click', () => {
-    const nextVal = !state.settings[key];
+    const currentVal = key === 'autoUpdateToLatestRelease'
+      ? (state.settings.autoUpdateToLatestRelease !== false)
+      : Boolean(state.settings[key]);
+    const nextVal = !currentVal;
     sw.className = 'switch' + (nextVal ? ' on' : '');
     if (key === 'multiSelect') {
       labelEl.textContent = nextVal ? `Multi Select (${getMultiSelectBindText()})` : 'Multi Select';
     }
-    updateSetting(key, nextVal);
+    updateSetting(key, nextVal as any);
   });
   row.appendChild(sw);
 
@@ -6494,7 +6508,18 @@ function renderSettingsView(): void {
     updateSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Updates')]));
     const updateCard = el('div', { class: 'settings-card' }, []);
 
-    updateCard.appendChild(settingsToggleRow('Automatic Update Checks', 'Check for new FRAM versions on launch', 'autoUpdateCheck'));
+    const updateCheckRow = settingsToggleRow('Automatic Update Checks', 'Check for new FRAM versions on launch', 'autoUpdateCheck');
+    updateCard.appendChild(updateCheckRow);
+
+    if (state.settings.autoUpdateCheck !== false) {
+      const preReleaseRow = settingsToggleRow('Auto update to pre-releases', 'Check for and notify about beta and pre-release updates', 'autoUpdateToPreReleases');
+      preReleaseRow.classList.add('setting-subrow');
+      updateCard.appendChild(preReleaseRow);
+
+      const latestReleaseRow = settingsToggleRow('Auto Update to Latest Release', 'Check for and notify about official stable releases', 'autoUpdateToLatestRelease');
+      latestReleaseRow.classList.add('setting-subrow');
+      updateCard.appendChild(latestReleaseRow);
+    }
 
     const checkUpdateRow = el('div', { class: 'setting-row' }, [
       el('div', {}, [
@@ -6519,9 +6544,13 @@ function renderSettingsView(): void {
             statusDesc.textContent = 'Querying GitHub releases...';
           }
           try {
-            const res = await apiService.checkForUpdates(true);
+            const res = await apiService.checkForUpdates(true, {
+              prerelease: state.settings.autoUpdateToPreReleases ?? false,
+              latest: state.settings.autoUpdateToLatestRelease !== false
+            });
             if (res.update_available) {
-              if (statusDesc) statusDesc.textContent = `New version available: v${res.latest_version}`;
+              const tagSuffix = res.prerelease ? ' (Pre-release)' : '';
+              if (statusDesc) statusDesc.textContent = `New version available: v${res.latest_version}${tagSuffix}`;
               showUpdateModal(res);
             } else {
               if (statusDesc) statusDesc.textContent = `You are running the latest version (v${res.current_version}).`;
@@ -7537,28 +7566,6 @@ function renderSettingsView(): void {
     browserRow.appendChild(browserSel);
     browserCard.appendChild(browserRow);
 
-    const credInstancesRow = el('div', { class: 'setting-row' }, []);
-    const credInstancesText = el('div', {}, [
-      el('div', { class: 'setting-label' }, [document.createTextNode('User:Pass Import Instances')]),
-      el('div', { class: 'setting-desc' }, [document.createTextNode('Number of concurrent browser instances (1-5) initialized when importing User:Pass credentials.')])
-    ]);
-    credInstancesRow.appendChild(credInstancesText);
-    const credInstancesInput = el('input', {
-      type: 'number',
-      min: '1',
-      max: '5',
-      value: String(state.settings.credentialImportInstances || 1),
-      class: 'setting-input',
-      style: 'width:80px; text-align:center;'
-    }, []) as HTMLInputElement;
-    credInstancesInput.addEventListener('change', (e) => {
-      const v = Math.min(5, Math.max(1, parseInt((e.target as HTMLInputElement).value) || 1));
-      (e.target as HTMLInputElement).value = String(v);
-      updateSetting('credentialImportInstances', v);
-    });
-    credInstancesRow.appendChild(credInstancesInput);
-    browserCard.appendChild(credInstancesRow);
-
     const chromiumRow = el('div', { class: 'setting-row', style: 'border-bottom:none; flex-direction:column; align-items:stretch; gap:10px;' }, []);
     const chromiumTop = el('div', { style: 'display:flex; justify-content:space-between; align-items:center; width:100%; gap:12px;' }, []);
 
@@ -8398,7 +8405,7 @@ function renderSettingsView(): void {
     if (matchCount === 0) {
       const altTabMatches: { tabId: string; label: string; count: number }[] = [];
       const categoryMatches: Record<string, string[]> = {
-        general: ['always on top', 'start fram on windows startup', 'minimize to system tray', 'default startup landing view', 'validate cookies on startup', 'multi select', 'account list default sorting', 'automatic update checks', 'check for updates now', 'rerun setup wizard'],
+        general: ['always on top', 'start fram on windows startup', 'minimize to system tray', 'default startup landing view', 'validate cookies on startup', 'multi select', 'account list default sorting', 'automatic update checks', 'auto update to pre-releases', 'auto update to latest release', 'check for updates now', 'rerun setup wizard'],
         roblox: ['roblox installation path', 'roblox client settings', 'preserve global client settings', 'preserve in-game settings', 'roblox fastflags', 'roblox fastflags editor', 'roblox icon & thumbnail cache', 'auto-check for roblox updates', 'rblxswap', 'clean traces', 'alt swap', 'spoof mac', 'hwid', 'mac address', 'disk volume serial', 'anticheat', 'restore identifiers', 'spoof hardware'],
         launching: ['multi-instance roblox', 'multi-account launch stagger delay', 'confirm before account launch', 'preferred server region', 'server for each account', 'save launch details', 'auto-close roblox clients on fram exit', 'headless client launch', 'idle cpu priority', 'headless auto memory trim', 'headless actions'],
         automation: ['keep roblox clients arranged', 'auto-arrange monitor scope', 'auto-arrange tile sizing mode', 'target client width', 'target client height', 'anti-afk', 'anti-afk interval', 'simulated input key', 'manual test pulse', 'auto-rejoin', 'auto-relaunch', 'relaunch group now', 'auto memory trim', 'preferred automation browser'],
@@ -15220,8 +15227,13 @@ function showUpdateModal(initialCheck?: UpdateCheckResult): void {
     }
 
     if (data.update_available) {
-      latestBadge.textContent = `Latest: v${data.latest_version}`;
-      latestBadge.className = 'updater-badge latest';
+      if (data.prerelease) {
+        latestBadge.textContent = `Pre-release: v${data.latest_version}`;
+        latestBadge.className = 'updater-badge prerelease';
+      } else {
+        latestBadge.textContent = `Latest: v${data.latest_version}`;
+        latestBadge.className = 'updater-badge latest';
+      }
       releaseTitle.textContent = data.release_title || `FRAM v${data.latest_version}`;
 
       const metaParts: string[] = [];
@@ -15258,7 +15270,10 @@ function showUpdateModal(initialCheck?: UpdateCheckResult): void {
   if (initialCheck) {
     renderCheckData(initialCheck);
   } else {
-    apiService.checkForUpdates(true).then((data) => {
+    apiService.checkForUpdates(true, {
+      prerelease: state.settings.autoUpdateToPreReleases ?? false,
+      latest: state.settings.autoUpdateToLatestRelease !== false
+    }).then((data) => {
       renderCheckData(data);
     }).catch((err) => {
       releaseTitle.textContent = 'Unable to check for updates';
@@ -15368,8 +15383,8 @@ function showUpdateNotificationToast(update: UpdateCheckResult): void {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:20px;height:20px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     </div>
     <div class="update-toast-body">
-      <div class="update-toast-title">FRAM Update Available</div>
-      <div class="update-toast-desc">v${update.latest_version} is available. Click to view release notes and install.</div>
+      <div class="update-toast-title">${update.prerelease ? 'FRAM Pre-Release Available' : 'FRAM Update Available'}</div>
+      <div class="update-toast-desc">v${update.latest_version}${update.prerelease ? ' (Pre-release)' : ''} is available. Click to view release notes and install.</div>
     </div>
     <button class="update-toast-btn" id="btn-toast-update-view">Update</button>
     <button class="update-toast-close" id="btn-toast-update-close">×</button>
@@ -15401,7 +15416,10 @@ function showUpdateNotificationToast(update: UpdateCheckResult): void {
 
 async function checkAppUpdateOnStartup(): Promise<void> {
   try {
-    const res = await apiService.checkForUpdates(false);
+    const res = await apiService.checkForUpdates(false, {
+      prerelease: state.settings.autoUpdateToPreReleases ?? false,
+      latest: state.settings.autoUpdateToLatestRelease !== false
+    });
     if (res && res.update_available) {
       showUpdateNotificationToast(res);
     }

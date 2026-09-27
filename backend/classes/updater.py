@@ -50,11 +50,39 @@ class AppUpdaterManager:
                 parts.append(0)
         return tuple(parts) if parts else (0,)
 
-    def check_for_updates(self, force: bool = False) -> Dict[str, Any]:
+    def check_for_updates(
+        self,
+        force: bool = False,
+        include_prereleases: bool = False,
+        include_latest: bool = True
+    ) -> Dict[str, Any]:
+        cache_key = (bool(include_prereleases), bool(include_latest))
         with self.lock:
             now = time.time()
-            if not force and self.cached_check and (now - self.last_check_time < 180):
+            if not force and self.cached_check and getattr(self, "cached_check_key", None) == cache_key and (now - self.last_check_time < 180):
                 return dict(self.cached_check)
+
+        if not include_prereleases and not include_latest:
+            result = {
+                "success": True,
+                "update_available": False,
+                "current_version": self.APP_VERSION,
+                "latest_version": self.APP_VERSION,
+                "release_title": "Update checks disabled",
+                "release_notes": "Both pre-release and latest release checks are disabled.",
+                "published_at": "",
+                "html_url": f"https://github.com/{self.PRIMARY_REPO}",
+                "asset_name": "",
+                "asset_size": 0,
+                "download_url": "",
+                "sha256": "",
+                "prerelease": False
+            }
+            with self.lock:
+                self.cached_check = result
+                self.cached_check_key = cache_key
+                self.last_check_time = time.time()
+            return result
 
         headers = {
             "Accept": "application/vnd.github+json",
@@ -65,17 +93,41 @@ class AppUpdaterManager:
         selected_repo = self.PRIMARY_REPO
 
         for repo in (self.PRIMARY_REPO, self.DEV_REPO):
-            api_url = f"https://api.github.com/repos/{repo}/releases/latest"
-            try:
-                resp = requests.get(api_url, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict) and data.get("tag_name"):
-                        release_data = data
-                        selected_repo = repo
-                        break
-            except Exception:
-                continue
+            if include_prereleases:
+                api_url = f"https://api.github.com/repos/{repo}/releases"
+                try:
+                    resp = requests.get(api_url, headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, list) and len(data) > 0:
+                            for item in data:
+                                if not isinstance(item, dict) or item.get("draft"):
+                                    continue
+                                is_pre = bool(item.get("prerelease", False))
+                                if is_pre and include_prereleases:
+                                    release_data = item
+                                    selected_repo = repo
+                                    break
+                                elif not is_pre and include_latest:
+                                    release_data = item
+                                    selected_repo = repo
+                                    break
+                            if release_data:
+                                break
+                except Exception:
+                    continue
+            else:
+                api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+                try:
+                    resp = requests.get(api_url, headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, dict) and data.get("tag_name"):
+                            release_data = data
+                            selected_repo = repo
+                            break
+                except Exception:
+                    continue
 
         if not release_data:
             result = {
@@ -90,10 +142,12 @@ class AppUpdaterManager:
                 "asset_name": "",
                 "asset_size": 0,
                 "download_url": "",
-                "sha256": ""
+                "sha256": "",
+                "prerelease": False
             }
             with self.lock:
                 self.cached_check = result
+                self.cached_check_key = cache_key
                 self.last_check_time = time.time()
             return result
 
@@ -151,11 +205,13 @@ class AppUpdaterManager:
             "asset_size": asset_size,
             "download_url": download_url,
             "sha256": expected_sha256,
-            "repo": selected_repo
+            "repo": selected_repo,
+            "prerelease": bool(release_data.get("prerelease", False))
         }
 
         with self.lock:
             self.cached_check = result
+            self.cached_check_key = cache_key
             self.last_check_time = time.time()
 
         return result
