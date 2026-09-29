@@ -11705,7 +11705,8 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
   try {
     const data = await apiService.getRunningInstances();
     const currentJson = JSON.stringify(data);
-    if (!forceRedraw && lastInstancesDataJson === currentJson && container && container.children.length > 0) {
+    const instPopCheck = document.getElementById('instance-actions-popover');
+    if (!forceRedraw && ((instPopCheck && instPopCheck.classList.contains('show')) || (lastInstancesDataJson === currentJson && container && container.children.length > 0))) {
       return;
     }
     lastInstancesDataJson = currentJson;
@@ -11823,14 +11824,19 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
                 <td style="text-align:center;">${accountHtml}</td>
                 <td style="text-align:center;">${placeHtml}</td>
                 <td style="text-align:center; font-weight:600; color:var(--text-bright);">${inst.name}</td>
-                <td style="text-align:center;"><span class="status-badge valid"><span class="dot"></span>${inst.status}</span></td>
+                <td style="text-align:center;">
+                  ${inst.is_hidden
+                    ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:#94a3b8; border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:#94a3b8;"></span>Hidden</span>`
+                    : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
+                  }
+                </td>
                 <td style="text-align:center;"><span style="font-weight:600; color:${(inst.cpu_percent || 0) > 25 ? 'var(--red)' : (inst.cpu_percent || 0) > 12 ? 'var(--yellow)' : 'var(--text-bright)'};">${(inst.cpu_percent ?? 0).toFixed(1)}%</span></td>
                 <td style="text-align:center;">${inst.memory_mb.toFixed(1)} MB</td>
                 <td style="text-align:center; white-space:nowrap;">
                   <div style="display:inline-flex; align-items:center; justify-content:center; gap:6px;">
-                    <button class="btn btn-secondary btn-sm btn-relaunch-pid" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" style="color:var(--primary); padding:4px 9px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px; border-color:rgba(99,102,241,0.35);" title="Relaunch this specific instance">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
-                      Relaunch
+                    <button class="btn btn-secondary btn-sm btn-instance-actions" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" style="padding:4px 9px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px;" title="Instance Actions (Hide, Unhide, Focus, Trim, Relaunch)">
+                      Actions
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:10px;height:10px;"><path d="m6 9 6 6 6-6"/></svg>
                     </button>
                     <button class="btn btn-secondary btn-sm btn-kill-pid" data-pid="${inst.pid}" style="color:var(--red); padding:4px 9px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px; border-color:rgba(239,68,68,0.3);" title="Terminate this process PID">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
@@ -11853,7 +11859,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
                   <th style="width:100px; text-align:center;">Status</th>
                   <th style="width:90px; text-align:center;">CPU</th>
                   <th style="width:100px; text-align:center;">Memory</th>
-                  <th style="width:170px; text-align:center;">Action</th>
+                  <th style="width:160px; text-align:center;">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -11914,6 +11920,27 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
       }
 
       container.innerHTML = mainContentHtml;
+
+      container.querySelectorAll('.btn-instance-actions').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          if (!pidAttr) return;
+          const pid = parseInt(pidAttr, 10);
+          const username = target.getAttribute('data-username') || '';
+          const placeId = target.getAttribute('data-placeid') || '';
+          const isHidden = target.getAttribute('data-hidden') === 'true';
+
+          const pop = document.getElementById('instance-actions-popover');
+          if (pop?.classList.contains('show') && currentInstanceActionData?.pid === pid) {
+            pop.classList.remove('show');
+            return;
+          }
+
+          openInstanceActionsMenu(target, { pid, username, placeId, isHidden });
+        });
+      });
 
       container.querySelectorAll('.btn-relaunch-pid').forEach(btn => {
         btn.addEventListener('click', async (e) => {
@@ -11992,6 +12019,51 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
       container.innerHTML = `<div class="empty-state" style="color:var(--red);">Error loading running instances: ${error.message || error}</div>`;
     }
   }
+}
+
+let currentInstanceActionData: { pid: number; username: string; placeId: string; isHidden: boolean } | null = null;
+
+function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; username: string; placeId: string; isHidden: boolean }): void {
+  const pop = document.getElementById('instance-actions-popover');
+  if (!pop) return;
+
+  currentInstanceActionData = data;
+
+  pop.innerHTML = `
+    <button data-action="focus">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
+      Focus Window
+    </button>
+    <button data-action="unhide">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+      Unhide Client
+    </button>
+    <button data-action="hide">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
+      Hide Client
+    </button>
+    <button data-action="trim">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+      Trim Memory
+    </button>
+    <button data-action="relaunch">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
+      Relaunch
+    </button>
+    <hr>
+    <button data-action="kill" style="color:var(--red);">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--red);"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+      <span style="color:var(--red);">Kill Process</span>
+    </button>
+  `;
+
+  const rect = anchor.getBoundingClientRect();
+  const popWidth = 165;
+  pop.style.position = 'fixed';
+  pop.style.zIndex = '1000';
+  pop.style.top = (rect.bottom + 4) + 'px';
+  pop.style.left = Math.max(10, Math.min(window.innerWidth - popWidth - 10, rect.right - popWidth)) + 'px';
+  pop.classList.add('show');
 }
 
 // Row menu handling
@@ -16924,6 +16996,13 @@ function setupKeyboardShortcuts(): void {
         return;
       }
 
+      const instPopover = document.getElementById('instance-actions-popover');
+      if (instPopover?.classList.contains('show')) {
+        e.preventDefault();
+        instPopover.classList.remove('show');
+        return;
+      }
+
       const confirmOverlay = document.getElementById('confirm-modal-overlay');
       if (confirmOverlay?.classList.contains('show')) {
         e.preventDefault();
@@ -18060,6 +18139,9 @@ function initApp(): void {
     <button data-action="delete" style="color:var(--red);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>Delete</button>
   </div>
 
+  <!-- Instance actions popover -->
+  <div class="popover" id="instance-actions-popover" style="position:fixed; z-index:1000;"></div>
+
   <div id="toast-wrap"></div>
   `;
 
@@ -18068,6 +18150,10 @@ function initApp(): void {
     const pop = document.getElementById('row-popover');
     if (pop && !pop.contains(e.target as Node)) {
       pop.classList.remove('show');
+    }
+    const instPop = document.getElementById('instance-actions-popover');
+    if (instPop && !instPop.contains(e.target as Node) && !(e.target as HTMLElement).closest('.btn-instance-actions')) {
+      instPop.classList.remove('show');
     }
   });
 
@@ -18208,6 +18294,115 @@ function initApp(): void {
       state.revealed = {};
       state.view = 'accounts';
       renderAll();
+    });
+  }
+
+  const instActionsPopover = document.getElementById('instance-actions-popover');
+  if (instActionsPopover) {
+    instActionsPopover.addEventListener('click', async (e) => {
+      const btn = (e.target as HTMLElement).closest('button');
+      if (!btn) return;
+      const action = btn.getAttribute('data-action');
+      instActionsPopover.classList.remove('show');
+      if (!currentInstanceActionData) return;
+      const { pid, username, placeId } = currentInstanceActionData;
+
+      if (action === 'focus') {
+        try {
+          toast(`Focusing window for PID ${pid}...`, 'info');
+          const res = await apiService.focusInstance(pid);
+          if (res.success) {
+            toast(res.message || `Focused instance PID ${pid}`, 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to focus instance', 'error');
+          }
+        } catch (err: any) {
+          toast(`Focus error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'hide') {
+        try {
+          toast(`Hiding client PID ${pid}...`, 'info');
+          const res = await apiService.hideInstance(pid);
+          if (res.success) {
+            toast(res.message || `Hidden instance PID ${pid}`, 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to hide instance', 'error');
+          }
+        } catch (err: any) {
+          toast(`Hide error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'unhide') {
+        try {
+          toast(`Restoring client PID ${pid}...`, 'info');
+          const res = await apiService.unhideInstance(pid);
+          if (res.success) {
+            toast(res.message || `Restored instance PID ${pid}`, 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to unhide instance', 'error');
+          }
+        } catch (err: any) {
+          toast(`Unhide error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'trim') {
+        try {
+          toast(`Trimming RAM for PID ${pid}...`, 'info');
+          const res = await apiService.trimInstanceMemory(pid);
+          if (res.success) {
+            toast(`Trimmed PID ${pid}: reclaimed ${res.savedMb ?? 0} MB RAM`, 'success');
+            addLog(`Trimmed RAM for PID ${pid}: ${res.savedMb ?? 0} MB reclaimed`, 'info');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to trim memory', 'error');
+          }
+        } catch (err: any) {
+          toast(`RAM trim error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'relaunch') {
+        if (!username) {
+          toast('Cannot relaunch unassigned external instance (no linked account)', 'error');
+          return;
+        }
+        try {
+          toast(`Relaunching Roblox instance for @${username}...`, 'info');
+          const res = await apiService.relaunchInstance({ pid, username, placeId });
+          if (res.success) {
+            toast(res.message || `Relaunched instance for @${username}`, 'success');
+            addLog(`Relaunched Roblox instance for @${username} (PID: ${pid || 'N/A'}, Place ID: ${placeId || 'None'})`, 'info');
+            setTimeout(() => {
+              renderInstancesView(true);
+            }, 1500);
+          } else {
+            toast(res.error || 'Failed to relaunch instance', 'error');
+          }
+        } catch (err: any) {
+          toast(`Relaunch error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'kill') {
+        try {
+          const res = await apiService.killInstanceProcess(pid);
+          if (res.success) {
+            toast(`Terminated process PID ${pid}`, 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to kill process', 'error');
+          }
+        } catch (err: any) {
+          toast(`Error: ${err.message || err}`, 'error');
+        }
+      }
     });
   }
 

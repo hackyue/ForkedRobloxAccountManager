@@ -19,10 +19,20 @@ import platform
 import ctypes
 from datetime import datetime
 import subprocess
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import atexit
 import signal
 import psutil
+
+if platform.system() == "Windows":
+    try:
+        import win32gui
+        import win32con
+        import win32process
+    except ImportError:
+        win32gui = win32con = win32process = None
+else:
+    win32gui = win32con = win32process = None
 from classes.account_manager import RobloxAccountManager
 from classes.roblox_api import RobloxAPI
 from classes.icon_cache import icon_cache
@@ -2673,6 +2683,12 @@ _INSTANCES_CACHE_TIME: float = 0.0
 _INSTANCES_CACHE_TTL: float = 1.5
 _INSTANCES_CACHE_LOCK = threading.Lock()
 
+def invalidate_instances_cache():
+    global _INSTANCES_CACHE, _INSTANCES_CACHE_TIME
+    with _INSTANCES_CACHE_LOCK:
+        _INSTANCES_CACHE = None
+        _INSTANCES_CACHE_TIME = 0.0
+
 @app.route('/api/instances', methods=['GET'])
 def get_running_instances():
     """List running Roblox processes, separating actual game clients from crash handlers"""
@@ -2809,6 +2825,16 @@ def get_running_instances():
                         resolved_place = resolve_pid_place_id(pid, acc_info)
                         if resolved_place:
                             inst_obj["place_id"] = str(resolved_place)
+
+                    is_hidden = False
+                    if platform.system() == "Windows" and win32gui:
+                        try:
+                            wins = headless_manager.get_roblox_windows(target_pids={pid}, include_hidden=True)
+                            if wins:
+                                is_hidden = all((hwnd in headless_manager.hidden_hwnds) or not win32gui.IsWindowVisible(hwnd) for hwnd in wins)
+                        except Exception:
+                            pass
+                    inst_obj["is_hidden"] = is_hidden
 
                     game_instances.append(inst_obj)
                 else:
@@ -3191,11 +3217,13 @@ def kill_specific_instance():
         if platform.system() == "Windows":
             res = subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if res.returncode == 0:
+                invalidate_instances_cache()
                 return jsonify({'success': True, 'message': f'Terminated process PID {pid}'})
             else:
                 return jsonify({'success': False, 'error': f'Failed to kill PID {pid}'}), 400
         else:
             res = subprocess.run(["kill", "-9", str(pid)], capture_output=True, text=True)
+            invalidate_instances_cache()
             return jsonify({'success': True, 'message': f'Terminated process PID {pid}'})
     except Exception as e:
         print(f"[ERROR] Kill specific instance failed: {e}")
@@ -3284,11 +3312,218 @@ def relaunch_specific_instance():
                 'timestamp': time.time()
             }
             add_backend_log(f"Relaunched instance for @{username} (Place ID: {place_id or 'None'})", level='info', category='roblox')
+            invalidate_instances_cache()
             return jsonify({'success': True, 'message': f"Relaunched Roblox for @{username}"})
         return jsonify({'success': False, 'error': launch_error or "Roblox isn't installed"}), 400
     except Exception as e:
         print(f"[ERROR] Relaunch instance failed: {e}")
         return jsonify({'success': False, 'error': 'An internal error occurred'}), 500
+
+def focus_instance(pid: int) -> Tuple[bool, str]:
+    if platform.system() != "Windows" or not win32gui or not win32process:
+        return False, "Not supported on this platform"
+    try:
+        windows = headless_manager.get_roblox_windows(target_pids={pid}, include_hidden=True)
+        if not windows:
+            return False, f"No window found for PID {pid}"
+
+        user32 = ctypes.windll.user32
+        for hwnd in windows:
+            headless_manager.restore_window(hwnd)
+            headless_manager.restored_hwnds.add(int(hwnd))
+            headless_manager.restored_pids.add(int(pid))
+            headless_manager.set_process_priority(pid, headless_manager._NORMAL_PRIORITY_CLASS)
+
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, getattr(win32con, "SW_RESTORE", 9))
+            else:
+                win32gui.ShowWindow(hwnd, getattr(win32con, "SW_SHOW", 5))
+
+            try:
+                user32.LockSetForegroundWindow(2)
+            except Exception:
+                pass
+            try:
+                user32.AllowSetForegroundWindow(-1)
+            except Exception:
+                pass
+
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.SetActiveWindow(hwnd)
+            user32.SetFocus(hwnd)
+
+            if user32.GetForegroundWindow() != hwnd:
+                try:
+                    user32.keybd_event(0x12, 0, 0, 0)
+                    user32.keybd_event(0x12, 0, 2, 0)
+                    user32.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
+        return True, "Window focused"
+    except Exception as e:
+        return False, str(e)
+
+def hide_instance(pid: int) -> Tuple[bool, str]:
+    if platform.system() != "Windows" or not win32gui:
+        return False, "Not supported on this platform"
+    try:
+        windows = headless_manager.get_roblox_windows(target_pids={pid}, include_hidden=False)
+        if not windows:
+            return False, f"No visible window found for PID {pid}"
+
+        headless_manager.restored_pids.discard(int(pid))
+        count = 0
+        for hwnd in windows:
+            headless_manager.restored_hwnds.discard(int(hwnd))
+            if headless_manager.hide_window(hwnd):
+                count += 1
+
+        if headless_manager.is_idle_priority_enabled():
+            headless_manager.set_process_priority(pid, headless_manager._IDLE_PRIORITY_CLASS)
+
+        return True, f"Hidden {count} window(s)"
+    except Exception as e:
+        return False, str(e)
+
+def unhide_instance(pid: int) -> Tuple[bool, str]:
+    if platform.system() != "Windows" or not win32gui:
+        return False, "Not supported on this platform"
+    try:
+        windows = headless_manager.get_roblox_windows(target_pids={pid}, include_hidden=True)
+        if not windows:
+            return False, f"No window found for PID {pid}"
+
+        count = 0
+        for hwnd in windows:
+            if headless_manager.restore_window(hwnd):
+                count += 1
+            headless_manager.restored_hwnds.add(int(hwnd))
+
+        headless_manager.restored_pids.add(int(pid))
+        headless_manager.set_process_priority(pid, headless_manager._NORMAL_PRIORITY_CLASS)
+
+        if count > 0 and auto_arranger and auto_arranger.is_enabled():
+            try:
+                auto_arranger.trigger_delayed_arrange(0.5)
+            except Exception:
+                pass
+
+        return True, f"Restored {count} window(s)"
+    except Exception as e:
+        return False, str(e)
+
+def trim_instance(pid: int) -> Tuple[bool, float, str]:
+    if platform.system() != "Windows":
+        return False, 0.0, "Not supported on this platform"
+    try:
+        ok, before_bytes, after_bytes = trim_process_working_set(pid)
+        saved_mb = round(max(0, before_bytes - after_bytes) / (1024 * 1024), 1)
+        if ok:
+            return True, saved_mb, f"Reclaimed {saved_mb} MB RAM"
+        return False, 0.0, "Failed to trim working set"
+    except Exception as e:
+        return False, 0.0, str(e)
+
+@app.route('/api/instances/focus', methods=['POST', 'OPTIONS'])
+def focus_instance_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        req_data = request.json or {}
+        pid = req_data.get('pid')
+        if not pid:
+            return jsonify({'success': False, 'error': 'PID is required'}), 400
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid PID'}), 400
+
+        if not _is_roblox_pid(pid):
+            return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
+
+        ok, msg = focus_instance(pid)
+        if ok:
+            invalidate_instances_cache()
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/instances/hide', methods=['POST', 'OPTIONS'])
+def hide_instance_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        req_data = request.json or {}
+        pid = req_data.get('pid')
+        if not pid:
+            return jsonify({'success': False, 'error': 'PID is required'}), 400
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid PID'}), 400
+
+        if not _is_roblox_pid(pid):
+            return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
+
+        ok, msg = hide_instance(pid)
+        if ok:
+            invalidate_instances_cache()
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/instances/unhide', methods=['POST', 'OPTIONS'])
+def unhide_instance_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        req_data = request.json or {}
+        pid = req_data.get('pid')
+        if not pid:
+            return jsonify({'success': False, 'error': 'PID is required'}), 400
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid PID'}), 400
+
+        if not _is_roblox_pid(pid):
+            return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
+
+        ok, msg = unhide_instance(pid)
+        if ok:
+            invalidate_instances_cache()
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/instances/trim', methods=['POST', 'OPTIONS'])
+def trim_instance_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        req_data = request.json or {}
+        pid = req_data.get('pid')
+        if not pid:
+            return jsonify({'success': False, 'error': 'PID is required'}), 400
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid PID'}), 400
+
+        if not _is_roblox_pid(pid):
+            return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
+
+        ok, saved_mb, msg = trim_instance(pid)
+        if ok:
+            invalidate_instances_cache()
+            return jsonify({'success': True, 'savedMb': saved_mb, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/setup/complete', methods=['POST', 'OPTIONS'])
 def complete_setup():

@@ -81,6 +81,7 @@ export interface RobloxInstanceProcess {
   avatar_url?: string;
   user_id?: string;
   place_id?: string;
+  is_hidden?: boolean;
 }
 
 export interface RunningInstancesResponse {
@@ -868,6 +869,22 @@ class ApiService {
 
   async relaunchInstance(params: { pid?: number; username?: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
     return this.request<{ success: boolean; message?: string; error?: string }>('/instances/relaunch', 'POST', params);
+  }
+
+  async focusInstance(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string }>('/instances/focus', 'POST', { pid });
+  }
+
+  async hideInstance(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string }>('/instances/hide', 'POST', { pid });
+  }
+
+  async unhideInstance(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string }>('/instances/unhide', 'POST', { pid });
+  }
+
+  async trimInstanceMemory(pid: number): Promise<{ success: boolean; savedMb?: number; message?: string; error?: string }> {
+    return this.request<{ success: boolean; savedMb?: number; message?: string; error?: string }>('/instances/trim', 'POST', { pid });
   }
 
   async getAuthStatus(): Promise<{ encryptionEnabled: boolean; encryptionMethod: string; locked: boolean }> {
