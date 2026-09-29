@@ -1822,8 +1822,10 @@ def bloxgen_api_request(endpoint, method='GET', params=None, body_data=None):
             return json.loads(err_body), e.code
         except Exception:
             return {'success': False, 'message': f'HTTP Error {e.code}'}, e.code
+    except urllib.error.URLError as e:
+        return {'success': False, 'message': f'BloxGen connection error: {e.reason}'}, 502
     except Exception as e:
-        return {'success': False, 'message': str(e)}, 500
+        return {'success': False, 'message': str(e)}, 502
 
 @app.route('/api/bloxgen/balance', methods=['GET'])
 def bloxgen_get_balance():

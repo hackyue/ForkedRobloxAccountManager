@@ -7,6 +7,7 @@ import shutil
 import zipfile
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional
 import requests
 from classes.roblox_api import RobloxAPI
@@ -148,7 +149,7 @@ class RobloxInstallerManager:
 
         for url in candidate_urls:
             try:
-                response = session.get(url, headers=headers, timeout=6)
+                response = session.get(url, headers=headers, timeout=2.5)
                 if response.ok:
                     data = response.json()
                     if isinstance(data, list) and len(data) > 0:
@@ -179,7 +180,7 @@ class RobloxInstallerManager:
 
         for url in candidate_urls:
             try:
-                response = session.get(url, headers=headers, timeout=5)
+                response = session.get(url, headers=headers, timeout=2.0)
                 response.raise_for_status()
                 data = response.json()
             except Exception:
@@ -205,7 +206,7 @@ class RobloxInstallerManager:
 
         if status == "LIVE":
             try:
-                response = session.get(ROBLOX_CLIENT_SETTINGS_URL, timeout=5)
+                response = session.get(ROBLOX_CLIENT_SETTINGS_URL, timeout=2.5)
                 if response.ok:
                     data = response.json()
                     win = data.get("clientVersionUpload") or data.get("version")
@@ -229,10 +230,18 @@ class RobloxInstallerManager:
             (WEAO_VERSIONS_PAST_PATH, "PAST"),
         )
         fetched_versions = []
-        for route_path, status in route_specs:
-            entry = self._fetch_weao_windows_version(route_path, status)
-            if entry:
-                fetched_versions.append(entry)
+        try:
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(self._fetch_weao_windows_version, path, status) for path, status in route_specs]
+                for f in futures:
+                    entry = f.result()
+                    if entry:
+                        fetched_versions.append(entry)
+        except Exception:
+            for route_path, status in route_specs:
+                entry = self._fetch_weao_windows_version(route_path, status)
+                if entry:
+                    fetched_versions.append(entry)
 
         display_priority = {"FUTURE": 0, "LIVE": 1, "PAST": 2}
         dedupe_priority = {"LIVE": 0, "FUTURE": 1, "PAST": 2}
