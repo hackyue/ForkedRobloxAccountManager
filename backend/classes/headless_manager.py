@@ -35,6 +35,8 @@ class HeadlessManager:
         self.seen_pids: Set[int] = set()
         self.first_seen_pids: Dict[int, float] = {}
         self.hidden_hwnds: Set[int] = set()
+        self.restored_pids: Set[int] = set()
+        self.restored_hwnds: Set[int] = set()
         self.generation = 0
 
     def get_settings(self) -> Dict[str, Any]:
@@ -155,7 +157,8 @@ class HeadlessManager:
             pass
 
         if changed:
-            self.hidden_hwnds.add(hwnd)
+            self.hidden_hwnds.add(int(hwnd))
+            self.restored_hwnds.discard(int(hwnd))
         return changed
 
     def restore_window(self, hwnd: int) -> bool:
@@ -164,7 +167,8 @@ class HeadlessManager:
         try:
             win32gui.ShowWindow(hwnd, getattr(win32con, "SW_SHOW", 5))
             win32gui.ShowWindow(hwnd, getattr(win32con, "SW_RESTORE", 9))
-            self.hidden_hwnds.discard(hwnd)
+            self.hidden_hwnds.discard(int(hwnd))
+            self.restored_hwnds.add(int(hwnd))
             return True
         except Exception:
             return False
@@ -230,12 +234,15 @@ class HeadlessManager:
                 except Exception:
                     pass
 
-    def apply_pass(self, force_trim: bool = False) -> Dict[str, Any]:
+    def apply_pass(self, force_trim: bool = False, force_hide_all: bool = False) -> Dict[str, Any]:
         with self.lock:
             pids = self.get_roblox_pids()
             if not pids:
                 self.seen_pids = set()
                 self.first_seen_pids = {}
+                self.restored_pids.clear()
+                self.restored_hwnds.clear()
+                self.hidden_hwnds.clear()
                 return {
                     "pids": 0,
                     "hidden": 0,
@@ -244,23 +251,32 @@ class HeadlessManager:
                     "new_pids": []
                 }
 
-            now = time.monotonic()
-            delay_seconds = 0 if force_trim else self.get_detection_delay_seconds()
+            if force_hide_all:
+                self.restored_pids.clear()
+                self.restored_hwnds.clear()
+
+            for stale_pid in (self.restored_pids - pids):
+                self.restored_pids.discard(stale_pid)
 
             for stale_pid in set(self.first_seen_pids.keys()) - pids:
                 self.first_seen_pids.pop(stale_pid, None)
+
+            now = time.monotonic()
+            delay_seconds = 0 if (force_trim or force_hide_all) else self.get_detection_delay_seconds()
 
             for pid in pids:
                 if pid not in self.first_seen_pids:
                     self.first_seen_pids[pid] = now
 
+            target_pids = set(pids) if force_hide_all else (pids - self.restored_pids)
+
             if delay_seconds > 0:
                 ready_pids = {
-                    pid for pid in pids
+                    pid for pid in target_pids
                     if (now - float(self.first_seen_pids.get(pid, now))) >= delay_seconds
                 }
             else:
-                ready_pids = set(pids)
+                ready_pids = set(target_pids)
 
             previous_pids = set(self.seen_pids)
             new_pids = sorted(pids - previous_pids)
@@ -281,8 +297,9 @@ class HeadlessManager:
 
             visible_windows = self.get_roblox_windows(target_pids=ready_pids, include_hidden=False)
             for hwnd in visible_windows:
-                if self.hide_window(hwnd):
-                    hidden_count += 1
+                if force_hide_all or hwnd not in self.restored_hwnds:
+                    if self.hide_window(hwnd):
+                        hidden_count += 1
 
             if self.is_idle_priority_enabled():
                 for pid in ready_pids:
@@ -319,15 +336,16 @@ class HeadlessManager:
             for hwnd in windows:
                 if self.restore_window(hwnd):
                     restored_count += 1
+                self.restored_hwnds.add(int(hwnd))
 
             for pid in pids:
                 ok, _ = self.set_process_priority(pid, self._NORMAL_PRIORITY_CLASS)
                 if ok:
                     priority_count += 1
+                self.restored_pids.add(int(pid))
 
-            self.seen_pids = set()
-            self.first_seen_pids = {}
-            self.hidden_hwnds = set()
+            self.hidden_hwnds.clear()
+            self.seen_pids = set(pids)
 
             if restored_count > 0 and self.auto_arranger and self.auto_arranger.is_enabled():
                 try:
@@ -365,6 +383,9 @@ class HeadlessManager:
                 self.watchdog_running = True
                 self.generation += 1
                 gen = self.generation
+                with self.lock:
+                    self.restored_pids.clear()
+                    self.restored_hwnds.clear()
                 self.watchdog_thread = threading.Thread(
                     target=self._watchdog_loop,
                     args=(gen,),
@@ -376,6 +397,9 @@ class HeadlessManager:
             if self.watchdog_running:
                 self.watchdog_running = False
                 self.generation += 1
+                with self.lock:
+                    self.restored_pids.clear()
+                    self.restored_hwnds.clear()
                 threading.Thread(
                     target=self.restore_all_windows,
                     daemon=True,

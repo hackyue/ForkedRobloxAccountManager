@@ -1965,7 +1965,7 @@ def apply_headless_now():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        res = headless_manager.apply_pass(force_trim=True)
+        res = headless_manager.apply_pass(force_trim=True, force_hide_all=True)
         return jsonify({
             'success': True,
             'pids': res.get('pids', 0),
