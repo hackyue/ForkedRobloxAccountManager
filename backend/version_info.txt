@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(3, 0, 0, 0),
-    prodvers=(3, 0, 0, 0),
+    filevers=(3, 0, 0, 1),
+    prodvers=(3, 0, 0, 1),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -17,12 +17,12 @@ VSVersionInfo(
           [
             StringStruct('CompanyName', 'hackyue'),
             StringStruct('FileDescription', 'FRAM Backend Service'),
-            StringStruct('FileVersion', '3.0.0.0'),
+            StringStruct('FileVersion', '3.0.0.1'),
             StringStruct('InternalName', 'backend.exe'),
             StringStruct('LegalCopyright', ' Copyright (C) 2007 Free Software Foundation, Inc'),
             StringStruct('OriginalFilename', 'backend.exe'),
             StringStruct('ProductName', 'FRAM'),
-            StringStruct('ProductVersion', '3.0.0.0')
+            StringStruct('ProductVersion', '3.0.0.1')
           ]
         )
       ]

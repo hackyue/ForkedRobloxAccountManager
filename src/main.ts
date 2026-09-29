@@ -14324,6 +14324,19 @@ function formatReleaseMarkdown(raw: string): string {
 
 const FALLBACK_APP_RELEASES = [
   {
+    name: 'Version 3.0.0.1 — Pre-release',
+    tag_name: 'v3.0.0.1',
+    prerelease: true,
+    published_at: '2026-09-29T12:00:00Z',
+    html_url: 'https://github.com/hackyue/ForkedRobloxAccountManager/releases',
+    body: `### 🚀 Highlights & Pre-release Updates
+- **Pre-release 3.0.0.1**: Maintenance, bug fixes, and stability enhancements.
+- **All-New Tauri Desktop Architecture**: Ultra-lightweight, high-performance desktop client with native system tray integration.
+- **Enhanced Account Management**: Seamless cookie, user:pass, browser, and Quick Sign-In login flows.
+- **Multi-Instance & Mutex Engine**: Unlimited concurrent Roblox instances with crash recovery and auto memory trimmer.
+- **Auto Rejoin & Anti-AFK**: Background heartbeats with configurable keypresses and smart reconnection routines.`
+  },
+  {
     name: 'Version 3.0.0 — Major Architecture & UI Overhaul',
     tag_name: 'v3.0.0',
     published_at: '2026-09-20T12:00:00Z',
@@ -14464,7 +14477,7 @@ function renderAboutView(): void {
       <div class="about-specs-grid">
         <div class="about-spec-card" id="btn-about-card-release" style="cursor:pointer;" title="View Release Changelogs">
           <div class="about-spec-info">
-            <span class="about-spec-val">Version 3.0.0</span>
+            <span class="about-spec-val">Version 3.0.0.1 (Pre-release)</span>
             <span style="font-size:12px; color:var(--muted); margin-top:2px;">Click to view What's New changelogs &rarr;</span>
           </div>
         </div>
@@ -14713,12 +14726,12 @@ function isPackageSupportedRelease(tagOrName: string): boolean {
           const assetName = btn.getAttribute('data-asset-name') || 'FRAM_Installer.exe';
           const downloadUrl = btn.getAttribute('data-download-url') || '';
           const assetSize = parseInt(btn.getAttribute('data-asset-size') || '0', 10);
-          const targetVersion = (rel.tag_name || '').replace(/^v/i, '') || '3.0.0';
+          const targetVersion = (rel.tag_name || '').replace(/^v/i, '') || '3.0.0.1';
 
           const updatePayload: UpdateCheckResult = {
             success: true,
             update_available: true,
-            current_version: '3.0.0',
+            current_version: '3.0.0.1',
             latest_version: targetVersion,
             latest_tag: rel.tag_name || `v${targetVersion}`,
             release_title: `${rel.name || rel.tag_name || 'Release'} — ${assetName}`,
@@ -15162,7 +15175,7 @@ function showUpdateModal(initialCheck?: UpdateCheckResult): void {
       <div class="modal-body">
         <div class="updater-version-info">
           <div class="updater-badges">
-            <span class="updater-badge current" id="updater-curr-badge">Current: v3.0.0</span>
+            <span class="updater-badge current" id="updater-curr-badge">Current: v3.0.0.1 (Pre-release)</span>
             <span class="updater-arrow">→</span>
             <span class="updater-badge latest" id="updater-latest-badge">Checking...</span>
           </div>
@@ -17966,7 +17979,7 @@ function initApp(): void {
             <div class="about-title-wrap">
               <div style="display:flex; align-items:center; gap:8px;">
                 <h2 style="font-size:17px; font-weight:700; color:var(--text-bright); margin:0;">About Forked Roblox Account Manager</h2>
-                <span class="badge" style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:12px; background:var(--primary-dim); color:var(--primary); border:1px solid var(--primary);">v3.0.0</span>
+                <span class="badge" style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:12px; background:var(--primary-dim); color:var(--primary); border:1px solid var(--primary);">v3.0.0.1 Pre-release</span>
               </div>
               <span style="font-size:12px; color:var(--text-muted);">Account Manager, Instance Manager, VIP Server Manager · Developed by <b style="color:var(--fg);">hackyue</b></span>
             </div>
