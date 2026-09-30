@@ -13,7 +13,7 @@ import requests
 from utils.paths import get_data_folder
 
 class AppUpdaterManager:
-    APP_VERSION = "3.0.0.1"
+    APP_VERSION = "3.0.0.2"
     PRIMARY_REPO = "hackyue/ForkedRobloxAccountManager"
     DEV_REPO = "hackyue/ForkedRobloxAccountManagerv3"
 

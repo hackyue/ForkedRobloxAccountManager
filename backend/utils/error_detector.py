@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 
 class ErrorDetector:
-    APP_VERSION = "3.0.0.1"
+    APP_VERSION = "3.0.0.2"
     GITHUB_REPO = "hackyue/ForkedRobloxAccountManager"
 
     def __init__(self):
