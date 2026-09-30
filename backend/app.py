@@ -3199,12 +3199,15 @@ def _is_roblox_pid(pid):
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ValueError, TypeError):
         return False
 
-@app.route('/api/instances/kill', methods=['POST'])
+@app.route('/api/instances/kill', methods=['POST', 'OPTIONS'])
 def kill_specific_instance():
     """Kill a specific Roblox process by PID after verifying it is a Roblox process"""
+    if request.method == 'OPTIONS':
+        return '', 200
     try:
         req_data = request.json or {}
         pid = req_data.get('pid')
+        username = req_data.get('username')
         if not pid:
             return jsonify({'success': False, 'error': 'PID is required'}), 400
 
@@ -3216,17 +3219,83 @@ def kill_specific_instance():
         if not _is_roblox_pid(pid):
             return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
 
+        manager = get_account_manager()
+        resolved_username = str(username or '').strip()
+
+        if not resolved_username:
+            try:
+                acc_info = resolve_pid_account(pid)
+                if acc_info and acc_info.get('username'):
+                    resolved_username = str(acc_info.get('username')).strip()
+            except Exception:
+                pass
+
+        if not resolved_username:
+            for uname_k, l_info in list(last_launch_info.items()):
+                if l_info.get('pid') == pid:
+                    resolved_username = uname_k
+                    break
+
+        if not resolved_username and manager and getattr(manager, 'auto_rejoin_monitor', None):
+            for candidate_uname, sess in list(getattr(manager.auto_rejoin_monitor, 'active_sessions', {}).items()):
+                if int(getattr(sess, 'pid', 0) or 0) == pid:
+                    resolved_username = candidate_uname
+                    break
+
+        if manager and getattr(manager, 'auto_rejoin_monitor', None):
+            try:
+                manager.auto_rejoin_monitor.mark_intentionally_stopped(username=resolved_username or None, pid=pid)
+            except Exception:
+                pass
+
+        if resolved_username:
+            uname_lower = resolved_username.lower()
+            last_launch_info.pop(uname_lower, None)
+            last_launch_times.pop(uname_lower, None)
+
+            try:
+                with data_transaction() as data:
+                    for acc in data.get('accounts', []):
+                        if str(acc.get('username', '')).lower() == uname_lower:
+                            acc['auto_rejoin_enabled'] = False
+                if manager and hasattr(manager, 'accounts') and isinstance(manager.accounts, dict):
+                    for acc_key, acc_val in manager.accounts.items():
+                        if str(acc_key).lower() == uname_lower and isinstance(acc_val, dict):
+                            acc_val['auto_rejoin_enabled'] = False
+            except Exception as e:
+                print(f"[WARN] Failed to disable auto_rejoin_enabled for {resolved_username}: {e}")
+
+        if headless_manager:
+            try:
+                headless_manager.restored_pids.discard(int(pid))
+                wins = headless_manager.get_roblox_windows(target_pids={pid}, include_hidden=True)
+                for w in wins:
+                    headless_manager.hidden_hwnds.discard(int(w))
+                    headless_manager.restored_hwnds.discard(int(w))
+            except Exception:
+                pass
+
         if platform.system() == "Windows":
             res = subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if res.returncode == 0:
                 invalidate_instances_cache()
-                return jsonify({'success': True, 'message': f'Terminated process PID {pid}'})
+                return jsonify({
+                    'success': True,
+                    'message': f'Terminated process PID {pid}',
+                    'username': resolved_username or None,
+                    'auto_rejoin_disabled': bool(resolved_username)
+                })
             else:
                 return jsonify({'success': False, 'error': f'Failed to kill PID {pid}'}), 400
         else:
             res = subprocess.run(["kill", "-9", str(pid)], capture_output=True, text=True)
             invalidate_instances_cache()
-            return jsonify({'success': True, 'message': f'Terminated process PID {pid}'})
+            return jsonify({
+                'success': True,
+                'message': f'Terminated process PID {pid}',
+                'username': resolved_username or None,
+                'auto_rejoin_disabled': bool(resolved_username)
+            })
     except Exception as e:
         print(f"[ERROR] Kill specific instance failed: {e}")
         return jsonify({'success': False, 'error': 'An internal error occurred'}), 500

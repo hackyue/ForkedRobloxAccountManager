@@ -11838,7 +11838,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
                       Actions
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:10px;height:10px;"><path d="m6 9 6 6 6-6"/></svg>
                     </button>
-                    <button class="btn btn-secondary btn-sm btn-kill-pid" data-pid="${inst.pid}" style="color:var(--red); padding:4px 9px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px; border-color:rgba(239,68,68,0.3);" title="Terminate this process PID">
+                    <button class="btn btn-secondary btn-sm btn-kill-pid" data-pid="${inst.pid}" data-username="${inst.username || ''}" style="color:var(--red); padding:4px 9px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px; border-color:rgba(239,68,68,0.3);" title="Terminate this process PID">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
                       Kill
                     </button>
@@ -11996,13 +11996,24 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
 
       container.querySelectorAll('.btn-kill-pid').forEach(btn => {
         btn.addEventListener('click', async (e) => {
-          const pidAttr = (e.currentTarget as HTMLElement).getAttribute('data-pid');
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          const username = target.getAttribute('data-username') || undefined;
           if (!pidAttr) return;
           const pid = parseInt(pidAttr, 10);
           try {
-            const res = await apiService.killInstanceProcess(pid);
+            const res = await apiService.killInstanceProcess(pid, username);
             if (res.success) {
-              toast(`Terminated process PID ${pid}`, 'success');
+              const killedUname = (res.username || username || '').toLowerCase();
+              if (killedUname) {
+                const matchedAcc = (state.accounts || []).find(a => (a.username || '').toLowerCase() === killedUname);
+                if (matchedAcc) {
+                  matchedAcc.auto_rejoin_enabled = false;
+                  renderTable();
+                  renderStats();
+                }
+              }
+              toast(`Terminated process PID ${pid}${killedUname ? ` (@${killedUname} auto-rejoin stopped)` : ''}`, 'success');
               renderInstancesView();
             } else {
               toast(res.error || 'Failed to kill process', 'error');
@@ -18358,10 +18369,20 @@ function initApp(): void {
       }
 
       if (action === 'kill') {
+        const username = currentInstanceActionData?.username || undefined;
         try {
-          const res = await apiService.killInstanceProcess(pid);
+          const res = await apiService.killInstanceProcess(pid, username);
           if (res.success) {
-            toast(`Terminated process PID ${pid}`, 'success');
+            const killedUname = (res.username || username || '').toLowerCase();
+            if (killedUname) {
+              const matchedAcc = (state.accounts || []).find(a => (a.username || '').toLowerCase() === killedUname);
+              if (matchedAcc) {
+                matchedAcc.auto_rejoin_enabled = false;
+                renderTable();
+                renderStats();
+              }
+            }
+            toast(`Terminated process PID ${pid}${killedUname ? ` (@${killedUname} auto-rejoin stopped)` : ''}`, 'success');
             renderInstancesView(true);
           } else {
             toast(res.error || 'Failed to kill process', 'error');

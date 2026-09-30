@@ -863,8 +863,8 @@ class ApiService {
     return this.request<RunningInstancesResponse>('/instances');
   }
 
-  async killInstanceProcess(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {
-    return this.request<{ success: boolean; message?: string; error?: string }>('/instances/kill', 'POST', { pid });
+  async killInstanceProcess(pid: number, username?: string): Promise<{ success: boolean; message?: string; error?: string; username?: string; auto_rejoin_disabled?: boolean }> {
+    return this.request<{ success: boolean; message?: string; error?: string; username?: string; auto_rejoin_disabled?: boolean }>('/instances/kill', 'POST', { pid, username });
   }
 
   async relaunchInstance(params: { pid?: number; username?: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
