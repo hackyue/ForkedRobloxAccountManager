@@ -193,7 +193,16 @@ class ChromiumDownloaderManager:
                     resolved_member_path.relative_to(resolved_target_dir)
                 except ValueError as exc:
                     raise RuntimeError(f"The {description} archive contains an unsafe path.") from exc
-            archive.extractall(target_dir)
+            if platform.system() == "Darwin":
+                res = subprocess.run(
+                    ["/usr/bin/ditto", "-x", "-k", str(archive_path), str(target_dir)],
+                    capture_output=True,
+                    text=True,
+                )
+                if res.returncode != 0:
+                    archive.extractall(target_dir)
+            else:
+                archive.extractall(target_dir)
 
     def _run_download_thread(self) -> None:
         session = requests.Session()

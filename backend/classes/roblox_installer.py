@@ -18,7 +18,7 @@ from utils.paths import get_root_app_dir
 WEAO_VERSIONS_CURRENT_PATH = "/api/versions/current"
 WEAO_VERSIONS_FUTURE_PATH = "/api/versions/future"
 WEAO_VERSIONS_PAST_PATH = "/api/versions/past"
-WEAO_API_HOSTS = ("weao.xyz", "whatexpsare.online", "weao.gg", "whatexploitsaretra.sh")
+WEAO_API_HOSTS = ("whatexpsare.online", "weao.gg", "whatexploitsaretra.sh", "weao.xyz")
 WEAO_API_USER_AGENT = "WEAO-3PService"
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
@@ -197,7 +197,9 @@ class RobloxInstallerManager:
             is_mac = platform.system() == "Darwin"
             ver_key = "Mac" if is_mac else "Windows"
             date_key = "MacDate" if is_mac else "WindowsDate"
-            ver_str = data.get(ver_key)
+            resp_key = "MacResponse" if is_mac else "WindowsResponse"
+            resp_obj = data.get(resp_key) if isinstance(data.get(resp_key), dict) else {}
+            ver_str = data.get(ver_key) or resp_obj.get("clientVersionUpload")
             if not ver_str or not isinstance(ver_str, str):
                 continue
             ver_str = ver_str.strip()
@@ -205,6 +207,7 @@ class RobloxInstallerManager:
                 continue
             return {
                 "version": ver_str,
+                "roblox_version": resp_obj.get("version"),
                 "status": status,
                 "date": data.get(date_key),
                 "download_channel": "LIVE",
@@ -212,22 +215,26 @@ class RobloxInstallerManager:
                 "label": f"[{status}] {ver_str}"
             }
 
-        if status == "LIVE":
+        if status in ("LIVE", "FUTURE"):
             try:
                 is_mac = platform.system() == "Darwin"
-                settings_url = ROBLOX_MAC_CLIENT_SETTINGS_URL if is_mac else ROBLOX_CLIENT_SETTINGS_URL
-                response = session.get(settings_url, timeout=2.5)
+                if status == "LIVE":
+                    settings_url = ROBLOX_MAC_CLIENT_SETTINGS_URL if is_mac else ROBLOX_CLIENT_SETTINGS_URL
+                else:
+                    base_settings_url = ROBLOX_MAC_CLIENT_SETTINGS_URL if is_mac else ROBLOX_CLIENT_SETTINGS_URL
+                    settings_url = f"{base_settings_url}/channel/zflag"
+                response = session.get(settings_url, timeout=3.0)
                 if response.ok:
                     data = response.json()
                     ver_str = data.get("clientVersionUpload") or data.get("version")
                     if ver_str and isinstance(ver_str, str) and ver_str.startswith("version-"):
                         return {
                             "version": ver_str.strip(),
-                            "status": "LIVE",
+                            "status": status,
                             "date": None,
                             "download_channel": "LIVE",
                             "source": "RobloxAPI",
-                            "label": f"[LIVE] {ver_str.strip()}"
+                            "label": f"[{status}] {ver_str.strip()}"
                         }
             except Exception:
                 pass
@@ -273,6 +280,26 @@ class RobloxInstallerManager:
         return ordered_versions
 
     def get_local_roblox_versions(self, limit=INSTALLER_VERSION_ENTRY_LIMIT) -> List[Dict[str, Any]]:
+        if platform.system() == "Darwin":
+            versions = []
+            seen = set()
+            for idx, item in enumerate(RobloxAPI.get_installed_versions()):
+                ver_name = str(item.get("version") or "").strip()
+                if not ver_name or ver_name in seen:
+                    continue
+                seen.add(ver_name)
+                src_name = item.get("source") or "Roblox"
+                versions.append({
+                    "label": f"[{src_name}] {ver_name}",
+                    "path": item.get("path", ""),
+                    "version": ver_name,
+                    "status": "LIVE" if idx == 0 else "PAST",
+                    "source": "Local"
+                })
+            if limit is not None:
+                versions = versions[:limit]
+            return versions
+
         sources = []
         for client in self.get_installed_clients():
             v_path = client.get("versions_path", "")
@@ -344,12 +371,21 @@ class RobloxInstallerManager:
         if platform.system() == "Darwin":
             mac_versions_dir = os.path.join(get_root_app_dir(), "RobloxVersions")
             os.makedirs(mac_versions_dir, exist_ok=True)
-            return [{
-                "id": "roblox",
-                "name": "Roblox",
-                "versions_path": mac_versions_dir,
-                "installed": os.path.isdir("/Applications/Roblox.app") or os.path.isdir(mac_versions_dir)
-            }]
+            sys_apps_dir = "/Applications" if os.access("/Applications", os.W_OK) else os.path.expanduser("~/Applications")
+            return [
+                {
+                    "id": "roblox",
+                    "name": "Roblox (FRAM Managed)",
+                    "versions_path": mac_versions_dir,
+                    "installed": os.path.isdir(mac_versions_dir)
+                },
+                {
+                    "id": "roblox_applications",
+                    "name": "Roblox (/Applications)",
+                    "versions_path": sys_apps_dir,
+                    "installed": os.path.isdir("/Applications/Roblox.app") or os.path.isdir(os.path.expanduser("~/Applications/Roblox.app"))
+                },
+            ]
 
         candidates = []
         known_paths = set()
@@ -478,7 +514,10 @@ class RobloxInstallerManager:
         if not version.startswith("version-"):
             version = "version-" + version
 
-        target_dir = os.path.join(selected_client["versions_path"], version)
+        if platform.system() == "Darwin" and selected_client["id"] == "roblox_applications":
+            target_dir = os.path.join(selected_client["versions_path"], "Roblox.app")
+        else:
+            target_dir = os.path.join(selected_client["versions_path"], version)
 
         if os.path.exists(target_dir) and not overwrite:
             return {
@@ -545,58 +584,101 @@ class RobloxInstallerManager:
                 channel_path = f"{RDD_HOST_PATH}/channel/{channel.lower()}"
 
             if platform.system() == "Darwin":
-                blob_dir = RDD_BINARY_TYPES["MacPlayer"]["blob_dir"]
-                zip_url = f"{channel_path}{blob_dir}{version}-RobloxPlayer.zip"
+                is_arm64 = platform.machine().lower() in ("arm64", "aarch64")
+                channel_suffix = "" if channel == "LIVE" else f"/channel/{channel.lower()}"
+                cdn_hosts = ["https://setup.rbxcdn.com", "https://setup-aws.rbxcdn.com"]
+                mac_paths = ["/mac/arm64/", "/mac/"] if is_arm64 else ["/mac/"]
+                candidate_urls = [
+                    f"{host}{channel_suffix}{mac_path}{version}-RobloxPlayer.zip"
+                    for mac_path in mac_paths
+                    for host in cdn_hosts
+                ]
+
                 temp_root = tempfile.mkdtemp(prefix="fram_rdd_mac_")
                 zip_path = os.path.join(temp_root, "RobloxPlayer.zip")
+                extract_dir = os.path.join(temp_root, "extracted")
+                os.makedirs(extract_dir, exist_ok=True)
 
                 update_state(status=f"Downloading macOS Roblox {version}...", progress=10)
-                with session.get(zip_url, headers=ROBLOX_DOWNLOAD_HEADERS, stream=True, timeout=(15, 180)) as r:
-                    r.raise_for_status()
-                    total_bytes = int(r.headers.get("Content-Length") or 0)
-                    downloaded = 0
-                    with open(zip_path, "wb") as out:
-                        for chunk in r.iter_content(chunk_size=1024 * 512):
-                            if chunk:
-                                out.write(chunk)
-                                downloaded += len(chunk)
-                                if total_bytes > 0:
-                                    pct = 10.0 + (downloaded / total_bytes) * 65.0
-                                    update_state(
-                                        status=f"Downloading RobloxPlayer.zip ({downloaded / (1024 * 1024):.1f} / {total_bytes / (1024 * 1024):.1f} MB)...",
-                                        progress=round(pct, 1)
-                                    )
+                downloaded_ok = False
+                last_err = None
+                for zip_url in candidate_urls:
+                    try:
+                        with session.get(zip_url, headers=ROBLOX_DOWNLOAD_HEADERS, stream=True, timeout=(15, 180)) as r:
+                            if r.status_code == 404 or r.status_code == 403:
+                                last_err = f"HTTP {r.status_code} for {zip_url}"
+                                continue
+                            r.raise_for_status()
+                            total_bytes = int(r.headers.get("Content-Length") or 0)
+                            downloaded = 0
+                            with open(zip_path, "wb") as out:
+                                for chunk in r.iter_content(chunk_size=1024 * 512):
+                                    if chunk:
+                                        out.write(chunk)
+                                        downloaded += len(chunk)
+                                        if total_bytes > 0:
+                                            pct = 10.0 + (downloaded / total_bytes) * 65.0
+                                            update_state(
+                                                status=f"Downloading RobloxPlayer.zip ({downloaded / (1024 * 1024):.1f} / {total_bytes / (1024 * 1024):.1f} MB)...",
+                                                progress=round(pct, 1)
+                                            )
+                            if os.path.isfile(zip_path) and os.path.getsize(zip_path) > 1024 * 1024:
+                                downloaded_ok = True
+                                break
+                    except Exception as dl_exc:
+                        last_err = str(dl_exc)
+                        continue
 
-                update_state(status="Extracting Roblox.app...", progress=80)
-                os.makedirs(target_dir, exist_ok=True)
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    for info in zf.infolist():
-                        name = info.filename
-                        if not name or name.endswith("/") or name.endswith("\\"):
-                            continue
-                        fixed = name.replace("\\", "/").lstrip("/")
-                        normalized = os.path.normpath(fixed)
-                        if normalized.startswith("..") or os.path.isabs(normalized):
-                            continue
-                        dest_path = os.path.join(target_dir, normalized)
-                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                        with zf.open(info, "r") as src_f, open(dest_path, "wb") as dst_f:
-                            shutil.copyfileobj(src_f, dst_f)
-                        unix_attr = info.external_attr >> 16
-                        if unix_attr:
-                            try:
-                                os.chmod(dest_path, unix_attr)
-                            except OSError:
-                                pass
+                if not downloaded_ok:
+                    raise RuntimeError(f"Could not download macOS Roblox build {version} ({last_err or 'not found on CDN'}).")
 
-                app_bundle = os.path.join(target_dir, "Roblox.app")
-                if not os.path.isdir(app_bundle):
-                    alt_bundle = os.path.join(target_dir, "RobloxPlayer.app")
+                update_state(status="Extracting Roblox.app (preserving macOS frameworks)...", progress=80)
+                ditto_res = subprocess.run(
+                    ["/usr/bin/ditto", "-x", "-k", zip_path, extract_dir],
+                    capture_output=True,
+                    text=True,
+                )
+                if ditto_res.returncode != 0:
+                    raise RuntimeError(f"Failed to extract RobloxPlayer.zip via ditto: {ditto_res.stderr or ditto_res.stdout}")
+
+                extracted_app = os.path.join(extract_dir, "Roblox.app")
+                if not os.path.isdir(extracted_app):
+                    alt_bundle = os.path.join(extract_dir, "RobloxPlayer.app")
                     if os.path.isdir(alt_bundle):
-                        os.rename(alt_bundle, app_bundle)
+                        extracted_app = alt_bundle
+                    else:
+                        found_apps = [
+                            os.path.join(extract_dir, d)
+                            for d in os.listdir(extract_dir)
+                            if d.endswith(".app") and os.path.isdir(os.path.join(extract_dir, d))
+                        ]
+                        if found_apps:
+                            extracted_app = found_apps[0]
+                        else:
+                            raise RuntimeError("Roblox.app bundle was not found inside downloaded archive.")
+
+                if target_dir.endswith(".app"):
+                    app_bundle = target_dir
+                    if os.path.exists(app_bundle):
+                        shutil.rmtree(app_bundle)
+                    os.makedirs(os.path.dirname(app_bundle), exist_ok=True)
+                    shutil.move(extracted_app, app_bundle)
+                else:
+                    os.makedirs(target_dir, exist_ok=True)
+                    app_bundle = os.path.join(target_dir, "Roblox.app")
+                    if os.path.exists(app_bundle):
+                        shutil.rmtree(app_bundle)
+                    shutil.move(extracted_app, app_bundle)
+
+                try:
+                    fram_ver_path = os.path.join(app_bundle, "Contents", ".fram_version")
+                    with open(fram_ver_path, "w", encoding="utf-8") as vf:
+                        vf.write(version)
+                except Exception:
+                    pass
 
                 for root_dir, _, files in os.walk(app_bundle):
-                    if os.path.basename(root_dir) == "MacOS":
+                    if os.path.basename(root_dir) in ("MacOS", "Helpers"):
                         for fname in files:
                             fpath = os.path.join(root_dir, fname)
                             try:

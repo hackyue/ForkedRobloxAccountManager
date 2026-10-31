@@ -250,9 +250,26 @@ class RobloxGlobalSettingsManager:
             roblox_app_storage_manager.save_device_preferences(app_storage_subset)
 
         if not os.path.exists(self.settings_path):
-            if app_storage_subset:
-                return {"success": True, "message": "Global Roblox settings saved successfully!"}
-            return {"success": False, "error": f"Settings file not found: {self.settings_path}"}
+            try:
+                os.makedirs(os.path.dirname(self.settings_path), exist_ok=True)
+                root_el = ET.Element("roblox", {
+                    "xmlns:xmime": "http://www.w3.org/2005/05/xmlmime",
+                    "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+                    "xsi:noNamespaceSchemaLocation": "http://www.roblox.com/roblox.xsd",
+                    "version": "4",
+                })
+                ET.SubElement(root_el, "External").text = "null"
+                ET.SubElement(root_el, "External").text = "nil"
+                item_el = ET.SubElement(root_el, "Item", {"class": "UserGameSettings", "referent": "RBX0"})
+                props_el = ET.SubElement(item_el, "Properties")
+                name_el = ET.SubElement(props_el, "string", {"name": "Name"})
+                name_el.text = "GameSettings"
+                xml_tree = ET.ElementTree(root_el)
+                xml_tree.write(self.settings_path, encoding="unicode", xml_declaration=False)
+            except Exception as e:
+                if app_storage_subset:
+                    return {"success": True, "message": "Global Roblox settings saved successfully!"}
+                return {"success": False, "error": f"Failed to initialize settings file: {e}"}
 
         try:
             xml_tree = ET.parse(self.settings_path)

@@ -26,9 +26,9 @@ import psutil
 
 if platform.system() == "Windows":
     try:
-        import win32gui
-        import win32con
-        import win32process
+        import win32gui  # type: ignore[import-untyped,import-not-found]
+        import win32con  # type: ignore[import-untyped,import-not-found]
+        import win32process  # type: ignore[import-untyped,import-not-found]
     except ImportError:
         win32gui = win32con = win32process = None
 else:
@@ -1554,9 +1554,10 @@ def uninstall_roblox_version():
             return jsonify({'success': False, 'error': 'Version folder not found'}), 404
 
         from utils.paths import get_root_app_dir
+        fram_versions_root = os.path.abspath(os.path.join(get_root_app_dir(), 'RobloxVersions'))
         allowed_roots = [
             os.path.abspath(os.path.expandvars(r'%LOCALAPPDATA%\Roblox\Versions')),
-            os.path.abspath(os.path.join(get_root_app_dir(), 'RobloxVersions')),
+            fram_versions_root,
         ]
         for b in RobloxAPI.BOOTSTRAPPER_CLIENTS:
             for v_dir in b.get('version_dirs', ('Versions',)):
@@ -1567,25 +1568,39 @@ def uninstall_roblox_version():
         try:
             for c in roblox_installer_manager.get_installed_clients():
                 vp = c.get('versions_path')
-                if vp:
+                if vp and os.path.abspath(os.path.expandvars(vp)) not in ('/Applications', os.path.expanduser('~/Applications')):
                     allowed_roots.append(os.path.abspath(os.path.expandvars(vp)))
         except Exception:
             pass
 
-        is_allowed = False
-        for root in allowed_roots:
-            try:
-                if os.path.commonpath([norm_path, root]) == root and norm_path != root:
-                    is_allowed = True
-                    break
-            except Exception:
-                pass
+        allowed_exact_paths = [
+            '/Applications/Roblox.app',
+            os.path.abspath(os.path.expanduser('~/Applications/Roblox.app')),
+        ]
+
+        is_allowed = norm_path in allowed_exact_paths
+        if not is_allowed:
+            for root in allowed_roots:
+                try:
+                    if os.path.commonpath([norm_path, root]) == root and norm_path != root:
+                        is_allowed = True
+                        break
+                except Exception:
+                    pass
 
         if not is_allowed:
             return jsonify({'success': False, 'error': 'Path is not an allowed Roblox version directory'}), 403
 
-        shutil.rmtree(norm_path)
-        return jsonify({'success': True, 'message': f'Successfully uninstalled {version_name or os.path.basename(norm_path)}'})
+        delete_target = norm_path
+        if (
+            os.path.basename(norm_path) == 'Roblox.app'
+            and os.path.basename(os.path.dirname(norm_path)).startswith('version-')
+            and os.path.commonpath([os.path.dirname(norm_path), fram_versions_root]) == fram_versions_root
+        ):
+            delete_target = os.path.dirname(norm_path)
+
+        shutil.rmtree(delete_target)
+        return jsonify({'success': True, 'message': f'Successfully uninstalled {version_name or os.path.basename(delete_target)}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

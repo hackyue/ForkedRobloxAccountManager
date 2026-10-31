@@ -1,15 +1,25 @@
 import json
 import os
 import re
+import sys
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import threading
 import secrets
 import tempfile
 from utils.error_detector import log_detailed_error
 
 class WebhookManager:
+    ALLOWED_DISCORD_HOSTS = {
+        "discord.com",
+        "discordapp.com",
+        "canary.discord.com",
+        "ptb.discord.com",
+        "canary.discordapp.com",
+        "ptb.discordapp.com",
+    }
     def __init__(self, data_dir=None):
         self.data_dir = data_dir or os.path.join(os.path.expanduser("~"), ".fram")
         os.makedirs(self.data_dir, exist_ok=True)
@@ -59,10 +69,33 @@ class WebhookManager:
         return self.config
 
 
+    def canonicalize_webhook_url(self, url=None) -> Optional[str]:
+        raw = (url or self.config.get("webhook_url", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            parts = urllib.parse.urlsplit(raw)
+            if (parts.scheme or "").lower() != "https":
+                return None
+            hostname = (parts.hostname or "").lower()
+            if hostname not in self.ALLOWED_DISCORD_HOSTS:
+                return None
+            if parts.query or parts.fragment:
+                return None
+            path = parts.path or ""
+            path_pattern = r"^/api/webhooks/\d+/[A-Za-z0-9_.-]+/?$"
+            if not re.fullmatch(path_pattern, path):
+                return None
+            clean_path = path.rstrip("/")
+            return f"https://{hostname}{clean_path}"
+        except Exception:
+            return None
+
+    def _is_allowed_discord_webhook_url(self, url: str) -> bool:
+        return self.canonicalize_webhook_url(url) is not None
+
     def is_valid_url(self, url=None):
-        target = (url or self.config.get("webhook_url", "")).strip()
-        pattern = r"^https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/\d+/[^\s/]+"
-        return bool(re.match(pattern, target))
+        return self.canonicalize_webhook_url(url) is not None
 
     def _redact_text(self, text):
         if not text or not self.config.get("redact_sensitive", True):
@@ -75,7 +108,8 @@ class WebhookManager:
 
     def post_embed(self, title, description, fields=None, color=0x6366F1, url=None):
         target_url = (url or self.config.get("webhook_url", "")).strip()
-        if not self.is_valid_url(target_url):
+        canonical_url = self.canonicalize_webhook_url(target_url)
+        if not canonical_url:
             return False, "Invalid Discord webhook URL."
 
         redacted_desc = self._redact_text(description)
@@ -111,7 +145,7 @@ class WebhookManager:
         try:
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
-                target_url,
+                canonical_url,
                 data=data,
                 headers={
                     "Content-Type": "application/json",
@@ -137,6 +171,7 @@ class WebhookManager:
             return False, err
 
     def capture_screenshot(self, all_monitors=False):
+        temp_path = os.path.join(tempfile.gettempdir(), f"fram_screen_{int(time.time())}.png")
         try:
             from PIL import ImageGrab
             if all_monitors:
@@ -157,15 +192,30 @@ class WebhookManager:
             else:
                 img = ImageGrab.grab(all_screens=False)
 
-            temp_path = os.path.join(tempfile.gettempdir(), f"fram_screen_{int(time.time())}.png")
             img.save(temp_path, "PNG")
-            return temp_path
+            if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+                return temp_path
         except Exception:
-            return None
+            pass
+
+        if sys.platform == "darwin":
+            try:
+                import subprocess
+                cmd = ["/usr/sbin/screencapture", "-x"]
+                if not all_monitors:
+                    cmd.append("-m")
+                cmd.append(temp_path)
+                subprocess.run(cmd, check=True, timeout=10)
+                if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+                    return temp_path
+            except Exception:
+                pass
+        return None
 
     def post_screenshot(self, url=None, all_monitors=None):
         target_url = (url or self.config.get("webhook_url", "")).strip()
-        if not self.is_valid_url(target_url):
+        canonical_url = self.canonicalize_webhook_url(target_url)
+        if not canonical_url:
             return False, "Invalid Discord webhook URL."
 
         if all_monitors is None:
@@ -204,7 +254,7 @@ class WebhookManager:
             body.extend(f"--{boundary}--\r\n".encode("utf-8"))
 
             req = urllib.request.Request(
-                target_url,
+                canonical_url,
                 data=bytes(body),
                 headers={
                     "Content-Type": f"multipart/form-data; boundary={boundary}",

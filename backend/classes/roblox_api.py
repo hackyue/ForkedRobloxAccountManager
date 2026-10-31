@@ -1720,8 +1720,70 @@ class RobloxAPI:
         ticket, _ = RobloxAPI.get_auth_ticket_detailed(roblosecurity_cookie)
         return ticket
     
+    _mac_version_hash_cache: Dict[str, str] = {}
+
+    @staticmethod
+    def _resolve_mac_version_hash(bundle_version: str) -> Optional[str]:
+        ver_clean = str(bundle_version or "").strip()
+        if not ver_clean:
+            return None
+        if ver_clean.startswith("version-"):
+            return ver_clean
+        cached = RobloxAPI._mac_version_hash_cache.get(ver_clean)
+        if cached:
+            return cached
+
+        session = requests.Session()
+        session.trust_env = False
+        weao_headers = {"User-Agent": "WEAO-3PService"}
+        for route in ("/api/versions/current", "/api/versions/past", "/api/versions/future"):
+            for host in ("https://whatexpsare.online", "https://weao.gg", "https://whatexploitsaretra.sh"):
+                try:
+                    resp = session.get(f"{host}{route}", headers=weao_headers, timeout=2.5)
+                    if not resp.ok:
+                        continue
+                    data = resp.json()
+                    if not isinstance(data, dict):
+                        continue
+                    mac_hash = str(data.get("Mac") or "").strip()
+                    mac_resp = data.get("MacResponse") if isinstance(data.get("MacResponse"), dict) else {}
+                    mac_ver = str(mac_resp.get("version") or "").strip()
+                    mac_upload = str(mac_resp.get("clientVersionUpload") or mac_hash).strip()
+                    if mac_ver and mac_upload.startswith("version-"):
+                        RobloxAPI._mac_version_hash_cache[mac_ver] = mac_upload
+                    if mac_ver == ver_clean and mac_upload.startswith("version-"):
+                        return mac_upload
+                    break
+                except Exception:
+                    continue
+
+        try:
+            resp = session.get("https://clientsettings.roblox.com/v2/client-version/MacPlayer", timeout=2.5)
+            if resp.ok:
+                data = resp.json()
+                api_ver = str(data.get("version") or "").strip()
+                api_upload = str(data.get("clientVersionUpload") or "").strip()
+                if api_ver and api_upload.startswith("version-"):
+                    RobloxAPI._mac_version_hash_cache[api_ver] = api_upload
+                    if api_ver == ver_clean:
+                        return api_upload
+        except Exception:
+            pass
+
+        return RobloxAPI._mac_version_hash_cache.get(ver_clean)
+
     @staticmethod
     def _read_mac_app_version(app_path: Path) -> str:
+        if app_path.parent.name.startswith("version-"):
+            return app_path.parent.name
+        try:
+            fram_ver_file = app_path / "Contents" / ".fram_version"
+            if fram_ver_file.is_file():
+                fram_ver = fram_ver_file.read_text(encoding="utf-8", errors="ignore").strip()
+                if fram_ver and fram_ver.startswith("version-"):
+                    return fram_ver
+        except Exception:
+            pass
         try:
             import plistlib
             info_plist = app_path / "Contents" / "Info.plist"
@@ -1730,6 +1792,15 @@ class RobloxAPI:
                     plist_data = plistlib.load(fp)
                     ver = str(plist_data.get("CFBundleShortVersionString") or plist_data.get("CFBundleVersion") or "").strip()
                     if ver:
+                        resolved_hash = RobloxAPI._resolve_mac_version_hash(ver)
+                        if resolved_hash:
+                            try:
+                                fram_ver_file = app_path / "Contents" / ".fram_version"
+                                if os.access(str(app_path / "Contents"), os.W_OK):
+                                    fram_ver_file.write_text(resolved_hash, encoding="utf-8")
+                            except Exception:
+                                pass
+                            return resolved_hash
                         return ver
         except Exception:
             pass

@@ -437,20 +437,26 @@ class RobloxAccountManager:
             return None
 
         if platform.system() == "Darwin":
-            mac_app_bundles = {
-                "chrome": ("Google Chrome.app", "Google Chrome"),
-                "edge": ("Microsoft Edge.app", "Microsoft Edge"),
-                "msedge": ("Microsoft Edge.app", "Microsoft Edge"),
-                "firefox": ("Firefox.app", "firefox"),
-                "waterfox": ("Waterfox.app", "waterfox"),
+            mac_app_candidates = {
+                "chrome": [
+                    ("Google Chrome.app", "Google Chrome"),
+                    ("Chromium.app", "Chromium"),
+                    ("Brave Browser.app", "Brave Browser"),
+                    ("Google Chrome Canary.app", "Google Chrome Canary"),
+                ],
+                "edge": [("Microsoft Edge.app", "Microsoft Edge")],
+                "msedge": [("Microsoft Edge.app", "Microsoft Edge")],
+                "firefox": [("Firefox.app", "firefox")],
+                "waterfox": [("Waterfox.app", "waterfox")],
             }
-            bundle_name, bin_name = mac_app_bundles[name]
             app_roots = [Path("/Applications"), Path.home() / "Applications"]
-            for app_root in app_roots:
-                candidate = app_root / bundle_name / "Contents" / "MacOS" / bin_name
-                if candidate.is_file():
-                    return candidate
-            resolved = shutil.which(bin_name.lower().replace(" ", "-")) or shutil.which(name)
+            for bundle_name, bin_name in mac_app_candidates[name]:
+                for app_root in app_roots:
+                    candidate = app_root / bundle_name / "Contents" / "MacOS" / bin_name
+                    if candidate.is_file():
+                        return candidate
+            first_bin_name = mac_app_candidates[name][0][1]
+            resolved = shutil.which(first_bin_name.lower().replace(" ", "-")) or shutil.which(name)
             if resolved and Path(resolved).is_file():
                 return Path(resolved)
             return None
@@ -762,25 +768,76 @@ class RobloxAccountManager:
             self.cleanup_temp_profile(profile_dir)
             raise
 
+    def _prepare_driver_executable(self, driver_path: Optional[str], base_name: str) -> Optional[str]:
+        if not driver_path:
+            return None
+        exe_name = f"{base_name}.exe" if os.name == "nt" else base_name
+        resolved_path = driver_path
+        if os.path.basename(resolved_path).lower() != exe_name.lower():
+            dir_path = os.path.dirname(resolved_path)
+            candidate = os.path.join(dir_path, exe_name)
+            if os.path.isfile(candidate):
+                resolved_path = candidate
+            else:
+                for root_dir, _, files in os.walk(dir_path):
+                    for fn in files:
+                        if fn.lower() == exe_name.lower():
+                            resolved_path = os.path.join(root_dir, fn)
+                            break
+        if not os.path.isfile(resolved_path):
+            return None
+        if os.name != "nt":
+            try:
+                os.chmod(resolved_path, 0o755)
+            except OSError:
+                pass
+            if platform.system() == "Darwin":
+                try:
+                    subprocess.run(
+                        ["xattr", "-cr", resolved_path],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except Exception:
+                    pass
+        return resolved_path
+
     def _setup_chrome_driver(self, headless=False):
         """Setup Chrome driver with speed-oriented options."""
         profile_dir = self.create_temp_profile()
         try:
             extension_paths = self.get_enabled_browser_extension_paths("chrome")
-            chrome_options = self._create_chrome_options(profile_dir, headless=headless, extension_paths=extension_paths)
-            driver_path = ChromeDriverManager().install()
-            if driver_path and os.path.basename(driver_path).lower() != "chromedriver.exe" and os.path.basename(driver_path).lower() != "chromedriver":
-                dir_path = os.path.dirname(driver_path)
-                exe_name = "chromedriver.exe" if os.name == "nt" else "chromedriver"
-                exe_path = os.path.join(dir_path, exe_name)
-                if os.path.isfile(exe_path):
-                    driver_path = exe_path
-            service = Service(
-                driver_path,
-                log_path=os.devnull,
-                popen_kw=self._SELENIUM_POPEN_KW.copy(),
+            binary_path = self._get_browser_binary_path("chrome")
+            chrome_options = self._create_chrome_options(
+                profile_dir,
+                headless=headless,
+                binary_path=binary_path,
+                extension_paths=extension_paths,
             )
-            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver = None
+            driver_path = None
+            if ChromeDriverManager is not None:
+                try:
+                    raw_driver_path = ChromeDriverManager().install()
+                    driver_path = self._prepare_driver_executable(raw_driver_path, "chromedriver")
+                except Exception:
+                    driver_path = None
+
+            if driver_path and os.path.isfile(driver_path):
+                try:
+                    service = Service(
+                        driver_path,
+                        log_path=os.devnull,
+                        popen_kw=self._SELENIUM_POPEN_KW.copy(),
+                    )
+                    driver = webdriver.Chrome(service=service, options=chrome_options)
+                except Exception:
+                    driver = None
+
+            if driver is None:
+                driver = webdriver.Chrome(options=chrome_options)
+
             setattr(driver, "_ram_temp_profile_dir", profile_dir)
             try:
                 driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -862,19 +919,29 @@ class RobloxAccountManager:
             if headless:
                 firefox_options.add_argument("-headless")
 
-            driver_path = GeckoDriverManager().install()
-            if driver_path and os.path.basename(driver_path).lower() != "geckodriver.exe" and os.path.basename(driver_path).lower() != "geckodriver":
-                dir_path = os.path.dirname(driver_path)
-                exe_name = "geckodriver.exe" if os.name == "nt" else "geckodriver"
-                exe_path = os.path.join(dir_path, exe_name)
-                if os.path.isfile(exe_path):
-                    driver_path = exe_path
-            service = FirefoxService(
-                driver_path,
-                log_output=os.devnull,
-                popen_kw=self._SELENIUM_POPEN_KW.copy(),
-            )
-            driver = webdriver.Firefox(service=service, options=firefox_options)
+            driver = None
+            driver_path = None
+            if GeckoDriverManager is not None:
+                try:
+                    raw_driver_path = GeckoDriverManager().install()
+                    driver_path = self._prepare_driver_executable(raw_driver_path, "geckodriver")
+                except Exception:
+                    driver_path = None
+
+            if driver_path and os.path.isfile(driver_path):
+                try:
+                    service = FirefoxService(
+                        driver_path,
+                        log_output=os.devnull,
+                        popen_kw=self._SELENIUM_POPEN_KW.copy(),
+                    )
+                    driver = webdriver.Firefox(service=service, options=firefox_options)
+                except Exception:
+                    driver = None
+
+            if driver is None:
+                driver = webdriver.Firefox(options=firefox_options)
+
             setattr(driver, "_ram_temp_profile_dir", profile_dir)
             self._install_firefox_extensions(driver, normalized_browser_name)
             return driver

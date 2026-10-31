@@ -142,6 +142,8 @@ class RobloxSwapManager:
             return None
 
     def _run_ps(self, script: str) -> str:
+        if sys.platform != "win32":
+            return ""
         res = subprocess.run(
             ["powershell", "-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
             capture_output=True,
@@ -153,6 +155,8 @@ class RobloxSwapManager:
         return (res.stdout or "").strip().lstrip('\ufeff')
 
     def _run_elevated_ps(self, script: str, timeout: int = 120) -> tuple:
+        if sys.platform != "win32":
+            return False, "Windows elevation is not supported on this platform."
         if self.is_elevated():
             out = self._run_ps(script)
             return True, out
@@ -234,6 +238,8 @@ try {{
                     pass
 
     def _reg_read(self, hive: str, key: str, value: str) -> Optional[str]:
+        if sys.platform != "win32":
+            return None
         hive_upper = (hive or "").upper()
         if sys.platform == "win32":
             try:
@@ -1649,10 +1655,21 @@ ConvertTo-Json -Compress @{
                         logs.append({"level": "success", "msg": "Cleaned GlobalBasicSettings_13.xml"})
 
                 if preserve_fastflags:
-                    for ff_path in (
+                    ff_candidates = [
                         os.path.join(mac_roblox_dir, "ClientSettings", "ClientAppSettings.json"),
                         "/Applications/Roblox.app/Contents/MacOS/ClientSettings/ClientAppSettings.json",
-                    ):
+                        os.path.expanduser("~/Applications/Roblox.app/Contents/MacOS/ClientSettings/ClientAppSettings.json"),
+                    ]
+                    fram_versions_dir = os.path.expanduser("~/Library/Application Support/Forked Account Manager/RobloxVersions")
+                    if os.path.isdir(fram_versions_dir):
+                        try:
+                            for entry in os.listdir(fram_versions_dir):
+                                ff_candidates.append(
+                                    os.path.join(fram_versions_dir, entry, "Roblox.app", "Contents", "MacOS", "ClientSettings", "ClientAppSettings.json")
+                                )
+                        except Exception:
+                            pass
+                    for ff_path in ff_candidates:
                         if os.path.isfile(ff_path):
                             try:
                                 with open(ff_path, "rb") as f:
@@ -1684,6 +1701,8 @@ ConvertTo-Json -Compress @{
                     (os.path.join(home_lib, "Logs", "Roblox"), "macOS Roblox Logs"),
                     (os.path.join(home_lib, "Caches", "com.roblox.RobloxPlayer"), "RobloxPlayer Cache"),
                     (os.path.join(home_lib, "Caches", "com.roblox.roblox"), "Roblox Cache"),
+                    (os.path.join(home_lib, "Caches", "com.roblox.RobloxStudio"), "RobloxStudio Cache"),
+                    (os.path.join(home_lib, "WebKit", "com.roblox.RobloxPlayer"), "RobloxPlayer WebKit Cache"),
                     (os.path.join(home_lib, "Saved Application State", "com.roblox.RobloxPlayer.savedState"), "Saved Application State"),
                     (os.path.join(mac_roblox_dir, "Downloads"), "Roblox Downloads"),
                     (os.path.join(mac_roblox_dir, "logs"), "Roblox Telemetry Logs"),
@@ -1700,6 +1719,9 @@ ConvertTo-Json -Compress @{
                         (os.path.join(mac_roblox_dir, "LocalStorage"), "LocalStorage session data"),
                         (os.path.join(home_lib, "HTTPStorages", "com.roblox.RobloxPlayer.binarycookies"), "RobloxPlayer binarycookies"),
                         (os.path.join(home_lib, "HTTPStorages", "com.roblox.RobloxPlayer"), "RobloxPlayer HTTPStorage"),
+                        (os.path.join(home_lib, "Cookies", "com.roblox.RobloxPlayer.binarycookies"), "RobloxPlayer Cookies"),
+                        (os.path.join(home_lib, "Preferences", "com.roblox.RobloxPlayer.plist"), "RobloxPlayer Preferences plist"),
+                        (os.path.join(home_lib, "Preferences", "com.roblox.Roblox.plist"), "Roblox Preferences plist"),
                     ]
                     for target_p, label in auth_targets:
                         if self._remove_path(target_p):

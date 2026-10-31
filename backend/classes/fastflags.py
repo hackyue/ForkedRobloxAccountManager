@@ -133,6 +133,19 @@ class FastFlagsManager:
             return self.version_path
 
         if self.is_mac:
+            fram_versions_dir = os.path.join(self.app_data, "Forked Account Manager", "RobloxVersions")
+            if os.path.isdir(fram_versions_dir):
+                try:
+                    mac_ver_dirs = [
+                        os.path.join(fram_versions_dir, d, "Roblox.app", "Contents", "MacOS")
+                        for d in os.listdir(fram_versions_dir)
+                        if os.path.isdir(os.path.join(fram_versions_dir, d, "Roblox.app", "Contents", "MacOS"))
+                    ]
+                    if mac_ver_dirs:
+                        mac_ver_dirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                        return mac_ver_dirs[0]
+                except Exception:
+                    pass
             for mac_app in ("/Applications/Roblox.app/Contents/MacOS", os.path.expanduser("~/Applications/Roblox.app/Contents/MacOS")):
                 if os.path.isdir(mac_app):
                     return mac_app
@@ -204,6 +217,17 @@ class FastFlagsManager:
                     app_cs = os.path.join(mac_app, "ClientSettings", "ClientAppSettings.json")
                     if app_cs not in target_files:
                         target_files.append(app_cs)
+            fram_versions_dir = os.path.join(self.app_data, "Forked Account Manager", "RobloxVersions")
+            if os.path.isdir(fram_versions_dir):
+                try:
+                    for d in os.listdir(fram_versions_dir):
+                        mac_os_dir = os.path.join(fram_versions_dir, d, "Roblox.app", "Contents", "MacOS")
+                        if os.path.isdir(mac_os_dir) and os.access(mac_os_dir, os.W_OK):
+                            ver_cs = os.path.join(mac_os_dir, "ClientSettings", "ClientAppSettings.json")
+                            if ver_cs not in target_files:
+                                target_files.append(ver_cs)
+                except Exception:
+                    pass
             return target_files
         
         sources = self.get_version_sources()
