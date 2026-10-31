@@ -3969,8 +3969,8 @@ def preview_framdata():
 
         norm_folder = os.path.abspath(os.path.realpath(str(folder_path).strip()))
         user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
-        if not norm_folder.startswith(user_home + os.sep) and norm_folder not in ALLOWED_FRAMDATA_FOLDERS:
-            return jsonify({'success': False, 'valid': False, 'error': 'Folder must be located inside your user directory or selected via folder dialog'}), 400
+        if not norm_folder.startswith(user_home + os.sep):
+            return jsonify({'success': False, 'valid': False, 'error': 'Folder must be located inside your user directory'}), 400
 
         res = manager.preview_framdata_folder(norm_folder, password=password)
         return jsonify(res)
@@ -3991,8 +3991,8 @@ def import_framdata():
 
         norm_folder = os.path.abspath(os.path.realpath(str(folder_path).strip()))
         user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
-        if not norm_folder.startswith(user_home + os.sep) and norm_folder not in ALLOWED_FRAMDATA_FOLDERS:
-            return jsonify({'success': False, 'error': 'Folder must be located inside your user directory or selected via folder dialog'}), 400
+        if not norm_folder.startswith(user_home + os.sep):
+            return jsonify({'success': False, 'error': 'Folder must be located inside your user directory'}), 400
 
         res = manager.import_framdata_folder(norm_folder, password=password)
 

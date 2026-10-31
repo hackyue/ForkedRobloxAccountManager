@@ -2760,14 +2760,18 @@ class RobloxAccountManager:
             'custom_themes.json',
             'encryption_config.json',
         }
-        clean_name = os.path.basename(filename)
+        from werkzeug.utils import secure_filename
+        clean_name = secure_filename(os.path.basename(filename))
         if clean_name not in allowed_files:
             return None
-        real_dir = os.path.realpath(os.path.abspath(base_dir))
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
+        real_dir = os.path.abspath(os.path.realpath(str(base_dir).strip()))
+        if not real_dir.startswith(user_home + os.sep):
+            return None
         if not os.path.isdir(real_dir):
             return None
-        full_path = os.path.realpath(os.path.abspath(os.path.join(real_dir, clean_name)))
-        if not full_path.startswith(real_dir + os.sep) and full_path != real_dir:
+        full_path = os.path.abspath(os.path.realpath(os.path.join(real_dir, clean_name)))
+        if not full_path.startswith(real_dir + os.sep):
             return None
         return full_path
 
@@ -2879,7 +2883,10 @@ class RobloxAccountManager:
         if not folder_path or not isinstance(folder_path, str):
             return {'valid': False, 'error': 'Directory path does not exist'}
 
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
         norm_root = os.path.abspath(os.path.realpath(folder_path.strip()))
+        if not norm_root.startswith(user_home + os.sep):
+            return {'valid': False, 'error': 'Directory must be inside user directory'}
         if not os.path.isdir(norm_root):
             return {'valid': False, 'error': 'Directory path does not exist'}
 
@@ -2975,7 +2982,15 @@ class RobloxAccountManager:
 
     def import_framdata_folder(self, folder_path: str, password: str = '') -> dict:
         """Import accounts, games, and settings from a FRAMdata or AccountManagerData directory"""
-        preview = self.preview_framdata_folder(folder_path, password=password)
+        if not folder_path or not isinstance(folder_path, str):
+            return {'success': False, 'error': 'Directory path does not exist'}
+
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
+        norm_folder = os.path.abspath(os.path.realpath(folder_path.strip()))
+        if not norm_folder.startswith(user_home + os.sep):
+            return {'success': False, 'error': 'Directory must be inside user directory'}
+
+        preview = self.preview_framdata_folder(norm_folder, password=password)
         if not preview.get('valid'):
             return {'success': False, 'error': preview.get('error', 'Invalid FRAMdata folder')}
 
@@ -2986,7 +3001,9 @@ class RobloxAccountManager:
                 'error': 'Account file is encrypted. Please enter the master password used when saving the accounts.'
             }
 
-        target_dir = preview.get('path', folder_path)
+        target_dir = os.path.abspath(os.path.realpath(str(preview.get('path', norm_folder)).strip()))
+        if not target_dir.startswith(user_home + os.sep):
+            return {'success': False, 'error': 'Directory must be inside user directory'}
         imported_accounts_count = 0
         imported_games_count = 0
         imported_users_count = 0

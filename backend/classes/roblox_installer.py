@@ -514,7 +514,8 @@ class RobloxInstallerManager:
         if not version.startswith("version-"):
             version = "version-" + version
 
-        clean_version = "".join(c for c in version if c.isalnum() or c in ("-", "_"))
+        from werkzeug.utils import secure_filename
+        clean_version = secure_filename("".join(c for c in version if c.isalnum() or c in ("-", "_")))
         if not clean_version:
             return {"success": False, "error": "Invalid version specified."}
         version = clean_version
@@ -526,8 +527,7 @@ class RobloxInstallerManager:
             target_dir = os.path.abspath(os.path.realpath(os.path.join(versions_root, version)))
 
         if not target_dir.startswith(versions_root + os.sep):
-            if target_dir != versions_root:
-                return {"success": False, "error": "Target directory is outside versions directory."}
+            return {"success": False, "error": "Target directory is outside versions directory."}
 
         if os.path.exists(target_dir) and not overwrite:
             return {

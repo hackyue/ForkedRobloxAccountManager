@@ -205,8 +205,8 @@ class BrowserExtensionManager:
     def add_from_crx(self, crx_path: Path | str) -> BrowserExtension:
         norm_str = os.path.abspath(os.path.realpath(os.path.expanduser(str(crx_path))))
         user_home = os.path.abspath(os.path.realpath(os.path.expanduser("~")))
-        if not norm_str.startswith(user_home + os.sep) and not norm_str.startswith(str(self.base_folder) + os.sep):
-            raise BrowserExtensionError(f"CRX file must be located in user profile or app directory: {crx_path}")
+        if not norm_str.startswith(user_home + os.sep):
+            raise BrowserExtensionError(f"CRX file must be located in user profile directory: {crx_path}")
         source_path = Path(norm_str)
         if not source_path.is_file():
             raise BrowserExtensionError(f"CRX file was not found: {source_path}")
@@ -227,8 +227,8 @@ class BrowserExtensionManager:
     def add_from_xpi(self, xpi_path: Path | str) -> BrowserExtension:
         norm_str = os.path.abspath(os.path.realpath(os.path.expanduser(str(xpi_path))))
         user_home = os.path.abspath(os.path.realpath(os.path.expanduser("~")))
-        if not norm_str.startswith(user_home + os.sep) and not norm_str.startswith(str(self.base_folder) + os.sep):
-            raise BrowserExtensionError(f"XPI file must be located in user profile or app directory: {xpi_path}")
+        if not norm_str.startswith(user_home + os.sep):
+            raise BrowserExtensionError(f"XPI file must be located in user profile directory: {xpi_path}")
         source_path = Path(norm_str)
         if not source_path.is_file():
             raise BrowserExtensionError(f"XPI file was not found: {source_path}")
@@ -249,8 +249,8 @@ class BrowserExtensionManager:
     def add_from_unpacked(self, source_dir: Path | str) -> BrowserExtension:
         norm_str = os.path.abspath(os.path.realpath(os.path.expanduser(str(source_dir))))
         user_home = os.path.abspath(os.path.realpath(os.path.expanduser("~")))
-        if not norm_str.startswith(user_home + os.sep) and not norm_str.startswith(str(self.base_folder) + os.sep):
-            raise BrowserExtensionError(f"Extension directory must be located in user profile or app directory: {source_dir}")
+        if not norm_str.startswith(user_home + os.sep):
+            raise BrowserExtensionError(f"Extension directory must be located in user profile directory: {source_dir}")
         source_path = Path(norm_str)
         if not source_path.is_dir():
             raise BrowserExtensionError(f"Extension folder was not found: {source_path}")
@@ -321,15 +321,21 @@ class BrowserExtensionManager:
     ) -> BrowserExtension:
         self.ensure_storage()
         key = self._unique_key(desired_key, replace_key=extension_id or None)
-        folder_name = key
-        target_dir = self.extensions_folder / folder_name
-        staging_dir = self.extensions_folder / f".{folder_name}.{time.time_ns()}.tmp"
+        from werkzeug.utils import secure_filename
+        clean_key = secure_filename(key)
+        if not clean_key:
+            clean_key = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        folder_name = clean_key
+        target_dir = (self.extensions_folder / folder_name).resolve()
+        staging_dir = (self.extensions_folder / f".{folder_name}.{time.time_ns()}.tmp").resolve()
         self._assert_path_inside(target_dir, self.extensions_folder)
         self._assert_path_inside(staging_dir, self.extensions_folder)
         norm_ext_root = os.path.abspath(os.path.realpath(str(self.extensions_folder)))
         norm_target = os.path.abspath(os.path.realpath(str(target_dir)))
         norm_staging = os.path.abspath(os.path.realpath(str(staging_dir)))
-        if not norm_target.startswith(norm_ext_root + os.sep) or not norm_staging.startswith(norm_ext_root + os.sep):
+        if not norm_target.startswith(norm_ext_root + os.sep):
+            raise BrowserExtensionError("Refusing to access path outside managed extensions folder")
+        if not norm_staging.startswith(norm_ext_root + os.sep):
             raise BrowserExtensionError("Refusing to access path outside managed extensions folder")
 
         try:
@@ -528,6 +534,10 @@ class BrowserExtensionManager:
         )
 
     def _read_manifest(self, extension_dir: Path) -> dict[str, Any]:
+        norm_ext_root = os.path.abspath(os.path.realpath(str(self.extensions_folder)))
+        norm_dir = os.path.abspath(os.path.realpath(str(extension_dir)))
+        if not norm_dir.startswith(norm_ext_root + os.sep):
+            raise BrowserExtensionError("Invalid extension directory")
         manifest_path = extension_dir / "manifest.json"
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -542,6 +552,10 @@ class BrowserExtensionManager:
         return payload
 
     def _resolve_manifest_name(self, manifest: dict[str, Any], extension_dir: Path) -> str:
+        norm_ext_root = os.path.abspath(os.path.realpath(str(self.extensions_folder)))
+        norm_dir = os.path.abspath(os.path.realpath(str(extension_dir)))
+        if not norm_dir.startswith(norm_ext_root + os.sep):
+            return str(manifest.get("name") or manifest.get("short_name") or "").strip()
         raw_name = str(manifest.get("name") or manifest.get("short_name") or "").strip()
         message_match = re.fullmatch(r"__MSG_(.+)__", raw_name)
         if message_match is None:
@@ -617,6 +631,11 @@ class BrowserExtensionManager:
 
     def _unique_key(self, desired_key: str, replace_key: Optional[str] = None) -> str:
         key = self._sanitize_key(desired_key)
+        from werkzeug.utils import secure_filename
+        key = secure_filename(key)
+        if not key:
+            key = hashlib.sha256(str(desired_key).encode("utf-8")).hexdigest()[:16]
+
         if replace_key:
             records = self._read_records()
             existing_record = next((record for record in records if record.extension_id == replace_key), None)
@@ -624,7 +643,14 @@ class BrowserExtensionManager:
                 return existing_record.key
 
         existing_keys = {record.key for record in self._read_records()}
-        if key not in existing_keys and not (self.extensions_folder / key).exists():
+        cand_path = (self.extensions_folder / key).resolve()
+        norm_ext_root = os.path.abspath(os.path.realpath(str(self.extensions_folder)))
+        norm_cand = os.path.abspath(os.path.realpath(str(cand_path)))
+        if not norm_cand.startswith(norm_ext_root + os.sep):
+            key = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+            cand_path = (self.extensions_folder / key).resolve()
+
+        if key not in existing_keys and not cand_path.exists():
             return key
 
         digest = hashlib.sha1(f"{key}:{time.time_ns()}".encode("utf-8")).hexdigest()[:8]
@@ -632,7 +658,9 @@ class BrowserExtensionManager:
 
     @staticmethod
     def _sanitize_key(value: str) -> str:
-        key = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip()).strip("-").lower()
+        from werkzeug.utils import secure_filename
+        clean = secure_filename(str(value or "").strip()).strip("-").lower()
+        key = re.sub(r"[^A-Za-z0-9_-]+", "-", clean).strip("-").lower()
         return key[:64] or "extension"
 
     @staticmethod

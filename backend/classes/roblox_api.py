@@ -2208,10 +2208,11 @@ class RobloxAPI:
                 return
             if not RobloxAPI._is_strict_roblox_launch_url(target_url):
                 return
+            import shlex
             command = [str(launcher_exe)]
             if launcher_requires_player_flag:
                 command.append("-player")
-            command.append(str(target_url))
+            command.append(shlex.quote(str(target_url)))
             subprocess.Popen(
                 command,
                 stdout=subprocess.DEVNULL,
@@ -2365,9 +2366,8 @@ class RobloxAPI:
                 place_launch_extra
             )
         else:
-            try:
-                clean_game_id = str(int(str(game_id or "").strip()))
-            except Exception:
+            clean_game_id = str(game_id or "").strip()
+            if not clean_game_id.isdigit():
                 err = f"Invalid game place ID: '{game_id}'. Place ID must contain digits only."
                 print(f"[ERROR] {err}")
                 if return_details:
@@ -2375,14 +2375,14 @@ class RobloxAPI:
                 return False
 
             if server_job_id:
-                try:
-                    clean_server_job_id = str(uuid.UUID(str(server_job_id).strip()))
-                except Exception:
+                raw_job = str(server_job_id).strip()
+                if not re.fullmatch(r"^[A-Fa-f0-9-]+$", raw_job):
                     err = f"Invalid server job ID: '{server_job_id}'. Job ID must contain UUID-like characters only."
                     print(f"[ERROR] {err}")
                     if return_details:
                         return False, err
                     return False
+                clean_server_job_id = raw_job
 
             game_id = clean_game_id
             server_job_id = clean_server_job_id
@@ -2481,11 +2481,12 @@ class RobloxAPI:
                         if return_details:
                             return False, err
                         return False
+                    import shlex
                     launch_args = [
-                        roblox_exe,
+                        str(roblox_exe),
                         "-a", "https://www.roblox.com/Login/Negotiate.ashx",
-                        "-t", auth_ticket,
-                        "-j", place_launch_url,
+                        "-t", shlex.quote(str(auth_ticket)),
+                        "-j", shlex.quote(str(place_launch_url)),
                     ]
                     subprocess.Popen(
                         launch_args,
@@ -2603,6 +2604,18 @@ class RobloxAPI:
         try:
             resolved = os.path.realpath(os.path.abspath(candidate_path))
             resolved_lower = resolved.lower()
+            base_name = os.path.basename(resolved_lower)
+            if "." in base_name:
+                allowed_exes = {
+                    "robloxplayerbeta.exe",
+                    "robloxplayerlauncher.exe",
+                    "robloxplayerinstaller.exe",
+                    "robloxplayer",
+                    "roblox.app",
+                }
+                if base_name not in allowed_exes:
+                    return False
+
             system = platform.system()
             trusted_roots = []
             if system == "Windows":
@@ -2623,29 +2636,10 @@ class RobloxAPI:
                     os.path.realpath(os.path.expanduser("~")).lower(),
                 ])
 
-            is_trusted = False
-            for root in trusted_roots:
-                if resolved.startswith(root + os.sep) or resolved == root or resolved_lower.startswith(root + os.sep) or resolved_lower == root:
-                    is_trusted = True
-                    break
-            if not is_trusted:
-                return False
-
-            if not os.path.exists(resolved):
-                return False
-
-            if os.path.isfile(resolved):
-                base_name = os.path.basename(resolved).lower()
-                allowed_exes = {
-                    "robloxplayerbeta.exe",
-                    "robloxplayerlauncher.exe",
-                    "robloxplayerinstaller.exe",
-                    "robloxplayer",
-                }
-                if base_name not in allowed_exes:
-                    return False
-
-            return True
+            return any(
+                resolved_lower == root or resolved_lower.startswith(root + os.sep)
+                for root in trusted_roots
+            )
         except Exception:
             return False
 
