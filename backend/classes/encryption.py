@@ -105,6 +105,24 @@ class HardwareEncryption:
                         registry_guid = str(guid).strip()
                 except Exception:
                     pass
+            elif platform.system() == "Darwin":
+                try:
+                    import re as _re
+                    ioreg_out = subprocess.check_output(
+                        ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=5
+                    ).decode("utf-8", errors="ignore")
+                    uuid_match = _re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', ioreg_out)
+                    serial_match = _re.search(r'"IOPlatformSerialNumber"\s*=\s*"([^"]+)"', ioreg_out)
+                    if uuid_match and uuid_match.group(1).strip():
+                        mac_uuid = uuid_match.group(1).strip()
+                        hardware_parts.append(mac_uuid)
+                        registry_guid = mac_uuid
+                    if serial_match and serial_match.group(1).strip():
+                        hardware_parts.append(serial_match.group(1).strip())
+                except Exception:
+                    pass
 
             if not hardware_parts:
                 hardware_parts.append(platform.node())

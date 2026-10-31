@@ -10081,3 +10081,11 @@ textarea {
   cursor: pointer;
   transition: all 0.15s ease;
 }
+
+[data-os="macos"] .windows-only {
+  display: none !important;
+}
+
+[data-os="windows"] .macos-only {
+  display: none !important;
+}

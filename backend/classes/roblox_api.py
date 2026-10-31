@@ -1721,15 +1721,75 @@ class RobloxAPI:
         return ticket
     
     @staticmethod
+    def _read_mac_app_version(app_path: Path) -> str:
+        try:
+            import plistlib
+            info_plist = app_path / "Contents" / "Info.plist"
+            if info_plist.is_file():
+                with info_plist.open("rb") as fp:
+                    plist_data = plistlib.load(fp)
+                    ver = str(plist_data.get("CFBundleShortVersionString") or plist_data.get("CFBundleVersion") or "").strip()
+                    if ver:
+                        return ver
+        except Exception:
+            pass
+        return app_path.stem or "Roblox.app"
+
+    @staticmethod
     def get_installed_versions(custom_path=None):
         """Get list of installed Roblox versions from standard installations, supported bootstrappers, and custom paths."""
         versions = []
         try:
+            seen_paths = set()
+
+            if platform.system() == "Darwin":
+                mac_candidates = [
+                    (Path("/Applications/Roblox.app"), "Roblox"),
+                    (Path(os.path.expanduser("~/Applications/Roblox.app")), "Roblox (User)"),
+                ]
+                try:
+                    from utils.paths import get_root_app_dir
+                    fram_versions_dir = Path(get_root_app_dir()) / "RobloxVersions"
+                    if fram_versions_dir.is_dir():
+                        for v_dir in sorted(fram_versions_dir.iterdir(), key=lambda d: d.stat().st_mtime if d.exists() else 0, reverse=True):
+                            if v_dir.is_dir():
+                                app_bundle = v_dir / "Roblox.app"
+                                if app_bundle.is_dir():
+                                    mac_candidates.append((app_bundle, "Roblox (FRAM)"))
+                                elif v_dir.name.endswith(".app"):
+                                    mac_candidates.append((v_dir, "Roblox (FRAM)"))
+                except Exception:
+                    pass
+
+                if custom_path:
+                    c_path = Path(os.path.expanduser(os.path.expandvars(str(custom_path).strip())))
+                    if c_path.exists():
+                        if c_path.name == "RobloxPlayer" and c_path.parent.name == "MacOS":
+                            mac_candidates.append((c_path.parent.parent.parent, "Custom"))
+                        elif c_path.name.endswith(".app"):
+                            mac_candidates.append((c_path, "Custom"))
+                        elif (c_path / "Roblox.app").is_dir():
+                            mac_candidates.append((c_path / "Roblox.app", "Custom"))
+
+                for app_bundle, source_name in mac_candidates:
+                    player_bin = app_bundle / "Contents" / "MacOS" / "RobloxPlayer"
+                    if app_bundle.is_dir() and player_bin.is_file():
+                        norm = str(app_bundle.resolve()).lower()
+                        if norm not in seen_paths:
+                            seen_paths.add(norm)
+                            ver_str = RobloxAPI._read_mac_app_version(app_bundle)
+                            if app_bundle.parent.name.startswith("version-"):
+                                ver_str = app_bundle.parent.name
+                            versions.append({
+                                "path": str(app_bundle),
+                                "version": ver_str,
+                                "source": source_name,
+                            })
+                return versions
+
             local_appdata = os.getenv('LOCALAPPDATA')
             if not local_appdata:
                 return versions
-
-            seen_paths = set()
 
             def scan_dir(dir_path, source_name):
                 entries = []
@@ -1813,6 +1873,22 @@ class RobloxAPI:
     @staticmethod
     def _get_default_roblox_path():
         """Best-effort attempt to locate the default Roblox installation directory."""
+        if platform.system() == "Darwin":
+            for candidate in ("/Applications/Roblox.app", os.path.expanduser("~/Applications/Roblox.app")):
+                if os.path.isfile(os.path.join(candidate, "Contents", "MacOS", "RobloxPlayer")):
+                    return candidate
+            try:
+                from utils.paths import get_root_app_dir
+                fram_versions_dir = Path(get_root_app_dir()) / "RobloxVersions"
+                if fram_versions_dir.is_dir():
+                    for v_dir in sorted(fram_versions_dir.iterdir(), key=lambda d: d.stat().st_mtime if d.exists() else 0, reverse=True):
+                        app_bundle = v_dir / "Roblox.app"
+                        if (app_bundle / "Contents" / "MacOS" / "RobloxPlayer").is_file():
+                            return str(app_bundle)
+            except Exception:
+                pass
+            return None
+
         local_appdata = os.getenv('LOCALAPPDATA')
         if not local_appdata:
             return None
@@ -1835,6 +1911,18 @@ class RobloxAPI:
     @staticmethod
     def _is_roblox_process_running():
         """Return True if a Roblox player process appears to be running."""
+        try:
+            import psutil
+            for proc in psutil.process_iter(['name']):
+                try:
+                    pname = str(proc.info.get('name') or '').lower()
+                    if pname in ('robloxplayerbeta.exe', 'robloxplayerbeta', 'robloxplayer', 'robloxplayer.exe'):
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         if platform.system() != "Windows":
             return False
 
@@ -1977,28 +2065,53 @@ class RobloxAPI:
         explicit_executable_path = None
 
         try:
-            roblox_path_expanded = os.path.expandvars(str(roblox_path)) if roblox_path else ""
+            roblox_path_expanded = os.path.expanduser(os.path.expandvars(str(roblox_path))) if roblox_path else ""
         except Exception:
             roblox_path_expanded = str(roblox_path) if roblox_path else ""
 
-        if roblox_path_expanded and os.path.isfile(roblox_path_expanded):
-            explicit_executable_provided = True
-            explicit_executable_path = roblox_path_expanded
-            effective_path = os.path.dirname(roblox_path_expanded)
-        else:
-            effective_path = roblox_path_expanded or RobloxAPI._get_default_roblox_path()
+        is_mac = platform.system() == "Darwin"
+        mac_app_bundle = None
 
-        using_local_install = effective_path and os.path.isdir(effective_path)
+        if is_mac:
+            candidate_mac = roblox_path_expanded or RobloxAPI._get_default_roblox_path() or "/Applications/Roblox.app"
+            if candidate_mac.endswith("RobloxPlayer") and os.path.isfile(candidate_mac):
+                roblox_exe = candidate_mac
+                effective_path = os.path.dirname(candidate_mac)
+                mac_app_bundle = str(Path(candidate_mac).parent.parent.parent)
+                using_local_install = True
+            else:
+                if os.path.isdir(os.path.join(candidate_mac, "Roblox.app")):
+                    candidate_mac = os.path.join(candidate_mac, "Roblox.app")
+                player_bin = os.path.join(candidate_mac, "Contents", "MacOS", "RobloxPlayer")
+                if os.path.isfile(player_bin):
+                    mac_app_bundle = candidate_mac
+                    roblox_exe = player_bin
+                    effective_path = os.path.dirname(player_bin)
+                    using_local_install = True
+                else:
+                    using_local_install = False
+                    effective_path = None
+                    roblox_exe = "RobloxPlayer"
+        else:
+            if roblox_path_expanded and os.path.isfile(roblox_path_expanded):
+                explicit_executable_provided = True
+                explicit_executable_path = roblox_path_expanded
+                effective_path = os.path.dirname(roblox_path_expanded)
+            else:
+                effective_path = roblox_path_expanded or RobloxAPI._get_default_roblox_path()
+
+            using_local_install = effective_path and os.path.isdir(effective_path)
 
         bootstrapper_launchers = []
-        for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
-            root = os.path.expandvars(bootstrapper["root"])
-            bootstrapper_launchers.append({
-                "name": bootstrapper["name"],
-                "root": root,
-                "launcher": os.path.join(root, bootstrapper["launcher"]),
-                "exe_name": str(bootstrapper["launcher"]).lower(),
-            })
+        if not is_mac:
+            for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
+                root = os.path.expandvars(bootstrapper["root"])
+                bootstrapper_launchers.append({
+                    "name": bootstrapper["name"],
+                    "root": root,
+                    "launcher": os.path.join(root, bootstrapper["launcher"]),
+                    "exe_name": str(bootstrapper["launcher"]).lower(),
+                })
 
         def _launch_with_launcher(target_url, context):
             """Launch via the resolved launcher executable with shared logging."""
@@ -2015,7 +2128,7 @@ class RobloxAPI:
             launcher_display = launcher_name or os.path.basename(launcher_exe)
             _log_debug(f"Launching {context} via {launcher_display} with URL: {target_url}")
 
-        if using_local_install:
+        if using_local_install and not is_mac:
             explicit_name = None
             if explicit_executable_provided and explicit_executable_path:
                 explicit_name = os.path.basename(explicit_executable_path).lower()
@@ -2104,7 +2217,7 @@ class RobloxAPI:
 
             print(f"Using Roblox version from: {effective_path}")
             _log_debug(f"Roblox executable resolved to {roblox_exe}")
-        else:
+        elif not is_mac:
             roblox_exe = 'RobloxPlayerBeta.exe'
             _log_debug("Using default Roblox installation (RobloxPlayerBeta.exe on PATH)")
 
@@ -2133,7 +2246,14 @@ class RobloxAPI:
                 print("[WARNING] Roblox is already running. Auto-login may not apply until all Roblox instances are closed.")
 
             try:
-                if launcher_exe:
+                if is_mac and using_local_install and mac_app_bundle:
+                    subprocess.Popen(
+                        ["open", "-n", "-a", mac_app_bundle, "--args", url],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    _log_debug(f"Launching Roblox Home on macOS via open -n -a {mac_app_bundle} --args {url}")
+                elif launcher_exe:
                     _launch_with_launcher(url, "Roblox Home")
                 elif using_local_install:
                     try:
@@ -2247,7 +2367,14 @@ class RobloxAPI:
                 print(f"Server Job ID: {server_job_id}")
 
         try:
-            if launcher_exe:
+            if is_mac and using_local_install and mac_app_bundle:
+                subprocess.Popen(
+                    ["open", "-n", "-a", mac_app_bundle, "--args", url],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                _log_debug(f"Launching game on macOS via open -n -a {mac_app_bundle} --args {url}")
+            elif launcher_exe:
                 _launch_with_launcher(url, "game")
             else:
                 if using_local_install:

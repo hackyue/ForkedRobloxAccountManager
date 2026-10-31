@@ -47,23 +47,58 @@ fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     for dir in base_dirs {
-        let venv_py = dir.join(".venv").join("Scripts").join("python.exe");
-        if venv_py.exists() {
-            candidates.push(venv_py);
+        #[cfg(target_os = "windows")]
+        {
+            let venv_py = dir.join(".venv").join("Scripts").join("python.exe");
+            if venv_py.exists() {
+                candidates.push(venv_py);
+            }
+            let venv_py2 = dir.join("venv").join("Scripts").join("python.exe");
+            if venv_py2.exists() {
+                candidates.push(venv_py2);
+            }
         }
-        let venv_py2 = dir.join("venv").join("Scripts").join("python.exe");
-        if venv_py2.exists() {
-            candidates.push(venv_py2);
+        #[cfg(not(target_os = "windows"))]
+        {
+            for venv_name in &[".venv", "venv"] {
+                for bin_name in &["python3", "python"] {
+                    let venv_py = dir.join(venv_name).join("bin").join(bin_name);
+                    if venv_py.exists() && !candidates.contains(&venv_py) {
+                        candidates.push(venv_py);
+                    }
+                }
+            }
         }
     }
 
+    #[cfg(target_os = "windows")]
     let exe_names = ["python.exe", "python3.exe", "py.exe", "pythonw.exe"];
+    #[cfg(not(target_os = "windows"))]
+    let exe_names = ["python3", "python"];
 
     for dir in base_dirs {
         for name in &exe_names {
             let path = dir.join(name);
             if path.exists() && !candidates.contains(&path) {
                 candidates.push(path);
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mac_dirs = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/Library/Frameworks/Python.framework/Versions/Current/bin",
+            "/usr/bin",
+        ];
+        for mdir in &mac_dirs {
+            for name in &exe_names {
+                let path = PathBuf::from(mdir).join(name);
+                if path.exists() && !candidates.contains(&path) {
+                    candidates.push(path);
+                }
             }
         }
     }
@@ -97,16 +132,27 @@ fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
 
-    candidates.push(PathBuf::from("python"));
-    candidates.push(PathBuf::from("py"));
-    candidates.push(PathBuf::from("python3"));
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(PathBuf::from("python3"));
+        candidates.push(PathBuf::from("python"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(PathBuf::from("python"));
+        candidates.push(PathBuf::from("py"));
+        candidates.push(PathBuf::from("python3"));
+    }
 
     candidates
 }
 
 fn find_backend_executable(search_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    #[cfg(target_os = "windows")]
     let exe_names = ["backend.exe", "FRAMBackend.exe", "fram_backend.exe"];
+    #[cfg(not(target_os = "windows"))]
+    let exe_names = ["backend", "FRAMBackend", "fram_backend", "backend.exe"];
 
     for dir in search_dirs {
         for name in &exe_names {
@@ -129,8 +175,32 @@ fn find_backend_executable(search_dirs: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn get_root_app_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let app_dir = PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Forked Account Manager");
+            let _ = fs::create_dir_all(app_dir.join("data"));
+            let _ = fs::create_dir_all(app_dir.join("logs"));
+            let _ = fs::create_dir_all(app_dir.join("cache"));
+            let _ = fs::create_dir_all(app_dir.join("extensions"));
+            return app_dir;
+        }
+    }
+
     if let Ok(local_appdata) = std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("APPDATA")) {
         let app_dir = PathBuf::from(local_appdata).join("Forked Account Manager");
+        let _ = fs::create_dir_all(app_dir.join("data"));
+        let _ = fs::create_dir_all(app_dir.join("logs"));
+        let _ = fs::create_dir_all(app_dir.join("cache"));
+        let _ = fs::create_dir_all(app_dir.join("extensions"));
+        return app_dir;
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let app_dir = PathBuf::from(home).join(".local").join("share").join("Forked Account Manager");
         let _ = fs::create_dir_all(app_dir.join("data"));
         let _ = fs::create_dir_all(app_dir.join("logs"));
         let _ = fs::create_dir_all(app_dir.join("cache"));
@@ -204,6 +274,8 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
         exe_dir.join("backend").join("app.py"),
         exe_dir.join("resources").join("backend").join("app.py"),
         exe_dir.join("_up_").join("backend").join("app.py"),
+        exe_dir.join("..").join("Resources").join("backend").join("app.py"),
+        exe_dir.join("..").join("Resources").join("_up_").join("backend").join("app.py"),
         cur_dir.join("backend").join("app.py"),
         PathBuf::from("backend/app.py"),
     ];
@@ -219,8 +291,8 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
     let target_script = match script_path {
         Some(p) => p,
         None => {
-            let _ = fs::write(&log_path, "Error: Could not locate backend.exe or backend/app.py in application resources.");
-            return (None, BackendStatus { started: false, reason: "Could not locate backend.exe or backend/app.py in application resources.".to_string() });
+            let _ = fs::write(&log_path, "Error: Could not locate backend binary or backend/app.py in application resources.");
+            return (None, BackendStatus { started: false, reason: "Could not locate backend binary or backend/app.py in application resources.".to_string() });
         }
     };
 
@@ -258,7 +330,7 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
         }
     }
 
-    let _ = fs::write(&log_path, "Error: Could not find backend.exe or Python executable on host system.");
+    let _ = fs::write(&log_path, "Error: Could not find backend binary or Python executable on host system.");
     (None, BackendStatus { started: false, reason: "Python is not installed. Please install Python 3.8+ from python.org and ensure it is added to your system PATH.".to_string() })
 }
 
@@ -332,6 +404,7 @@ async fn relaunch_backend(
     status_state: tauri::State<'_, BackendStartStatus>,
 ) -> Result<BackendStatus, String> {
     shutdown_backend_process(&app_handle);
+    SHUTDOWN_CALLED.store(false, Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(300));
 
     let app_dir = get_root_app_dir();
@@ -481,7 +554,10 @@ async fn python_backend_request(
             let text = resp.text().await.map_err(|e| e.to_string())?;
             Ok(text)
         }
-        Err(e) => Err(format!("Failed to connect to Python backend on port 5050: {}. Check AppData/Local/Forked Account Manager/logs/backend_err.log.", e)),
+        Err(e) => {
+            let err_log = get_root_app_dir().join("logs").join("backend_err.log");
+            Err(format!("Failed to connect to Python backend on port 5050: {}. Check {}.", e, err_log.display()))
+        }
     }
 }
 
@@ -540,6 +616,12 @@ fn shutdown_backend_process(app_handle: &tauri::AppHandle) {
 
             if !exited {
                 let pid = child.id();
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = Command::new("pkill")
+                        .args(["-P", &pid.to_string()])
+                        .output();
+                }
                 let _ = child.kill();
                 #[cfg(target_os = "windows")]
                 {

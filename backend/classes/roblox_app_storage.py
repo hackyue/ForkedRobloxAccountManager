@@ -1,7 +1,16 @@
 import os
+import sys
 import json
-import winreg
+import platform
 from typing import Dict, Any, Optional
+
+if platform.system() == "Windows":
+    try:
+        import winreg
+    except ImportError:
+        winreg = None
+else:
+    winreg = None
 
 THEME_TITLE_TO_ID = {
     "Default": "default",
@@ -24,10 +33,22 @@ THEME_ID_TO_TITLE = {v: k for k, v in THEME_TITLE_TO_ID.items()}
 
 class RobloxAppStorageManager:
     def __init__(self):
-        self.app_storage_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\LocalStorage\appStorage.json")
-        self.versions_dir = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
+        if platform.system() == "Darwin":
+            self.app_storage_path = os.path.expanduser("~/Library/Roblox/LocalStorage/appStorage.json")
+            self.versions_dir = "/Applications/Roblox.app/Contents/MacOS"
+        else:
+            self.app_storage_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\LocalStorage\appStorage.json")
+            self.versions_dir = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\Versions")
 
     def get_latest_roblox_exe(self) -> Optional[str]:
+        if platform.system() == "Darwin":
+            for candidate in [
+                "/Applications/Roblox.app/Contents/MacOS/RobloxPlayer",
+                os.path.expanduser("~/Applications/Roblox.app/Contents/MacOS/RobloxPlayer"),
+            ]:
+                if os.path.isfile(candidate):
+                    return candidate
+            return None
         if not os.path.isdir(self.versions_dir):
             return None
         candidates = []
@@ -47,6 +68,11 @@ class RobloxAppStorageManager:
         return None
 
     def read_startup_registry(self) -> bool:
+        if platform.system() == "Darwin":
+            plist_path = os.path.expanduser("~/Library/LaunchAgents/com.roblox.Player.plist")
+            return os.path.isfile(plist_path)
+        if not winreg:
+            return False
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ) as key:
                 val, _ = winreg.QueryValueEx(key, "RobloxPlayerBeta")
@@ -55,6 +81,30 @@ class RobloxAppStorageManager:
             return False
 
     def write_startup_registry(self, enabled: bool) -> bool:
+        if platform.system() == "Darwin":
+            plist_path = os.path.expanduser("~/Library/LaunchAgents/com.roblox.Player.plist")
+            try:
+                if enabled:
+                    exe = self.get_latest_roblox_exe()
+                    if not exe:
+                        return False
+                    os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+                    import plistlib
+                    plist_data = {
+                        "Label": "com.roblox.Player",
+                        "ProgramArguments": [exe, "--launch-to-tray"],
+                        "RunAtLoad": True,
+                    }
+                    with open(plist_path, "wb") as fp:
+                        plistlib.dump(plist_data, fp)
+                else:
+                    if os.path.exists(plist_path):
+                        os.remove(plist_path)
+                return True
+            except Exception:
+                return False
+        if not winreg:
+            return False
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as key:
                 if enabled:

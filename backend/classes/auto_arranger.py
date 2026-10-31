@@ -4,6 +4,7 @@ import time
 import math
 import ctypes
 import platform
+import subprocess
 import threading
 from typing import Dict, List, Tuple, Any, Optional, Set
 
@@ -37,6 +38,8 @@ SW_SHOWNORMAL = 1
 ROBLOX_CLIENT_EXECUTABLES: Set[str] = {
     "robloxplayerbeta.exe",
     "robloxplayer.exe",
+    "robloxplayer",
+    "robloxplayerbeta",
 }
 
 ROBLOX_TARGET_EXECUTABLES: Set[str] = ROBLOX_CLIENT_EXECUTABLES
@@ -115,6 +118,25 @@ class AutoArranger:
         return False
 
     def get_roblox_client_windows(self) -> List[int]:
+        if platform.system() == "Darwin":
+            pids: List[int] = []
+            try:
+                import psutil
+                for proc in psutil.process_iter(['pid', 'name']):
+                    try:
+                        name = str(proc.info.get('name') or '').lower()
+                        pid = int(proc.info['pid'])
+                        if name in ROBLOX_CLIENT_EXECUTABLES:
+                            if self.headless_manager and hasattr(self.headless_manager, 'hidden_hwnds') and pid in self.headless_manager.hidden_hwnds:
+                                continue
+                            pids.append(pid)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            pids.sort()
+            return pids
+
         if platform.system() != "Windows":
             return []
 
@@ -196,6 +218,22 @@ class AutoArranger:
         return found_hwnds
 
     def get_monitor_work_areas(self) -> List[Tuple[bool, Tuple[int, int, int, int]]]:
+        if platform.system() == "Darwin":
+            try:
+                res = subprocess.run(
+                    ["osascript", "-e", 'tell application "Finder" to get bounds of window of desktop'],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    parts = [int(x.strip()) for x in res.stdout.strip().split(",") if x.strip().lstrip("-").isdigit()]
+                    if len(parts) == 4 and parts[2] > 100 and parts[3] > 100:
+                        return [(True, (parts[0], max(25, parts[1]), parts[2], parts[3]))]
+            except Exception:
+                pass
+            return [(True, (0, 25, 1920, 1080))]
+
         if platform.system() != "Windows":
             return [(True, (0, 0, 1920, 1080))]
 
@@ -274,6 +312,8 @@ class AutoArranger:
         return work_areas
 
     def sort_windows_by_position(self, hwnds: List[int]) -> List[int]:
+        if platform.system() != "Windows":
+            return sorted(hwnds)
         user32 = ctypes.windll.user32
         positioned: List[Tuple[int, int, int]] = []
 
@@ -289,6 +329,8 @@ class AutoArranger:
         return [item[2] for item in positioned]
 
     def get_window_signature(self, hwnds: List[int]) -> Tuple[Tuple[int, int, int, int, int], ...]:
+        if platform.system() != "Windows":
+            return tuple((int(h), 0, 0, 0, 0) for h in sorted(hwnds))
         user32 = ctypes.windll.user32
         sig = []
         for hwnd in self.sort_windows_by_position(hwnds):
@@ -382,6 +424,31 @@ class AutoArranger:
             target_height=target_height,
         )
 
+        if platform.system() == "Darwin":
+            for idx, pid in enumerate(hwnds):
+                row = min(rows - 1, idx // columns)
+                col = idx % columns
+                left = min(work_left + (col * tile_w), work_right - max(1, tile_w))
+                top = min(work_top + (row * tile_h), work_bottom - max(1, tile_h))
+                w = max(1, tile_w)
+                h = max(1, tile_h)
+                script = (
+                    f'tell application "System Events"\n'
+                    f'  repeat with p in (every process whose unix id is {int(pid)})\n'
+                    f'    set visible of p to true\n'
+                    f'    repeat with w in windows of p\n'
+                    f'      set position of w to {{{left}, {top}}}\n'
+                    f'      set size of w to {{{w}, {h}}}\n'
+                    f'    end repeat\n'
+                    f'  end repeat\n'
+                    f'end tell'
+                )
+                try:
+                    subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=3)
+                except Exception:
+                    pass
+            return
+
         user32 = ctypes.windll.user32
 
         for idx, hwnd in enumerate(hwnds):
@@ -413,12 +480,12 @@ class AutoArranger:
                 pass
 
     def arrange_clients(self, scope: Optional[str] = None, dimension_mode: Optional[str] = None, target_width: Optional[int] = None, target_height: Optional[int] = None) -> Dict[str, Any]:
-        if platform.system() != "Windows":
+        if platform.system() not in ("Windows", "Darwin"):
             return {
                 "success": False,
                 "count": 0,
                 "monitors": 0,
-                "message": "Auto-Arrange is only supported on Windows operating systems."
+                "message": "Auto-Arrange is only supported on Windows and macOS."
             }
 
         with self.lock:

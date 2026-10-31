@@ -1,10 +1,14 @@
 import os
 import json
+import platform
 from typing import Dict, Any
 
 class RobloxIxpSettingsManager:
     def __init__(self):
-        self.file_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\ClientSettings\IxpSettings.json")
+        if platform.system() == "Darwin":
+            self.file_path = os.path.expanduser("~/Library/Roblox/ClientSettings/IxpSettings.json")
+        else:
+            self.file_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\ClientSettings\IxpSettings.json")
 
     def get_file_path(self) -> str:
         return self.file_path

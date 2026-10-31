@@ -7,7 +7,10 @@ from typing import Dict, List, Any, Optional, Tuple
 
 class RobloxGlobalSettingsManager:
     def __init__(self):
-        self.settings_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\GlobalBasicSettings_13.xml")
+        if platform.system() == "Darwin":
+            self.settings_path = os.path.expanduser("~/Library/Roblox/GlobalBasicSettings_13.xml")
+        else:
+            self.settings_path = os.path.expandvars(r"%LOCALAPPDATA%\Roblox\GlobalBasicSettings_13.xml")
 
     def get_field_specs(self) -> Dict[str, Tuple[Dict[str, Any], ...]]:
         return {
@@ -83,15 +86,26 @@ class RobloxGlobalSettingsManager:
         return properties_node
 
     def is_roblox_running(self) -> bool:
-        if platform.system() != "Windows":
-            return False
         try:
-            cmd = ["tasklist", "/FI", "IMAGENAME eq RobloxPlayerBeta.exe"]
-            flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-            res = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags, timeout=5)
-            return bool(res.returncode == 0 and "RobloxPlayerBeta.exe" in str(res.stdout or ""))
+            import psutil
+            for proc in psutil.process_iter(['name']):
+                try:
+                    pname = str(proc.info.get('name') or '').lower()
+                    if pname in ('robloxplayerbeta.exe', 'robloxplayerbeta', 'robloxplayer', 'robloxplayer.exe'):
+                        return True
+                except Exception:
+                    continue
         except Exception:
-            return False
+            pass
+        if platform.system() == "Windows":
+            try:
+                cmd = ["tasklist", "/FI", "IMAGENAME eq RobloxPlayerBeta.exe"]
+                flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+                res = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags, timeout=5)
+                return bool(res.returncode == 0 and "RobloxPlayerBeta.exe" in str(res.stdout or ""))
+            except Exception:
+                return False
+        return False
 
     def _read_field_value(self, properties_node: ET.Element, field_spec: Dict[str, Any]) -> Any:
         xml_name = str(field_spec.get("xml_name") or "")

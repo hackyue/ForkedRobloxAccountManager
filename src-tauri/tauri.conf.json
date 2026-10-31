@@ -8,7 +8,7 @@
   },
   "package": {
     "productName": "FRAM",
-    "version": "3.0.0-pre.2"
+    "version": "3.0.0.2"
   },
   "tauri": {
     "allowlist": {
@@ -61,7 +61,6 @@
       "copyright": "Copyright © 2026 hackyue",
       "publisher": "hackyue",
       "resources": [
-        "resources/backend.exe",
         "../backend/app.py",
         "../backend/requirements.txt",
         "../backend/classes/*.py",
@@ -107,7 +106,7 @@
       "active": false
     },
     "systemTray": {
-      "iconPath": "icons/icon.ico",
+      "iconPath": "icons/icon.png",
       "iconAsTemplate": true
     },
     "windows": [

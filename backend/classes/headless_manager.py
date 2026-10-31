@@ -3,6 +3,7 @@ import sys
 import time
 import ctypes
 import platform
+import subprocess
 import threading
 from typing import Dict, List, Tuple, Any, Optional, Set
 
@@ -17,6 +18,8 @@ class HeadlessManager:
     ROBLOX_HEADLESS_TARGET_EXECUTABLES: Set[str] = {
         "robloxplayerbeta.exe",
         "robloxplayer.exe",
+        "robloxplayer",
+        "robloxplayerbeta",
     }
     ROBLOX_HEADLESS_SCAN_INTERVAL_SECONDS = 2
     ROBLOX_HEADLESS_MEMORY_TRIM_INTERVAL_SECONDS = 30
@@ -70,8 +73,6 @@ class HeadlessManager:
             return 0
 
     def get_roblox_pids(self) -> Set[int]:
-        if platform.system() != "Windows":
-            return set()
         pids: Set[int] = set()
         try:
             import psutil
@@ -83,26 +84,31 @@ class HeadlessManager:
                 except Exception:
                     continue
         except Exception:
-            try:
-                import subprocess
-                ps_script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'robloxplayerbeta' } | Select-Object -ExpandProperty ProcessId"
-                res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=5)
-                if res.returncode == 0 and res.stdout.strip():
-                    for line in res.stdout.strip().splitlines():
-                        line = line.strip()
-                        if line.isdigit():
-                            pids.add(int(line))
-            except Exception:
-                pass
+            if platform.system() == "Windows":
+                try:
+                    ps_script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'robloxplayerbeta' } | Select-Object -ExpandProperty ProcessId"
+                    res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=5)
+                    if res.returncode == 0 and res.stdout.strip():
+                        for line in res.stdout.strip().splitlines():
+                            line = line.strip()
+                            if line.isdigit():
+                                pids.add(int(line))
+                except Exception:
+                    pass
         return pids
 
     def get_roblox_windows(self, target_pids: Optional[Set[int]] = None, include_hidden: bool = False) -> List[int]:
-        if platform.system() != "Windows" or not win32gui or not win32process:
-            return []
-
         if target_pids is None:
             target_pids = self.get_roblox_pids()
         if not target_pids:
+            return []
+
+        if platform.system() == "Darwin":
+            if include_hidden:
+                return sorted(int(p) for p in target_pids)
+            return sorted(int(p) for p in target_pids if int(p) not in self.hidden_hwnds)
+
+        if platform.system() != "Windows" or not win32gui or not win32process:
             return []
 
         found_windows: List[int] = []
@@ -136,7 +142,20 @@ class HeadlessManager:
         return found_windows
 
     def hide_window(self, hwnd: int) -> bool:
-        if not hwnd or not win32gui:
+        if not hwnd:
+            return False
+        if platform.system() == "Darwin":
+            try:
+                script = f'tell application "System Events" to set visible of (every process whose unix id is {int(hwnd)}) to false'
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=3)
+                if res.returncode == 0:
+                    self.hidden_hwnds.add(int(hwnd))
+                    self.restored_hwnds.discard(int(hwnd))
+                    return True
+            except Exception:
+                pass
+            return False
+        if not win32gui:
             return False
         changed = False
         try:
@@ -162,7 +181,20 @@ class HeadlessManager:
         return changed
 
     def restore_window(self, hwnd: int) -> bool:
-        if not hwnd or not win32gui:
+        if not hwnd:
+            return False
+        if platform.system() == "Darwin":
+            try:
+                script = f'tell application "System Events" to set visible of (every process whose unix id is {int(hwnd)}) to true'
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=3)
+                if res.returncode == 0:
+                    self.hidden_hwnds.discard(int(hwnd))
+                    self.restored_hwnds.add(int(hwnd))
+                    return True
+            except Exception:
+                pass
+            return False
+        if not win32gui:
             return False
         try:
             win32gui.ShowWindow(hwnd, getattr(win32con, "SW_SHOW", 5))
@@ -174,8 +206,17 @@ class HeadlessManager:
             return False
 
     def set_process_priority(self, pid: int, priority_class: int) -> Tuple[bool, str]:
-        if not pid or platform.system() != "Windows":
-            return False, "invalid pid or platform"
+        if not pid:
+            return False, "invalid pid"
+        if platform.system() != "Windows":
+            try:
+                import psutil
+                proc = psutil.Process(int(pid))
+                target_nice = 19 if priority_class == self._IDLE_PRIORITY_CLASS else 0
+                proc.nice(target_nice)
+                return True, "ok"
+            except Exception as exc:
+                return False, str(exc)
         handle = None
         try:
             kernel32 = ctypes.windll.kernel32

@@ -7,7 +7,14 @@ def get_root_app_dir():
         os.makedirs(env_dir, exist_ok=True)
         return env_dir
 
-    local_appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+    if sys.platform == "darwin":
+        app_dir = os.path.expanduser("~/Library/Application Support/Forked Account Manager")
+        os.makedirs(app_dir, exist_ok=True)
+        return app_dir
+
+    local_appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if not local_appdata:
+        local_appdata = os.path.expanduser("~/.local/share")
     app_dir = os.path.join(local_appdata, "Forked Account Manager")
     os.makedirs(app_dir, exist_ok=True)
     return app_dir

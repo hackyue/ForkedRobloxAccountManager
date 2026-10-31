@@ -7,6 +7,7 @@ import os
 import json
 import re
 import shutil
+import platform
 from pathlib import Path
 
 
@@ -14,9 +15,15 @@ class FastFlagsManager:
     """Manages Roblox FastFlags for performance and graphics customization"""
     
     def __init__(self, version_path=None):
-        self.app_data = os.path.expandvars("%LOCALAPPDATA%")
-        self.version_path = version_path
-        self.roblox_versions_path = os.path.join(self.app_data, "Roblox", "Versions")
+        self.is_mac = platform.system() == "Darwin"
+        if self.is_mac:
+            self.app_data = os.path.expanduser("~/Library")
+            self.version_path = version_path
+            self.roblox_versions_path = "/Applications/Roblox.app/Contents/MacOS"
+        else:
+            self.app_data = os.path.expandvars("%LOCALAPPDATA%")
+            self.version_path = version_path
+            self.roblox_versions_path = os.path.join(self.app_data, "Roblox", "Versions")
     
     def get_version_sources(self):
         """Get all possible Roblox version sources (including bootstrappers)"""
@@ -31,6 +38,22 @@ class FastFlagsManager:
                 return
             known_bases.add(normalized)
             sources.append({"name": name, "base": base_path})
+
+        if self.is_mac:
+            for mac_app in ("/Applications/Roblox.app", os.path.expanduser("~/Applications/Roblox.app")):
+                macos_dir = os.path.join(mac_app, "Contents", "MacOS")
+                if os.path.isdir(macos_dir):
+                    add_source("Roblox", macos_dir)
+            try:
+                from utils.paths import get_root_app_dir
+                managed_mac_versions = os.path.join(get_root_app_dir(), "RobloxVersions")
+                if os.path.isdir(managed_mac_versions):
+                    add_source("Roblox (FRAM)", managed_mac_versions)
+            except Exception:
+                pass
+            if not sources:
+                add_source("Roblox", "/Applications/Roblox.app/Contents/MacOS")
+            return sources
 
         roblox_dir = os.path.join(self.app_data, "Roblox", "Versions")
         if os.path.exists(roblox_dir) or os.path.exists(os.path.join(self.app_data, "Roblox")):
@@ -108,6 +131,12 @@ class FastFlagsManager:
         """Get the path to the latest Roblox version from all sources"""
         if self.version_path:
             return self.version_path
+
+        if self.is_mac:
+            for mac_app in ("/Applications/Roblox.app/Contents/MacOS", os.path.expanduser("~/Applications/Roblox.app/Contents/MacOS")):
+                if os.path.isdir(mac_app):
+                    return mac_app
+            return None
         
         sources = self.get_version_sources()
         all_versions = []
@@ -136,6 +165,19 @@ class FastFlagsManager:
     
     def get_fast_flags_file(self):
         """Find the FastFlags file in the version-specific ClientSettings folder"""
+        if self.is_mac:
+            latest_version = self.get_latest_version_path()
+            if latest_version and os.access(latest_version, os.W_OK):
+                client_settings_path = os.path.join(latest_version, "ClientSettings")
+                try:
+                    os.makedirs(client_settings_path, exist_ok=True)
+                    return os.path.join(client_settings_path, "ClientAppSettings.json")
+                except OSError:
+                    pass
+            user_settings_dir = os.path.expanduser("~/Library/Roblox/ClientSettings")
+            os.makedirs(user_settings_dir, exist_ok=True)
+            return os.path.join(user_settings_dir, "ClientAppSettings.json")
+
         latest_version = self.get_latest_version_path()
         if latest_version:
             client_settings_path = os.path.join(latest_version, "ClientSettings")
@@ -152,6 +194,17 @@ class FastFlagsManager:
         primary_file = self.get_fast_flags_file()
         if primary_file:
             target_files.append(primary_file)
+
+        if self.is_mac:
+            user_file = os.path.expanduser("~/Library/Roblox/ClientSettings/ClientAppSettings.json")
+            if user_file not in target_files:
+                target_files.append(user_file)
+            for mac_app in ("/Applications/Roblox.app/Contents/MacOS", os.path.expanduser("~/Applications/Roblox.app/Contents/MacOS")):
+                if os.path.isdir(mac_app) and os.access(mac_app, os.W_OK):
+                    app_cs = os.path.join(mac_app, "ClientSettings", "ClientAppSettings.json")
+                    if app_cs not in target_files:
+                        target_files.append(app_cs)
+            return target_files
         
         sources = self.get_version_sources()
         for source in sources:

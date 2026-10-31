@@ -162,11 +162,19 @@ class AppUpdaterManager:
         assets = release_data.get("assets") or []
         chosen_asset = None
 
-        for a in assets:
-            name = str(a.get("name") or "").lower()
-            if name.endswith(".exe") and ("setup" in name or "installer" in name):
-                chosen_asset = a
-                break
+        if sys.platform == "darwin":
+            for a in assets:
+                name = str(a.get("name") or "").lower()
+                if name.endswith(".dmg") or name.endswith(".app.tar.gz") or (name.endswith(".zip") and ("mac" in name or "darwin" in name or "osx" in name)):
+                    chosen_asset = a
+                    break
+
+        if not chosen_asset:
+            for a in assets:
+                name = str(a.get("name") or "").lower()
+                if name.endswith(".exe") and ("setup" in name or "installer" in name):
+                    chosen_asset = a
+                    break
 
         if not chosen_asset:
             for a in assets:
@@ -178,7 +186,7 @@ class AppUpdaterManager:
         if not chosen_asset:
             for a in assets:
                 name = str(a.get("name") or "").lower()
-                if name.endswith(".msi") or name.endswith(".zip"):
+                if name.endswith(".msi") or name.endswith(".dmg") or name.endswith(".zip"):
                     chosen_asset = a
                     break
 
@@ -254,11 +262,13 @@ class AppUpdaterManager:
                 if not download_url:
                     return {"success": False, "error": "No download URL available for the latest release"}
 
-                asset_name = check.get("asset_name") or "FRAM_Update.exe"
+                default_asset = "FRAM_Update.dmg" if sys.platform == "darwin" else "FRAM_Update.exe"
+                asset_name = check.get("asset_name") or default_asset
                 expected_sha256 = check.get("sha256") or ""
                 total_bytes = check.get("asset_size") or 0
             else:
-                asset_name = asset_name or "FRAM_Update.exe"
+                default_asset = "FRAM_Update.dmg" if sys.platform == "darwin" else "FRAM_Update.exe"
+                asset_name = asset_name or default_asset
                 expected_sha256 = expected_sha256 or ""
                 total_bytes = total_bytes or 0
 
@@ -384,6 +394,13 @@ class AppUpdaterManager:
         )
 
         try:
+            if sys.platform == "darwin":
+                if lower_path.endswith(".dmg") or lower_path.endswith(".pkg"):
+                    subprocess.Popen(["open", file_path], close_fds=True)
+                    return {"success": True, "message": "Update package opened. Please drag FRAM to Applications to complete the update."}
+                subprocess.Popen(["open", "-R", file_path], close_fds=True)
+                return {"success": True, "message": "Downloaded update revealed in Finder."}
+
             if is_setup:
                 if file_path.lower().endswith(".msi"):
                     subprocess.Popen(["msiexec", "/i", file_path], close_fds=True)

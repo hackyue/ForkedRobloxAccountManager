@@ -18,7 +18,8 @@ try:
 except Exception as exc:
     win32gui = None
     win32process = None
-    log_detailed_error("Failed to import win32gui / win32process modules", exc=exc, level="WARNING", source="auto_rejoin")
+    if platform.system() == "Windows":
+        log_detailed_error("Failed to import win32gui / win32process modules", exc=exc, level="WARNING", source="auto_rejoin")
 
 
 
@@ -808,10 +809,29 @@ class AutoRejoinMonitor:
 
     def _close_tracked_process(self, pid, username=""):
         pid_value = self._normalize_int(pid, default=0, minimum=0)
-        if pid_value <= 0 or platform.system() != "Windows":
+        if pid_value <= 0:
             return False
         if not self._is_process_running(pid_value):
             return False
+
+        if platform.system() != "Windows":
+            try:
+                import psutil
+                proc = psutil.Process(pid_value)
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                self._log(
+                    f"[AUTO REJOIN] {username}: closed previous Roblox process {pid_value} before rejoining."
+                )
+                return True
+            except Exception as exc:
+                self._log(
+                    f"[AUTO REJOIN] {username}: error while closing previous Roblox process {pid_value}: {exc}"
+                )
+                return False
 
         handle = None
         try:
@@ -871,8 +891,18 @@ class AutoRejoinMonitor:
     @staticmethod
     def _is_process_running(pid):
         pid_value = AutoRejoinMonitor._normalize_int(pid, default=0, minimum=0)
-        if pid_value <= 0 or platform.system() != "Windows":
+        if pid_value <= 0:
             return False
+
+        if platform.system() != "Windows":
+            try:
+                import psutil
+                if not psutil.pid_exists(pid_value):
+                    return False
+                proc = psutil.Process(pid_value)
+                return proc.status() != psutil.STATUS_ZOMBIE
+            except Exception:
+                return False
 
         handle = None
         try:
@@ -900,9 +930,12 @@ class AutoRejoinMonitor:
     @staticmethod
     def _window_exists_for_pid(pid):
         pid_value = AutoRejoinMonitor._normalize_int(pid, default=0, minimum=0)
+        if pid_value <= 0:
+            return False
+        if platform.system() == "Darwin":
+            return AutoRejoinMonitor._is_process_running(pid_value)
         if (
-            pid_value <= 0
-            or platform.system() != "Windows"
+            platform.system() != "Windows"
             or win32gui is None
             or win32process is None
         ):
@@ -944,9 +977,12 @@ class AutoRejoinMonitor:
             for pid_value in (pid_values or set())
         }
         normalized_pid_values.discard(0)
+        if not normalized_pid_values:
+            return set()
+        if platform.system() == "Darwin":
+            return {p for p in normalized_pid_values if AutoRejoinMonitor._is_process_running(p)}
         if (
-            not normalized_pid_values
-            or platform.system() != "Windows"
+            platform.system() != "Windows"
             or win32gui is None
             or win32process is None
         ):

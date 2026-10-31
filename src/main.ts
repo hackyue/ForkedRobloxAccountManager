@@ -8,6 +8,17 @@ import { open as openExternal } from '@tauri-apps/api/shell';
 import { THEMES, Theme, applyTheme, getTheme, getAllThemes, initThemeFromStorage, getCurrentThemeId, getCurrentTheme, saveCustomTheme, deleteCustomTheme, importThemeJson, getCustomThemes, getBackgroundSettings, saveBackgroundSettings, applyBackground, BACKGROUND_PRESETS, CustomBackgroundSettings } from './themes';
 import { updateAppThemeIcons, getThemeIconUrl } from './colorWashIcon';
 
+export type SupportedPlatform = 'windows' | 'macos' | 'linux';
+const currentPlatform: SupportedPlatform = /mac|iphone|ipad|ipod/i.test(navigator.userAgent || navigator.platform || '')
+  ? 'macos'
+  : /win/i.test(navigator.userAgent || navigator.platform || '')
+    ? 'windows'
+    : 'linux';
+document.documentElement.dataset.os = currentPlatform;
+const isMacOS = (): boolean => currentPlatform === 'macos';
+const isWindows = (): boolean => currentPlatform === 'windows';
+
+
 async function pickNativeFolder(title?: string): Promise<string | null> {
   try {
     const selected = await openDialog({
@@ -1697,9 +1708,10 @@ async function executeDeleteAllData(): Promise<void> {
 
     // Update settings from backend response
     if (response && (response as any).settings) {
-      state.settings = (response as any).settings;
+      state.settings = { ...state.settings, ...(response as any).settings };
     } else {
       state.settings = {
+        ...state.settings,
         firstLaunch: true,
         multiSelect: true,
         activeIndicator: true,
@@ -1753,7 +1765,7 @@ function showUninstallConfirmModal(): void {
         <ul class="data-list">
           <li>Application installation and executables</li>
           <li>All account data, saved games, and settings</li>
-          <li>AppData configuration & cache files</li>
+          <li>${isMacOS() ? 'Application Support configuration & cache files' : 'AppData configuration & cache files'}</li>
         </ul>
         <p class="warning-text">The application will automatically exit while the uninstaller completes. This cannot be undone!</p>
         
@@ -1775,10 +1787,10 @@ function showUninstallConfirmModal(): void {
 
   app.appendChild(overlay);
 
-  const closeBtn = document.getElementById('modal-close');
-  const cancelBtn = document.getElementById('modal-cancel');
-  const confirmBtn = document.getElementById('modal-confirm') as HTMLButtonElement;
-  const confirmationInput = document.getElementById('uninstall-confirmation');
+  const closeBtn = overlay.querySelector('#modal-close');
+  const cancelBtn = overlay.querySelector('#modal-cancel');
+  const confirmBtn = overlay.querySelector('#modal-confirm') as HTMLButtonElement | null;
+  const confirmationInput = overlay.querySelector('#uninstall-confirmation') as HTMLInputElement | null;
 
   const closeModal = () => {
     overlay.remove();
@@ -1799,8 +1811,8 @@ function showUninstallConfirmModal(): void {
   });
 
   confirmBtn?.addEventListener('click', async () => {
-    const step1 = document.getElementById('step-1');
-    const step2 = document.getElementById('step-2');
+    const step1 = overlay.querySelector('#step-1') as HTMLElement | null;
+    const step2 = overlay.querySelector('#step-2') as HTMLElement | null;
 
     if (step1 && step1.style.display !== 'none') {
       step1.style.display = 'none';
@@ -4031,7 +4043,7 @@ interface SettingItemDefinition {
 const ALL_SETTINGS_ITEMS: SettingItemDefinition[] = [
   // 1. General
   { id: 'setting-enable-topmost', tab: 'general', label: 'Always on Top', desc: 'Keep FRAM above other desktop windows' },
-  { id: 'setting-start-at-startup', tab: 'general', label: 'Start FRAM on Windows Startup', desc: 'Automatically launch FRAM when Windows starts' },
+  { id: 'setting-start-at-startup', tab: 'general', get label() { return isMacOS() ? 'Start FRAM at Login' : 'Start FRAM on Windows Startup'; }, get desc() { return isMacOS() ? 'Automatically launch FRAM when you log into macOS' : 'Automatically launch FRAM when Windows starts'; } },
   { id: 'setting-minimize-tray', tab: 'general', label: 'Minimize to System Tray', desc: 'Keep FRAM running in the system tray when minimized or closed' },
   { id: 'setting-default-startup-view', tab: 'general', label: 'Default Startup Landing View', desc: 'Choose which main tab opens when FRAM launches' },
   { id: 'setting-auto-validate-cookies', tab: 'general', label: 'Validate Cookies on Startup', desc: 'Validate stored account sessions when FRAM launches' },
@@ -4048,20 +4060,20 @@ const ALL_SETTINGS_ITEMS: SettingItemDefinition[] = [
   { id: 'setting-roblox-fastflags', tab: 'roblox', label: 'Roblox FastFlags Editor', desc: 'Manage custom Roblox FastFlags and fine-tune performance' },
   { id: 'setting-icon-cache', tab: 'roblox', label: 'Roblox Icon & Thumbnail Cache', desc: 'Inspect disk usage and clear downloaded game and avatar thumbnail images' },
   { id: 'setting-roblox-updates', tab: 'roblox', label: 'Auto-check for Roblox Updates', desc: 'Check whether a newer Roblox client version is available' },
-  { id: 'setting-disable-executor-presets', tab: 'roblox', label: 'Disable Executor Presets', desc: 'Hide executor presets in the Roblox Installer modal' },
+  { id: 'setting-disable-executor-presets', tab: 'roblox', label: 'Disable Executor Presets', desc: 'Hide executor presets in the Roblox Installer modal', isVisible: () => !isMacOS() },
 
   // 3. Launching
   { id: 'setting-multi-instance', tab: 'launching', label: 'Multi-Instance Roblox', desc: 'Allow multiple Roblox accounts to run simultaneously without instance mutex conflicts' },
   { id: 'setting-multi-launch-delay', tab: 'launching', label: 'Multi-Account Launch Stagger Delay', desc: 'Time gap in milliseconds between launching consecutive accounts' },
   { id: 'setting-confirm-before-launch', tab: 'launching', label: 'Confirm Before Account Launch', desc: 'Show a confirmation dialog before launching accounts' },
-  { id: 'setting-auto-close-crash-handlers', tab: 'launching', label: 'Auto Close RobloxCrashHandlers', desc: 'Automatically detect and terminate unresponsive RobloxCrashHandler processes' },
+  { id: 'setting-auto-close-crash-handlers', tab: 'launching', label: 'Auto Close RobloxCrashHandlers', desc: 'Automatically detect and terminate unresponsive RobloxCrashHandler processes', isVisible: () => !isMacOS() },
   { id: 'setting-auto-save-launch-details', tab: 'launching', label: 'Save Launch Details', desc: 'Automatically save game place IDs and user targets to the Saved Games bar' },
   { id: 'setting-preferred-region', tab: 'launching', label: 'Preferred Server Region', desc: 'Automatically select a preferred geographic region when joining public servers' },
   { id: 'setting-server-per-account', tab: 'launching', label: 'Server For Each Account', desc: 'Assign a different public server to each account during batch launching' },
   { id: 'setting-auto-kill-roblox', tab: 'launching', label: 'Auto-Close Roblox Clients on FRAM Exit', desc: 'Automatically terminate Roblox clients when FRAM closes' },
   { id: 'setting-headless-mode', tab: 'launching', label: 'Headless Client Launch', desc: 'Launch Roblox instances hidden in the background' },
   { id: 'setting-headless-idle-priority', tab: 'launching', label: 'Idle CPU Priority', desc: 'Lower background Roblox client CPU priority to Idle', dependsOn: { key: 'headlessMode', value: true } },
-  { id: 'setting-headless-trim-memory', tab: 'launching', label: 'Headless Auto Memory Trim', desc: 'Automatically optimize memory usage for background instances', dependsOn: { key: 'headlessMode', value: true } },
+  { id: 'setting-headless-trim-memory', tab: 'launching', label: 'Headless Auto Memory Trim', desc: 'Automatically optimize memory usage for background instances', dependsOn: { key: 'headlessMode', value: true }, isVisible: () => !isMacOS() },
   { id: 'setting-headless-actions', tab: 'launching', label: 'Headless Actions', desc: 'Quick actions to hide or restore all running Roblox clients', dependsOn: { key: 'headlessMode', value: true } },
 
   // 4. Automation
@@ -4084,8 +4096,8 @@ const ALL_SETTINGS_ITEMS: SettingItemDefinition[] = [
   { id: 'setting-auto-relaunch-interval', tab: 'automation', label: 'Relaunch Interval', desc: 'How frequently the group should be relaunched in minutes', dependsOn: { key: 'autoRelaunchEnabled', value: true } },
   { id: 'setting-auto-relaunch-status', tab: 'automation', label: 'Live Schedule Status', desc: 'Real-time schedule timer and status for group auto-relaunch', dependsOn: { key: 'autoRelaunchEnabled', value: true } },
   { id: 'setting-auto-relaunch-trigger', tab: 'automation', label: 'Relaunch Group Now', desc: 'Manually trigger the automation to close and relaunch the group now', dependsOn: { key: 'autoRelaunchEnabled', value: true } },
-  { id: 'setting-auto-memory-trim', tab: 'automation', label: 'Auto Memory Trim', desc: 'Periodically optimize active Roblox client memory usage' },
-  { id: 'setting-auto-memory-trim-interval', tab: 'automation', label: 'Memory Trim Interval', desc: 'How frequently memory trimming occurs', dependsOn: { key: 'autoMemoryTrimEnabled', value: true } },
+  { id: 'setting-auto-memory-trim', tab: 'automation', label: 'Auto Memory Trim', desc: 'Periodically optimize active Roblox client memory usage', isVisible: () => !isMacOS() },
+  { id: 'setting-auto-memory-trim-interval', tab: 'automation', label: 'Memory Trim Interval', desc: 'How frequently memory trimming occurs', dependsOn: { key: 'autoMemoryTrimEnabled', value: true }, isVisible: () => !isMacOS() },
   { id: 'setting-preferred-browser', tab: 'automation', label: 'Preferred Automation Browser', desc: 'Default web browser used for account login & automation' },
 
   // 5. Appearance
@@ -4172,7 +4184,7 @@ const KEYBIND_DEFINITIONS: KeybindDefinition[] = [
   // Roblox Tools
   { id: 'tool_auto_arrange', label: 'Auto-Arrange Clients', desc: 'Instantly tile and position active Roblox client windows', category: 'tools', defaultKeys: ['Ctrl+Shift+A'] },
   { id: 'tool_kill_roblox', label: 'Kill All Roblox Clients', desc: 'Instantly force close all active Roblox client processes', category: 'tools', defaultKeys: ['Ctrl+Shift+K'] },
-  { id: 'tool_trim_memory', label: 'Trim Client Memory', desc: 'Instantly optimize RAM usage for running Roblox clients', category: 'tools', defaultKeys: ['Ctrl+Shift+M'] },
+  ...(isMacOS() ? [] : [{ id: 'tool_trim_memory', label: 'Trim Client Memory', desc: 'Instantly optimize RAM usage for running Roblox clients', category: 'tools' as const, defaultKeys: ['Ctrl+Shift+M'] }]),
   { id: 'shortcuts_help', label: 'Keyboard Shortcuts Help', desc: 'Open the keyboard shortcuts reference dialog', category: 'tools', defaultKeys: ['Ctrl+/'] },
 ];
 
@@ -4187,9 +4199,12 @@ function getKeybinds(id: string): string[] {
 
 function getMultiSelectBindText(): string {
   const keys = getKeybinds('multi_select');
-  if (!keys || keys.length === 0) return 'Ctrl + Click';
+  if (!keys || keys.length === 0) return isMacOS() ? 'Cmd + Click' : 'Ctrl + Click';
   return keys.map(k => {
-    return k.split('+').map(part => part.trim()).join(' + ');
+    return k.split('+').map(part => {
+      const p = part.trim();
+      return isMacOS() ? p.replace(/^Ctrl$/i, 'Cmd') : p;
+    }).join(' + ');
   }).join(' / ');
 }
 
@@ -4546,14 +4561,18 @@ function renderRobloxHubSection(container: HTMLElement): void {
 
   container.appendChild(hubContainer);
 
-  const KNOWN_BOOTSTRAPPERS = [
-    { id: 'roblox', name: 'Roblox', subtitle: 'Roblox Corporation' },
-    { id: 'bloxstrap', name: 'Bloxstrap', subtitle: 'Bloxstrap Client' },
-    { id: 'fishstrap', name: 'Fishstrap', subtitle: 'Fishstrap Client' },
-    { id: 'voidstrap', name: 'Voidstrap', subtitle: 'Voidstrap Client' },
-    { id: 'froststrap', name: 'FrostStrap', subtitle: 'FrostStrap Client' },
-    { id: 'exploitstrap', name: 'ExploitStrap', subtitle: 'ExploitStrap Client' }
-  ];
+  const KNOWN_BOOTSTRAPPERS = isMacOS()
+    ? [
+      { id: 'roblox', name: 'Roblox', subtitle: 'Roblox Corporation' }
+    ]
+    : [
+      { id: 'roblox', name: 'Roblox', subtitle: 'Roblox Corporation' },
+      { id: 'bloxstrap', name: 'Bloxstrap', subtitle: 'Bloxstrap Client' },
+      { id: 'fishstrap', name: 'Fishstrap', subtitle: 'Fishstrap Client' },
+      { id: 'voidstrap', name: 'Voidstrap', subtitle: 'Voidstrap Client' },
+      { id: 'froststrap', name: 'FrostStrap', subtitle: 'FrostStrap Client' },
+      { id: 'exploitstrap', name: 'ExploitStrap', subtitle: 'ExploitStrap Client' }
+    ];
 
   let currentHubClients: { id: string; name: string; subtitle: string }[] = [{ id: 'roblox', name: 'Roblox', subtitle: 'Roblox Corporation' }];
 
@@ -4610,6 +4629,9 @@ function renderRobloxHubSection(container: HTMLElement): void {
         if (clientItem.id === (currentVal || clientsList[0].id)) opt.selected = true;
         clientSelect.appendChild(opt);
       });
+      if (isMacOS() && clientsList.length <= 1) {
+        clientSelect.style.display = 'none';
+      }
     } catch (_) {
       currentHubClients = [{ id: 'roblox', name: 'Roblox', subtitle: 'Roblox Corporation' }];
       clientSelect.innerHTML = '';
@@ -4619,6 +4641,9 @@ function renderRobloxHubSection(container: HTMLElement): void {
         if (b.id === (currentVal || 'roblox')) opt.selected = true;
         clientSelect.appendChild(opt);
       });
+      if (isMacOS()) {
+        clientSelect.style.display = 'none';
+      }
     }
     updateActionButtonState();
   };
@@ -5205,8 +5230,10 @@ function renderRobloxSwapSection(container: HTMLElement): void {
   statusBar.appendChild(statusActions);
 
   const spooferSec = el('div', { class: 'settings-section', id: 'setting-spoofer-section' }, []);
-  spooferSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Spoofer')]));
-  spooferSec.appendChild(anticheatAlert);
+  spooferSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode(isMacOS() ? 'Trace & Session Cleaner' : 'Spoofer')]));
+  if (!isMacOS()) {
+    spooferSec.appendChild(anticheatAlert);
+  }
 
   const spooferCard = el('div', { class: 'settings-card' }, []);
 
@@ -5222,12 +5249,15 @@ function renderRobloxSwapSection(container: HTMLElement): void {
   spoofBtnGroup.appendChild(btnRunSpoof);
   spoofBtnGroup.appendChild(btnToggleSpooferExtra);
 
-  spooferCard.appendChild(makeIconSettingRow(
+  const spoofExecRow = makeIconSettingRow(
     SWAP_ICONS.rocket,
     'Execute Spoofer',
     'Apply hardware identifier rotation and network MAC randomization',
     spoofBtnGroup
-  ));
+  );
+  if (!isMacOS()) {
+    spooferCard.appendChild(spoofExecRow);
+  }
 
   const spooferExtraWrap = el('div', { class: 'settings-collapsible-wrap settings-nested-card' + (isSpooferExtraOpen ? ' open' : ''), id: 'spoofer-extra-wrap' }, []);
   spooferExtraWrap.appendChild(el('div', { class: 'settings-sub-header' }, [
@@ -5307,7 +5337,9 @@ function renderRobloxSwapSection(container: HTMLElement): void {
   statusRow.appendChild(statusActions);
   spooferExtraWrap.appendChild(statusRow);
 
-  spooferCard.appendChild(spooferExtraWrap);
+  if (!isMacOS()) {
+    spooferCard.appendChild(spooferExtraWrap);
+  }
 
   const cleanerRightControl = el('div', { style: 'display:flex; align-items:center; gap:10px;' }, []);
   const cleanerBtnGroup = el('div', { class: 'btn-group-split' }, []);
@@ -5334,12 +5366,14 @@ function renderRobloxSwapSection(container: HTMLElement): void {
   });
 
   cleanerRightControl.appendChild(cleanerBtnGroup);
-  cleanerRightControl.appendChild(swCleanBeforeRun);
+  if (!isMacOS()) {
+    cleanerRightControl.appendChild(swCleanBeforeRun);
+  }
 
   spooferCard.appendChild(makeIconSettingRow(
     SWAP_ICONS.trash,
     'Run smart cleaner',
-    'Clear Roblox residue from disk before the run',
+    isMacOS() ? 'Clear Roblox caches, logs, and session traces from macOS' : 'Clear Roblox residue from disk before the run',
     cleanerRightControl
   ));
 
@@ -6350,7 +6384,20 @@ function openSwitchEncryptionModal(): void {
   renderDynamicForm();
 }
 
+let settingsAfkStatusTimer: ReturnType<typeof setInterval> | null = null;
+let settingsRelaunchStatusTimer: ReturnType<typeof setInterval> | null = null;
+let settingsSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
 function renderSettingsView(): void {
+  if (settingsAfkStatusTimer) {
+    clearInterval(settingsAfkStatusTimer);
+    settingsAfkStatusTimer = null;
+  }
+  if (settingsRelaunchStatusTimer) {
+    clearInterval(settingsRelaunchStatusTimer);
+    settingsRelaunchStatusTimer = null;
+  }
+
   const query = (state.settingsSearch || '').trim().toLowerCase();
 
   // tabs
@@ -6436,7 +6483,11 @@ function renderSettingsView(): void {
     appSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Application')]));
     const appCard = el('div', { class: 'settings-card' }, []);
     appCard.appendChild(settingsToggleRow('Always on Top', 'Keep FRAM above other desktop windows', 'enableTopmost'));
-    appCard.appendChild(settingsToggleRow('Start FRAM on Windows Startup', 'Automatically launch FRAM when Windows starts', 'startAtStartup'));
+    appCard.appendChild(settingsToggleRow(
+      isMacOS() ? 'Start FRAM at Login' : 'Start FRAM on Windows Startup',
+      isMacOS() ? 'Automatically launch FRAM when you log into macOS' : 'Automatically launch FRAM when Windows starts',
+      'startAtStartup'
+    ));
     appCard.appendChild(settingsToggleRow('Minimize to System Tray', 'Keep FRAM running in the system tray when minimized or closed', 'minimizeToTray'));
     appSec.appendChild(appCard);
     inner.appendChild(appSec);
@@ -6626,12 +6677,12 @@ function renderSettingsView(): void {
     const pathRow = el('div', { class: 'setting-row', style: 'border-bottom:none;' }, []);
     const pathText = el('div', {}, [
       el('div', { class: 'setting-label' }, [document.createTextNode('Roblox Installation Path')]),
-      el('div', { class: 'setting-desc' }, [document.createTextNode('Path to RobloxPlayerBeta.exe (leave blank to automatically detect installation)')])
+      el('div', { class: 'setting-desc' }, [document.createTextNode(isMacOS() ? 'Path to Roblox.app or RobloxPlayer executable (leave blank to automatically detect installation)' : 'Path to RobloxPlayerBeta.exe (leave blank to automatically detect installation)')])
     ]);
     pathRow.appendChild(pathText);
     const pathInput = el('input', {
       type: 'text',
-      placeholder: 'C:\\Users\\...\\RobloxPlayerBeta.exe',
+      placeholder: isMacOS() ? '/Applications/Roblox.app' : 'C:\\Users\\...\\RobloxPlayerBeta.exe',
       style: 'min-width:240px;'
     }, []) as HTMLInputElement;
     pathInput.value = state.settings.robloxPath || '';
@@ -6765,10 +6816,14 @@ function renderSettingsView(): void {
     robloxUpdatesSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Roblox Updates & Installer')]));
     const robloxUpdatesCard = el('div', { class: 'settings-card' }, []);
     const autoCheckRow = settingsToggleRow('Auto-check for Roblox Updates', 'Check whether a newer Roblox client version is available on launch', 'autoCheckRobloxUpdates');
-    const disablePresetsRow = settingsToggleRow('Disable Executor Presets', 'Hide executor presets and live status icons in the Roblox Installer modal', 'disableExecutorPresets');
-    disablePresetsRow.style.borderBottom = 'none';
     robloxUpdatesCard.appendChild(autoCheckRow);
-    robloxUpdatesCard.appendChild(disablePresetsRow);
+    if (!isMacOS()) {
+      const disablePresetsRow = settingsToggleRow('Disable Executor Presets', 'Hide executor presets and live status icons in the Roblox Installer modal', 'disableExecutorPresets');
+      disablePresetsRow.style.borderBottom = 'none';
+      robloxUpdatesCard.appendChild(disablePresetsRow);
+    } else {
+      autoCheckRow.style.borderBottom = 'none';
+    }
     robloxUpdatesSec.appendChild(robloxUpdatesCard);
     inner.appendChild(robloxUpdatesSec);
   }
@@ -6810,7 +6865,9 @@ function renderSettingsView(): void {
     launchSetupSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Launch Setup')]));
     const launchSetupCard = el('div', { class: 'settings-card' }, []);
     launchSetupCard.appendChild(settingsToggleRow('Confirm Before Account Launch', 'Show a confirmation dialog before launching accounts', 'confirmBeforeLaunch'));
-    launchSetupCard.appendChild(settingsToggleRow('Auto Close RobloxCrashHandlers', 'Automatically detect and terminate unresponsive RobloxCrashHandler processes', 'autoCloseCrashHandlers'));
+    if (!isMacOS()) {
+      launchSetupCard.appendChild(settingsToggleRow('Auto Close RobloxCrashHandlers', 'Automatically detect and terminate unresponsive RobloxCrashHandler processes', 'autoCloseCrashHandlers'));
+    }
     const saveDetailsRow = settingsToggleRow('Save Launch Details', 'Automatically save game place IDs and user targets to the Saved Games bar when launching', 'autoSaveLaunchDetails');
     saveDetailsRow.style.borderBottom = 'none';
     launchSetupCard.appendChild(saveDetailsRow);
@@ -6886,7 +6943,9 @@ function renderSettingsView(): void {
 
     if (state.settings.headlessMode) {
       headlessCard.appendChild(settingsToggleRow('Idle CPU Priority', 'Lower background Roblox client CPU priority to Idle', 'headlessIdlePriority'));
-      headlessCard.appendChild(settingsToggleRow('Headless Auto Memory Trim', 'Automatically optimize memory usage for background instances', 'headlessTrimMemory'));
+      if (!isMacOS()) {
+        headlessCard.appendChild(settingsToggleRow('Headless Auto Memory Trim', 'Automatically optimize memory usage for background instances', 'headlessTrimMemory'));
+      }
 
       const headlessActionsRow = el('div', { class: 'setting-row', style: 'border-bottom:none;' }, []);
       const headlessActionsText = el('div', {}, [
@@ -7150,23 +7209,25 @@ function renderSettingsView(): void {
       durationRow.appendChild(durationInput);
       antiAfkCard.appendChild(durationRow);
 
-      const overlayRow = el('div', { class: 'setting-row' }, []);
-      const overlayTextWrap = el('div', {}, []);
-      overlayTextWrap.appendChild(el('div', { class: 'setting-label' }, [document.createTextNode('Show Timer on Roblox Window')]));
-      overlayTextWrap.appendChild(el('div', { class: 'setting-desc' }, [document.createTextNode('Display a live countdown overlay on the top-right of each Roblox client')]));
-      overlayRow.appendChild(overlayTextWrap);
-      const overlaySw = el('button', {
-        class: 'switch' + (state.settings.antiAfkShowNextLabel ? ' on' : ''),
-        type: 'button'
-      }, [el('span', { class: 'knob' }, [])]) as HTMLButtonElement;
-      overlaySw.addEventListener('click', async () => {
-        const nextVal = !state.settings.antiAfkShowNextLabel;
-        overlaySw.className = 'switch' + (nextVal ? ' on' : '');
-        await updateSetting('antiAfkShowNextLabel', nextVal);
-        await apiService.updateAntiAfkSettings({ antiAfkShowNextLabel: nextVal });
-      });
-      overlayRow.appendChild(overlaySw);
-      antiAfkCard.appendChild(overlayRow);
+      if (!isMacOS()) {
+        const overlayRow = el('div', { class: 'setting-row' }, []);
+        const overlayTextWrap = el('div', {}, []);
+        overlayTextWrap.appendChild(el('div', { class: 'setting-label' }, [document.createTextNode('Show Timer on Roblox Window')]));
+        overlayTextWrap.appendChild(el('div', { class: 'setting-desc' }, [document.createTextNode('Display a live countdown overlay on the top-right of each Roblox client')]));
+        overlayRow.appendChild(overlayTextWrap);
+        const overlaySw = el('button', {
+          class: 'switch' + (state.settings.antiAfkShowNextLabel ? ' on' : ''),
+          type: 'button'
+        }, [el('span', { class: 'knob' }, [])]) as HTMLButtonElement;
+        overlaySw.addEventListener('click', async () => {
+          const nextVal = !state.settings.antiAfkShowNextLabel;
+          overlaySw.className = 'switch' + (nextVal ? ' on' : '');
+          await updateSetting('antiAfkShowNextLabel', nextVal);
+          await apiService.updateAntiAfkSettings({ antiAfkShowNextLabel: nextVal });
+        });
+        overlayRow.appendChild(overlaySw);
+        antiAfkCard.appendChild(overlayRow);
+      }
 
       let initialAntiAfkText = 'Checking...';
       let initialAntiAfkColor = 'var(--fg)';
@@ -7239,10 +7300,12 @@ function renderSettingsView(): void {
       const afkTimer = setInterval(() => {
         if (!document.getElementById('anti-afk-live-badge')) {
           clearInterval(afkTimer);
+          if (settingsAfkStatusTimer === afkTimer) settingsAfkStatusTimer = null;
           return;
         }
         updateAntiAfkLiveStatus();
       }, 1000);
+      settingsAfkStatusTimer = afkTimer;
       updateAntiAfkLiveStatus();
 
       const triggerRow = el('div', { class: 'setting-row', style: 'border-bottom:none;' }, []);
@@ -7463,10 +7526,12 @@ function renderSettingsView(): void {
       const relaunchTimer = setInterval(() => {
         if (!document.getElementById('auto-relaunch-status-badge')) {
           clearInterval(relaunchTimer);
+          if (settingsRelaunchStatusTimer === relaunchTimer) settingsRelaunchStatusTimer = null;
           return;
         }
         updateRelaunchStatus();
       }, 1000);
+      settingsRelaunchStatusTimer = relaunchTimer;
       updateRelaunchStatus();
 
       const triggerRow = el('div', { class: 'setting-row', style: 'border-bottom:none;' }, []);
@@ -7500,43 +7565,45 @@ function renderSettingsView(): void {
     relaunchSec.appendChild(relaunchCard);
     inner.appendChild(relaunchSec);
 
-    const memSec = el('div', { class: 'settings-section' }, []);
-    memSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Memory Optimization')]));
-    const memCard = el('div', { class: 'settings-card' }, []);
+    if (!isMacOS()) {
+      const memSec = el('div', { class: 'settings-section' }, []);
+      memSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Memory Optimization')]));
+      const memCard = el('div', { class: 'settings-card' }, []);
 
-    const autoTrimRow = settingsToggleRow('Auto Memory Trim', 'Periodically optimize active Roblox client memory usage', 'autoMemoryTrimEnabled');
-    if (!state.settings.autoMemoryTrimEnabled) {
-      autoTrimRow.style.borderBottom = 'none';
+      const autoTrimRow = settingsToggleRow('Auto Memory Trim', 'Periodically optimize active Roblox client memory usage', 'autoMemoryTrimEnabled');
+      if (!state.settings.autoMemoryTrimEnabled) {
+        autoTrimRow.style.borderBottom = 'none';
+      }
+      memCard.appendChild(autoTrimRow);
+
+      if (state.settings.autoMemoryTrimEnabled) {
+        const trimIntervalRow = el('div', { class: 'setting-row', style: 'border-bottom:none;' }, []);
+        const trimIntervalText = el('div', {}, [
+          el('div', { class: 'setting-label' }, [document.createTextNode('Memory Trim Interval')]),
+          el('div', { class: 'setting-desc' }, [document.createTextNode('How frequently memory trimming occurs')])
+        ]);
+        trimIntervalRow.appendChild(trimIntervalText);
+        const trimIntervalSel = el('select', { style: 'min-width:140px;' }, []) as HTMLSelectElement;
+        [
+          { value: '1', label: 'Every 1 Minute' },
+          { value: '5', label: 'Every 5 Minutes (Default)' },
+          { value: '10', label: 'Every 10 Minutes' },
+          { value: '15', label: 'Every 15 Minutes' },
+          { value: '30', label: 'Every 30 Minutes' }
+        ].forEach(opt => {
+          const o = el('option', { value: opt.value }, []) as HTMLOptionElement;
+          o.textContent = opt.label;
+          if (Number(opt.value) === (state.settings.autoMemoryTrimIntervalMinutes || 5)) o.selected = true;
+          trimIntervalSel.appendChild(o);
+        });
+        trimIntervalSel.addEventListener('change', (e) => updateSetting('autoMemoryTrimIntervalMinutes', Number((e.target as HTMLSelectElement).value) as any));
+        trimIntervalRow.appendChild(trimIntervalSel);
+        memCard.appendChild(trimIntervalRow);
+      }
+
+      memSec.appendChild(memCard);
+      inner.appendChild(memSec);
     }
-    memCard.appendChild(autoTrimRow);
-
-    if (state.settings.autoMemoryTrimEnabled) {
-      const trimIntervalRow = el('div', { class: 'setting-row', style: 'border-bottom:none;' }, []);
-      const trimIntervalText = el('div', {}, [
-        el('div', { class: 'setting-label' }, [document.createTextNode('Memory Trim Interval')]),
-        el('div', { class: 'setting-desc' }, [document.createTextNode('How frequently memory trimming occurs')])
-      ]);
-      trimIntervalRow.appendChild(trimIntervalText);
-      const trimIntervalSel = el('select', { style: 'min-width:140px;' }, []) as HTMLSelectElement;
-      [
-        { value: '1', label: 'Every 1 Minute' },
-        { value: '5', label: 'Every 5 Minutes (Default)' },
-        { value: '10', label: 'Every 10 Minutes' },
-        { value: '15', label: 'Every 15 Minutes' },
-        { value: '30', label: 'Every 30 Minutes' }
-      ].forEach(opt => {
-        const o = el('option', { value: opt.value }, []) as HTMLOptionElement;
-        o.textContent = opt.label;
-        if (Number(opt.value) === (state.settings.autoMemoryTrimIntervalMinutes || 5)) o.selected = true;
-        trimIntervalSel.appendChild(o);
-      });
-      trimIntervalSel.addEventListener('change', (e) => updateSetting('autoMemoryTrimIntervalMinutes', Number((e.target as HTMLSelectElement).value) as any));
-      trimIntervalRow.appendChild(trimIntervalSel);
-      memCard.appendChild(trimIntervalRow);
-    }
-
-    memSec.appendChild(memCard);
-    inner.appendChild(memSec);
 
     const browserSec = el('div', { class: 'settings-section' }, []);
     browserSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Browser')]));
@@ -8280,7 +8347,8 @@ function renderSettingsView(): void {
               const plus = el('span', { style: 'font-size:10px; color:var(--text-muted);' }, [document.createTextNode('+')]);
               kbdWrap.appendChild(plus);
             }
-            kbdWrap.appendChild(el('kbd', {}, [document.createTextNode(subK)]));
+            const displaySubK = isMacOS() ? subK.replace(/^Ctrl$/i, 'Cmd') : subK;
+            kbdWrap.appendChild(el('kbd', {}, [document.createTextNode(displaySubK)]));
           });
           recordBtn.appendChild(kbdWrap);
         });
@@ -8355,10 +8423,18 @@ function renderSettingsView(): void {
 
   const searchInput = document.getElementById('settings-search-input') as HTMLInputElement | null;
   if (searchInput) {
-    searchInput.value = state.settingsSearch || '';
+    if (document.activeElement !== searchInput) {
+      searchInput.value = state.settingsSearch || '';
+    }
     searchInput.oninput = (e) => {
       state.settingsSearch = (e.target as HTMLInputElement).value;
-      renderSettingsView();
+      if (settingsSearchDebounceTimer) {
+        clearTimeout(settingsSearchDebounceTimer);
+      }
+      settingsSearchDebounceTimer = setTimeout(() => {
+        settingsSearchDebounceTimer = null;
+        renderSettingsView();
+      }, 200);
     };
   }
 
@@ -9936,7 +10012,7 @@ function renderSetup(): void {
                         </div>
                         <div class="setup-browser-info">
                           <div class="setup-browser-name">Microsoft Edge</div>
-                          <div class="setup-browser-sub">Built into Windows</div>
+                          <div class="setup-browser-sub">${isMacOS() ? 'Chromium browser' : 'Built into Windows'}</div>
                         </div>
                       </div>
 
@@ -9979,7 +10055,7 @@ function renderSetup(): void {
                       <button type="button" class="switch ${setupData.multiInstance ? 'on' : ''}" id="setup-sw-multi"><span class="knob"></span></button>
                     </div>
 
-                    <div class="setup-config-card">
+                    <div class="setup-config-card windows-only">
                       <div class="setup-config-info">
                         <div class="setup-config-title">Memory Trimmer</div>
                         <div class="setup-config-desc">Periodically optimize RAM usage across background Roblox instances.</div>
@@ -9987,7 +10063,7 @@ function renderSetup(): void {
                       <button type="button" class="switch ${setupData.autoMemoryTrimEnabled ? 'on' : ''}" id="setup-sw-trim"><span class="knob"></span></button>
                     </div>
 
-                    <div class="setup-config-card">
+                    <div class="setup-config-card windows-only">
                       <div class="setup-config-info">
                         <div class="setup-config-title">CrashHandler Closer</div>
                         <div class="setup-config-desc">Automatically detect and terminate unresponsive RobloxCrashHandler processes.</div>
@@ -10028,8 +10104,8 @@ function renderSetup(): void {
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
                       </div>
                       <div style="flex:1;">
-                        <div class="setup-security-title">Hardware / DPAPI (Windows) ${isRerunWizard && setupData.encryptionMethod === 'hardware' ? '<span class="badge-recommended" style="background:rgba(79,142,247,0.18);color:var(--primary);">Active</span>' : ''}</div>
-                        <div class="setup-security-desc">Tied to your Windows user credentials automatically. Seamless boot access.</div>
+                        <div class="setup-security-title">${isMacOS() ? 'Hardware Profile (macOS UUID)' : 'Hardware / DPAPI (Windows)'} ${isRerunWizard && setupData.encryptionMethod === 'hardware' ? '<span class="badge-recommended" style="background:rgba(79,142,247,0.18);color:var(--primary);">Active</span>' : ''}</div>
+                        <div class="setup-security-desc">${isMacOS() ? 'Tied to your Mac hardware UUID & serial automatically. Seamless boot access.' : 'Tied to your Windows user credentials automatically. Seamless boot access.'}</div>
                       </div>
                     </div>
 
@@ -11782,7 +11858,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
           mainContentHtml += `
             <div class="empty-state" style="padding: 30px; text-align: center; margin-bottom: 16px;">
               <div style="font-size:14px; font-weight:600; margin-bottom:2px;">No Active Roblox Game Clients</div>
-              <div style="font-size:12px; color:var(--text-muted);">No RobloxPlayerBeta.exe processes are currently active.</div>
+              <div style="font-size:12px; color:var(--text-muted);">No ${isMacOS() ? 'RobloxPlayer' : 'RobloxPlayerBeta.exe'} processes are currently active.</div>
             </div>
           `;
         } else {
@@ -11869,7 +11945,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
           `;
         }
 
-        if (crashHandlers.length > 0) {
+        if (!isMacOS() && crashHandlers.length > 0) {
           let crashRowsHtml = crashHandlers.map(inst => `
             <tr>
               <td style="text-align:center;"><code class="pid-badge" style="background:rgba(239,68,68,0.12); color:var(--red); border-color:rgba(239,68,68,0.25);">${inst.pid}</code></td>
@@ -12053,10 +12129,10 @@ function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; usern
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
       Hide Client
     </button>
-    <button data-action="trim">
+    ${isMacOS() ? '' : `<button data-action="trim">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
       Trim Memory
-    </button>
+    </button>`}
     <button data-action="relaunch">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
       Relaunch
@@ -12443,7 +12519,7 @@ function renderClientSettingsContent(contentArea: HTMLElement | null): void {
       <div style="padding:30px; text-align:center;">
         <div style="font-size:16px; font-weight:600; color:var(--text-bright); margin-bottom:8px;">GlobalBasicSettings_13.xml Not Found</div>
         <div style="color:var(--muted); font-size:13px; max-width:480px; margin:0 auto 20px auto;">
-          Roblox client settings file was not detected at <code style="color:var(--accent);">${data.file_path || '%LOCALAPPDATA%\\Roblox'}</code>.
+          Roblox client settings file was not detected at <code style="color:var(--accent);">${data.file_path || (isMacOS() ? '~/Library/Roblox' : '%LOCALAPPDATA%\\Roblox')}</code>.
           Please ensure Roblox is installed and has been launched at least once.
         </div>
         <button class="btn btn-primary" id="btn-clientsettings-retry-load">Retry Detection</button>
@@ -13150,9 +13226,9 @@ const FASTFLAGS_PRESETS: FastFlagPreset[] = [
     id: 'preserve_display_scaling',
     name: 'Preserve Rendering Quality With Display Scaling',
     category: 'Display & Engine',
-    description: 'Roblox reduces your rendering quality depending on how your display is scaled in Windows.',
+    description: isMacOS() ? 'Roblox reduces your rendering quality depending on how your display is scaled in macOS.' : 'Roblox reduces your rendering quality depending on how your display is scaled in Windows.',
     hasHelpIcon: true,
-    helpText: 'Roblox reduces your rendering quality depending on how your display is scaled in Windows.',
+    helpText: isMacOS() ? 'Roblox reduces your rendering quality depending on how your display is scaled in macOS.' : 'Roblox reduces your rendering quality depending on how your display is scaled in Windows.',
     type: 'toggle',
     getIsActive: (flags) => String(flags['DFFlagDisableDPIScale'] || '').toLowerCase() === 'true' || String(flags['FFlagDebugEnableDpiScale'] || '').toLowerCase() === 'false',
     applyToggle: (flags, active) => {
@@ -13169,27 +13245,40 @@ const FASTFLAGS_PRESETS: FastFlagPreset[] = [
     id: 'rendering_mode',
     name: 'Rendering Mode',
     category: 'Display & Engine',
-    description: 'Configure the rendering API used for Roblox. Note: Press Alt + Enter to enter exclusive fullscreen when using Direct3D as the rendering API.',
+    description: isMacOS()
+      ? 'Configure the rendering API used for Roblox (Metal is recommended on macOS).'
+      : 'Configure the rendering API used for Roblox. Note: Press Alt + Enter to enter exclusive fullscreen when using Direct3D as the rendering API.',
     hasHelpIcon: true,
-    helpText: 'Configure the rendering API used for Roblox. Note: Press Alt + Enter to enter exclusive fullscreen when using Direct3D as the rendering API.',
+    helpText: isMacOS()
+      ? 'Configure the rendering API used for Roblox (Metal is recommended on macOS).'
+      : 'Configure the rendering API used for Roblox. Note: Press Alt + Enter to enter exclusive fullscreen when using Direct3D as the rendering API.',
     type: 'select',
-    options: [
-      { label: 'Direct3D11 (Default)', value: 'd3d11' },
-      { label: 'Direct3D10', value: 'd3d10' },
-      { label: 'Vulkan', value: 'vulkan' },
-      { label: 'OpenGL', value: 'opengl' }
-    ],
+    options: isMacOS()
+      ? [
+        { label: 'Metal (Default)', value: 'metal' },
+        { label: 'OpenGL', value: 'opengl' },
+        { label: 'Vulkan', value: 'vulkan' }
+      ]
+      : [
+        { label: 'Direct3D11 (Default)', value: 'd3d11' },
+        { label: 'Direct3D10', value: 'd3d10' },
+        { label: 'Vulkan', value: 'vulkan' },
+        { label: 'OpenGL', value: 'opengl' },
+        { label: 'Metal (macOS)', value: 'metal' }
+      ],
     getValueBadge: (flags) => {
+      if (String(flags['FFlagDebugGraphicsPreferMetal'] || '').toLowerCase() === 'true') return 'Metal';
       if (String(flags['FFlagDebugGraphicsPreferVulkan'] || '').toLowerCase() === 'true') return 'Vulkan';
       if (String(flags['FFlagDebugGraphicsPreferOpenGL'] || '').toLowerCase() === 'true') return 'OpenGL';
       if (String(flags['FFlagDebugGraphicsPreferD3D10'] || '').toLowerCase() === 'true') return 'D3D10';
       return null;
     },
     getSelectedValue: (flags) => {
+      if (String(flags['FFlagDebugGraphicsPreferMetal'] || '').toLowerCase() === 'true') return 'metal';
       if (String(flags['FFlagDebugGraphicsPreferVulkan'] || '').toLowerCase() === 'true') return 'vulkan';
       if (String(flags['FFlagDebugGraphicsPreferOpenGL'] || '').toLowerCase() === 'true') return 'opengl';
       if (String(flags['FFlagDebugGraphicsPreferD3D10'] || '').toLowerCase() === 'true') return 'd3d10';
-      return 'd3d11';
+      return isMacOS() ? 'metal' : 'd3d11';
     },
     applySelect: (flags, val) => {
       delete flags['FFlagDebugGraphicsPreferD3D11'];
@@ -13197,6 +13286,7 @@ const FASTFLAGS_PRESETS: FastFlagPreset[] = [
       delete flags['FFlagDebugGraphicsPreferD3D10'];
       delete flags['FFlagDebugGraphicsPreferVulkan'];
       delete flags['FFlagDebugGraphicsPreferOpenGL'];
+      delete flags['FFlagDebugGraphicsPreferMetal'];
       if (val === 'd3d11') {
         flags['FFlagDebugGraphicsPreferD3D11'] = 'True';
         flags['FFlagDebugGraphicsDisableDirect3D11'] = 'False';
@@ -13208,6 +13298,8 @@ const FASTFLAGS_PRESETS: FastFlagPreset[] = [
       } else if (val === 'opengl') {
         flags['FFlagDebugGraphicsPreferOpenGL'] = 'True';
         flags['FFlagDebugGraphicsDisableDirect3D11'] = 'True';
+      } else if (val === 'metal') {
+        flags['FFlagDebugGraphicsPreferMetal'] = 'True';
       }
     }
   },
@@ -14148,6 +14240,7 @@ function renderFastFlagsAddTab(contentArea: HTMLElement): void {
 
     data.flags[name] = valStr;
     fastFlagsIsDirty = true;
+    queueFastFlagsAutoSave();
     toast(`Added flag ${name} = ${valStr}`, 'success');
     fastFlagsActiveTab = 'active';
     renderFastFlagsView();
@@ -14258,6 +14351,7 @@ function renderFastFlagsJsonTab(contentArea: HTMLElement): void {
       });
       data.flags = newFlags;
       fastFlagsIsDirty = true;
+      queueFastFlagsAutoSave();
       setError('');
       toast(`Applied ${Object.keys(newFlags).length} flags to active configuration!`, 'success');
       fastFlagsActiveTab = 'active';
@@ -14719,6 +14813,9 @@ function isPackageSupportedRelease(tagOrName: string): boolean {
         const assets = Array.isArray(rel.assets) ? rel.assets : [];
         const installerAssets = isSupported ? assets.filter((a: any) => {
           const n = (a.name || '').toLowerCase();
+          if (isMacOS()) {
+            return n.endsWith('.dmg') || n.endsWith('.app.tar.gz');
+          }
           return n.endsWith('.exe') || n.endsWith('.msi');
         }) : [];
 
@@ -14740,10 +14837,14 @@ function isPackageSupportedRelease(tagOrName: string): boolean {
               ${isSupported && installerAssets.length > 0 ? `
                 <div class="about-release-installers">
                   ${installerAssets.map((asset: any) => {
-                    const isMsi = (asset.name || '').toLowerCase().endsWith('.msi');
+                    const nameLower = (asset.name || '').toLowerCase();
+                    const isMsi = nameLower.endsWith('.msi');
+                    const isDmg = nameLower.endsWith('.dmg');
+                    const isAppTar = nameLower.endsWith('.app.tar.gz');
                     const sizeMb = asset.size ? (asset.size / (1024 * 1024)).toFixed(1) + ' MB' : '';
-                    const btnClass = isMsi ? 'btn btn-secondary btn-sm about-release-pkg-btn' : 'btn btn-primary btn-sm about-release-pkg-btn';
-                    const label = isMsi ? `Update with .msi ${sizeMb ? `(${sizeMb})` : ''}` : `Update with .exe ${sizeMb ? `(${sizeMb})` : ''}`;
+                    const btnClass = (isMsi || isAppTar) ? 'btn btn-secondary btn-sm about-release-pkg-btn' : 'btn btn-primary btn-sm about-release-pkg-btn';
+                    const extLabel = isDmg ? '.dmg' : isAppTar ? '.app.tar.gz' : isMsi ? '.msi' : '.exe';
+                    const label = `Update with ${extLabel} ${sizeMb ? `(${sizeMb})` : ''}`;
                     return `
                       <button type="button" class="${btnClass} btn-release-install-pkg" data-rel-idx="${index}" data-asset-name="${asset.name}" data-download-url="${asset.browser_download_url}" data-asset-size="${asset.size || 0}" title="Download and install ${asset.name}">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -14835,7 +14936,7 @@ function showRobloxInstallerModal(): void {
   let existing = document.getElementById('installer-modal-overlay');
   if (existing) existing.remove();
 
-  const disablePresets = Boolean(state.settings.disableExecutorPresets);
+  const disablePresets = isMacOS() || Boolean(state.settings.disableExecutorPresets);
 
   const overlay = document.createElement('div');
   overlay.id = 'installer-modal-overlay';
@@ -14949,6 +15050,10 @@ function showRobloxInstallerModal(): void {
 
   const closeModal = () => {
     if (pollInterval) clearInterval(pollInterval);
+    if (!isRobloxInstallerRunning && globalRobloxInstallerPollTimer) {
+      clearInterval(globalRobloxInstallerPollTimer);
+      globalRobloxInstallerPollTimer = null;
+    }
     overlay.remove();
   };
 
@@ -15639,9 +15744,9 @@ function showBrowserLoginModal(): void {
 
   app.appendChild(overlay);
 
-  const closeBtn = document.getElementById('modal-close');
-  const cancelBtn = document.getElementById('modal-cancel');
-  const confirmBtn = document.getElementById('modal-confirm');
+  const closeBtn = overlay.querySelector<HTMLButtonElement>('#modal-close');
+  const cancelBtn = overlay.querySelector<HTMLButtonElement>('#modal-cancel');
+  const confirmBtn = overlay.querySelector<HTMLButtonElement>('#modal-confirm');
 
   const closeModal = () => {
     overlay.remove();
@@ -15655,8 +15760,8 @@ function showBrowserLoginModal(): void {
   });
 
   confirmBtn?.addEventListener('click', async () => {
-    const amount = parseInt((document.getElementById('browser-amount') as HTMLInputElement).value) || 1;
-    const website = (document.getElementById('browser-website') as HTMLInputElement).value;
+    const amount = parseInt((overlay.querySelector('#browser-amount') as HTMLInputElement).value) || 1;
+    const website = (overlay.querySelector('#browser-website') as HTMLInputElement).value;
     const browser = state.settings.preferredBrowser || 'auto';
 
     addLog('Using browser setting: ' + browser + ' (from settings: ' + state.settings.preferredBrowser + ')', 'info');
@@ -15956,14 +16061,14 @@ function showCookieImportModal(): void {
 
   app.appendChild(overlay);
 
-  const closeBtn = document.getElementById('modal-close');
-  const cancelBtn = document.getElementById('modal-cancel');
-  const confirmBtn = document.getElementById('modal-confirm') as HTMLButtonElement;
-  const inputEl = document.getElementById('cookie-multiline-input') as HTMLTextAreaElement;
-  const countEl = document.getElementById('cookie-detect-count');
-  const statusEl = document.getElementById('cookie-import-status');
-  const groupEl = document.getElementById('cookie-default-group') as HTMLInputElement;
-  const noteEl = document.getElementById('cookie-default-note') as HTMLInputElement;
+  const closeBtn = overlay.querySelector<HTMLButtonElement>('#modal-close');
+  const cancelBtn = overlay.querySelector<HTMLButtonElement>('#modal-cancel');
+  const confirmBtn = overlay.querySelector('#modal-confirm') as HTMLButtonElement;
+  const inputEl = overlay.querySelector('#cookie-multiline-input') as HTMLTextAreaElement;
+  const countEl = overlay.querySelector<HTMLElement>('#cookie-detect-count');
+  const statusEl = overlay.querySelector<HTMLElement>('#cookie-import-status');
+  const groupEl = overlay.querySelector('#cookie-default-group') as HTMLInputElement;
+  const noteEl = overlay.querySelector('#cookie-default-note') as HTMLInputElement;
 
   if (activeCookieImportState.rawInput && inputEl) {
     inputEl.value = activeCookieImportState.rawInput;
@@ -16179,9 +16284,9 @@ function showCredentialsImportModal(): void {
 
   app.appendChild(overlay);
 
-  const closeBtn = document.getElementById('modal-close');
-  const cancelBtn = document.getElementById('modal-cancel');
-  const confirmBtn = document.getElementById('modal-confirm') as HTMLButtonElement;
+  const closeBtn = overlay.querySelector<HTMLButtonElement>('#modal-close');
+  const cancelBtn = overlay.querySelector<HTMLButtonElement>('#modal-cancel');
+  const confirmBtn = overlay.querySelector('#modal-confirm') as HTMLButtonElement;
 
   const closeModal = () => {
     overlay.remove();
@@ -16195,9 +16300,9 @@ function showCredentialsImportModal(): void {
   });
 
   confirmBtn?.addEventListener('click', async () => {
-    const input = (document.getElementById('cred-input') as HTMLTextAreaElement).value;
+    const input = (overlay.querySelector('#cred-input') as HTMLTextAreaElement).value;
     const browser = state.settings.preferredBrowser || 'auto';
-    const instancesVal = parseInt((document.getElementById('cred-instances') as HTMLInputElement)?.value) || 1;
+    const instancesVal = parseInt((overlay.querySelector('#cred-instances') as HTMLInputElement)?.value) || 1;
     const maxConcurrent = Math.min(5, Math.max(1, instancesVal));
     state.settings.credentialImportInstances = maxConcurrent;
 
@@ -16620,6 +16725,9 @@ function showQuickSignInModal(): void {
             if (timerBadge) {
               timerBadge.textContent = `⏱️ ${Math.floor(remainingSeconds / 60)}:${(remainingSeconds % 60).toString().padStart(2, '0')}`;
             }
+          } else if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
           }
         }, 1000);
       } else {
@@ -16782,7 +16890,7 @@ function showShortcutsModal(): void {
     }
     return keys.map(k => {
       const parts = k.split('+');
-      return parts.map(p => `<kbd>${p}</kbd>`).join(' + ');
+      return parts.map(p => `<kbd>${isMacOS() && p === 'Ctrl' ? 'Cmd' : p}</kbd>`).join(' + ');
     }).join(' <span style="font-size:11px; color:var(--text-muted); margin:0 3px;">or</span> ');
   };
 
@@ -16898,10 +17006,11 @@ function showShortcutsModal(): void {
               <span class="shortcut-label">Force quit Roblox clients (Kill)</span>
               <div class="shortcut-keys">${formatActionKeys('tool_kill_roblox')}</div>
             </div>
+            ${!isMacOS() ? `
             <div class="shortcut-item">
               <span class="shortcut-label">Trim Roblox RAM</span>
               <div class="shortcut-keys">${formatActionKeys('tool_trim_memory')}</div>
-            </div>
+            </div>` : ''}
           </div>
         </div>
 
@@ -17220,7 +17329,7 @@ function setupKeyboardShortcuts(): void {
       }
       if (state.view === 'vip') {
         e.preventDefault();
-        const vipInp = document.getElementById('vip-input-url') as HTMLInputElement | null;
+        const vipInp = document.getElementById('vip-batch-input') as HTMLInputElement | null;
         vipInp?.focus();
         return;
       }
@@ -17444,7 +17553,7 @@ function initApp(): void {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
                 <span>Add Account</span>
               </button>
-              <button class="header-tool-btn" id="btn-trim-memory-header" title="Trim Roblox Memory (Reclaim RAM)">
+              <button class="header-tool-btn windows-only" id="btn-trim-memory-header" title="Trim Roblox Memory (Reclaim RAM)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
               </button>
               <button class="header-tool-btn" id="btn-auto-arrange-header" title="Auto-Arrange Roblox Client Windows">
@@ -17611,13 +17720,13 @@ function initApp(): void {
           <div class="instances-headerbar">
             <div class="instances-title-wrap">
               <h2 style="font-size:18px; font-weight:700; color:var(--text-bright); margin:0;">Instance Manager</h2>
-              <span style="font-size:12px; color:var(--text-muted);">Manage active Roblox client processes & multi-instance mutex configuration</span>
+              <span style="font-size:12px; color:var(--text-muted);">${isMacOS() ? 'Manage active Roblox client processes & multi-instance configuration' : 'Manage active Roblox client processes & multi-instance mutex configuration'}</span>
             </div>
             <div class="instances-header-actions" style="display:flex; gap:10px; align-items:center;">
               <button class="btn btn-secondary" id="btn-toggle-multi-instance" style="display:flex; align-items:center; gap:6px; font-size:12px;">
                 Multi-Instance: <b id="multi-inst-status-label">ENABLED</b>
               </button>
-              <button class="btn btn-secondary" id="btn-trim-memory-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Trim RAM working set of all running Roblox client instances">
+              <button class="btn btn-secondary windows-only" id="btn-trim-memory-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Trim RAM working set of all running Roblox client instances">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
                 Trim Memory
               </button>
@@ -17646,7 +17755,7 @@ function initApp(): void {
                   <b class="stat-value" id="instances-stat-count">0</b>
                 </div>
               </div>
-              <div class="instance-stat-card">
+              <div class="instance-stat-card windows-only">
                 <div class="stat-icon" style="background:rgba(16,185,129,0.15); color:#10b981;" id="instances-stat-crash-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 </div>
@@ -18089,33 +18198,8 @@ function initApp(): void {
     </div>
   </div>
 
-  <!-- Add account modal -->
-  <div class="overlay" id="add-overlay">
-    <div class="modal">
-      <h3>Add account</h3>
-      <p class="hint">Add an account to the list.</p>
-      <div class="field"><label>Display name</label><input type="text" id="new-username" placeholder="e.g. NewPlayer42" autocomplete="off"></div>
-      <div class="field"><label>Group</label><input type="text" id="new-group" placeholder="e.g. My Friends Group" autocomplete="off"></div>
-      <div class="field"><label>Note</label><textarea id="new-note" rows="2" placeholder="Optional note"></textarea></div>
-      <div class="modal-actions">
-        <button class="btn btn-secondary" id="add-cancel">Cancel</button>
-        <button class="btn btn-primary" id="add-confirm">Add account</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Row menu popover -->
-  <div class="popover" id="row-popover">
-    <button data-action="launch"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>Launch Roblox</button>
-    <button data-action="browser"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Open in browser</button>
-    <button data-action="view"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>View details</button>
-    <button data-action="validate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>Validate Account</button>
-    <button data-action="set-group"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Set Group</button>
-    <button data-action="copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>Copy username</button>
-    <button data-action="cookie"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Copy cookie</button>
-    <hr>
-    <button data-action="delete" style="color:var(--red);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>Delete</button>
-  </div>
+  <div class="popover" id="row-popover"></div>
 
   <!-- Instance actions popover -->
   <div class="popover" id="instance-actions-popover" style="position:fixed; z-index:1000;"></div>
@@ -18401,67 +18485,6 @@ function initApp(): void {
     });
   }
 
-  const addCancel = document.getElementById('add-cancel');
-  if (addCancel) {
-    addCancel.addEventListener('click', () => {
-      const addOverlay = document.getElementById('add-overlay');
-      if (addOverlay) addOverlay.classList.remove('show');
-    });
-  }
-
-  const addOverlay = document.getElementById('add-overlay');
-  if (addOverlay) {
-    addOverlay.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).id === 'add-overlay') {
-        addOverlay.classList.remove('show');
-      }
-    });
-  }
-
-  const addConfirm = document.getElementById('add-confirm');
-  if (addConfirm) {
-    addConfirm.addEventListener('click', async () => {
-      const newUsername = document.getElementById('new-username') as HTMLInputElement;
-      const newGroup = document.getElementById('new-group') as HTMLInputElement;
-      const newNote = document.getElementById('new-note') as HTMLTextAreaElement;
-
-      const name = newUsername?.value.trim();
-      if (!name) { toast('Enter a display name first', 'error'); return; }
-
-      const newAcc: Partial<Account> = {
-        username: name,
-        status: 'valid',
-        group: newGroup?.value.trim() || '',
-        note: newNote?.value.trim() || '',
-        password: '',
-        cookie: ''
-      };
-
-      try {
-        const createdAccount = await apiService.createAccount(newAcc);
-        const overlay = document.getElementById('add-overlay');
-        if (overlay) overlay.classList.remove('show');
-        if (newUsername) newUsername.value = '';
-        if (newGroup) newGroup.value = '';
-        if (newNote) newNote.value = '';
-        toast('Account added');
-        await refreshAccountList(createdAccount?.id);
-      } catch (error) {
-        addLog('Failed to create account: ' + error, 'error');
-        toast('Failed to create account', 'error');
-      }
-    });
-  }
-
-  const pillStreamer = document.getElementById('pill-streamer-mode');
-  if (pillStreamer) {
-    pillStreamer.addEventListener('click', () => {
-      const newMode = !state.settings.streamerMode;
-      updateSetting('streamerMode', newMode);
-      toast(`Streamer Mode ${newMode ? 'ENABLED' : 'DISABLED'}`, 'info');
-    });
-  }
-
   const handleTrimMemoryAction = async (btn?: HTMLElement | null) => {
     if (btn) {
       btn.style.pointerEvents = 'none';
@@ -18494,11 +18517,6 @@ function initApp(): void {
       }
     }
   };
-
-  const pillTrimRam = document.getElementById('pill-trim-ram');
-  if (pillTrimRam) {
-    pillTrimRam.addEventListener('click', () => handleTrimMemoryAction(pillTrimRam));
-  }
 
   const btnTrimMemoryHeader = document.getElementById('btn-trim-memory-header');
   if (btnTrimMemoryHeader) {
@@ -18791,26 +18809,6 @@ function initApp(): void {
     btnConsole.addEventListener('click', () => {
       state.revealed = {};
       state.view = state.view === 'console' ? 'accounts' : 'console';
-      renderAll();
-    });
-  }
-
-  const btnFastflags = document.getElementById('btn-fastflags');
-  if (btnFastflags) {
-    btnFastflags.addEventListener('click', () => {
-      state.revealed = {};
-      state.previousView = state.view;
-      state.view = state.view === 'fastflags' ? 'accounts' : 'fastflags';
-      renderAll();
-    });
-  }
-
-  const btnClientSettings = document.getElementById('btn-client-settings');
-  if (btnClientSettings) {
-    btnClientSettings.addEventListener('click', () => {
-      state.revealed = {};
-      state.previousView = state.view;
-      state.view = state.view === 'clientsettings' ? 'accounts' : 'clientsettings';
       renderAll();
     });
   }
@@ -19902,17 +19900,17 @@ function updateInstallModalSourceUI() {
     browseBtn.style.display = 'none';
   } else if (source === 'unpacked') {
     label.textContent = 'Unpacked Extension Folder Path';
-    targetInput.placeholder = 'C:\\path\\to\\unpacked-extension';
+    targetInput.placeholder = isMacOS() ? '/Users/you/path/to/unpacked-extension' : 'C:\\path\\to\\unpacked-extension';
     hint.textContent = 'Path to directory containing manifest.json';
     browseBtn.style.display = 'inline-block';
   } else if (source === 'crx') {
     label.textContent = 'Chrome CRX File Path';
-    targetInput.placeholder = 'C:\\path\\to\\extension.crx';
+    targetInput.placeholder = isMacOS() ? '/Users/you/path/to/extension.crx' : 'C:\\path\\to\\extension.crx';
     hint.textContent = 'Path to local .crx package file';
     browseBtn.style.display = 'inline-block';
   } else if (source === 'xpi') {
     label.textContent = 'Firefox XPI File Path';
-    targetInput.placeholder = 'C:\\path\\to\\extension.xpi';
+    targetInput.placeholder = isMacOS() ? '/Users/you/path/to/extension.xpi' : 'C:\\path\\to\\extension.xpi';
     hint.textContent = 'Path to local .xpi package file';
     browseBtn.style.display = 'inline-block';
   }

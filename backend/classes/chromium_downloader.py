@@ -5,6 +5,7 @@ import time
 import shutil
 import zipfile
 import platform
+import subprocess
 import threading
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -37,14 +38,18 @@ class ChromiumDownloaderManager:
             root / "chrome-win64" / "chrome.exe",
             root / "chrome-win32" / "chrome.exe",
             root / "chrome-win" / "chrome.exe",
+            root / "chrome-mac-arm64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing",
+            root / "chrome-mac-x64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing",
+            root / "chrome-linux64" / "chrome",
         ]
         for candidate in candidates:
             if candidate.is_file():
                 return candidate
         try:
-            for candidate in sorted(root.glob("chrome-*/chrome.exe")):
-                if candidate.is_file():
-                    return candidate
+            for pattern in ("chrome-*/chrome.exe", "chrome-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing", "chrome-*/chrome"):
+                for candidate in sorted(root.glob(pattern)):
+                    if candidate.is_file():
+                        return candidate
         except OSError:
             return None
         return None
@@ -55,14 +60,18 @@ class ChromiumDownloaderManager:
             root / "chromedriver-win64" / "chromedriver.exe",
             root / "chromedriver-win32" / "chromedriver.exe",
             root / "chromedriver-win" / "chromedriver.exe",
+            root / "chromedriver-mac-arm64" / "chromedriver",
+            root / "chromedriver-mac-x64" / "chromedriver",
+            root / "chromedriver-linux64" / "chromedriver",
         ]
         for candidate in candidates:
             if candidate.is_file():
                 return candidate
         try:
-            for candidate in sorted(root.glob("chromedriver-*/chromedriver.exe")):
-                if candidate.is_file():
-                    return candidate
+            for pattern in ("chromedriver-*/chromedriver.exe", "chromedriver-*/chromedriver"):
+                for candidate in sorted(root.glob(pattern)):
+                    if candidate.is_file():
+                        return candidate
         except OSError:
             return None
         return None
@@ -109,10 +118,17 @@ class ChromiumDownloaderManager:
         }
 
     def _get_platform_key(self) -> str:
-        if platform.system() != "Windows":
-            raise RuntimeError("Managed Chromium download is currently only supported on Windows.")
-        arch = platform.architecture()[0]
+        sys_name = platform.system()
         machine = platform.machine().lower()
+        if sys_name == "Darwin":
+            if machine in ("arm64", "aarch64"):
+                return "mac-arm64"
+            return "mac-x64"
+        if sys_name == "Linux":
+            return "linux64"
+        if sys_name != "Windows":
+            raise RuntimeError(f"Managed Chromium download is not supported on {sys_name}.")
+        arch = platform.architecture()[0]
         if "64" in arch or "64" in machine:
             return "win64"
         return "win32"
@@ -244,17 +260,49 @@ class ChromiumDownloaderManager:
 
             self._extract_zip(driver_zip, staging_dir, "ChromeDriver")
 
-            expected_binary = staging_dir / f"chrome-{platform_key}" / "chrome.exe"
-            expected_driver = staging_dir / f"chromedriver-{platform_key}" / "chromedriver.exe"
+            if platform_key.startswith("mac-"):
+                expected_binary = staging_dir / f"chrome-{platform_key}" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing"
+                expected_driver = staging_dir / f"chromedriver-{platform_key}" / "chromedriver"
+            elif platform_key.startswith("linux"):
+                expected_binary = staging_dir / f"chrome-{platform_key}" / "chrome"
+                expected_driver = staging_dir / f"chromedriver-{platform_key}" / "chromedriver"
+            else:
+                expected_binary = staging_dir / f"chrome-{platform_key}" / "chrome.exe"
+                expected_driver = staging_dir / f"chromedriver-{platform_key}" / "chromedriver.exe"
 
             if not expected_binary.is_file():
-                found_binaries = list(staging_dir.glob("chrome-*/chrome.exe"))
+                found_binaries = (
+                    list(staging_dir.glob("chrome-*/chrome.exe"))
+                    + list(staging_dir.glob("chrome-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"))
+                    + list(staging_dir.glob("chrome-*/chrome"))
+                )
                 if not found_binaries:
                     raise RuntimeError("Chromium executable not found after extraction.")
+                expected_binary = found_binaries[0]
             if not expected_driver.is_file():
-                found_drivers = list(staging_dir.glob("chromedriver-*/chromedriver.exe"))
+                found_drivers = list(staging_dir.glob("chromedriver-*/chromedriver.exe")) + list(staging_dir.glob("chromedriver-*/chromedriver"))
                 if not found_drivers:
                     raise RuntimeError("ChromeDriver executable not found after extraction.")
+                expected_driver = found_drivers[0]
+
+            if os.name != "nt":
+                for exec_path in (expected_binary, expected_driver):
+                    try:
+                        os.chmod(exec_path, 0o755)
+                    except OSError:
+                        pass
+                for root_dir, _, files in os.walk(staging_dir):
+                    if os.path.basename(root_dir) in ("MacOS", "Helpers"):
+                        for fname in files:
+                            try:
+                                os.chmod(os.path.join(root_dir, fname), 0o755)
+                            except OSError:
+                                pass
+                if platform.system() == "Darwin":
+                    try:
+                        subprocess.run(["xattr", "-cr", str(staging_dir)], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
 
             meta = {
                 "version": version,

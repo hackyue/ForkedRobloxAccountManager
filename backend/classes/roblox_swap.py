@@ -112,7 +112,10 @@ class RobloxSwapManager:
 
     def is_elevated(self) -> bool:
         if sys.platform != "win32":
-            return False
+            try:
+                return hasattr(os, "geteuid") and os.geteuid() == 0
+            except Exception:
+                return False
         try:
             return bool(ctypes.windll.shell32.IsUserAnAdmin())
         except Exception:
@@ -1522,6 +1525,8 @@ ConvertTo-Json -Compress @{
             "RobloxPlayerLauncher.exe",
             "RobloxStudioBeta.exe",
             "RobloxCrashHandler.exe",
+            "RobloxPlayer",
+            "RobloxStudio",
             "Bloxstrap.exe",
             "Fishstrap.exe",
             "Voidstrap.exe",
@@ -1530,18 +1535,19 @@ ConvertTo-Json -Compress @{
             "NovaStrap.exe"
         ]
 
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        discovered = self._discover_all_bootstrappers(local_app_data)
-        for b in discovered:
-            b_name = b["name"]
-            process_names.append(f"{b_name}.exe")
-            if os.path.isdir(b.get("root", "")):
-                try:
-                    for f in os.scandir(b["root"]):
-                        if f.is_file(follow_symlinks=False) and f.name.lower().endswith(".exe"):
-                            process_names.append(f.name)
-                except Exception:
-                    pass
+        if sys.platform == "win32":
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            discovered = self._discover_all_bootstrappers(local_app_data)
+            for b in discovered:
+                b_name = b["name"]
+                process_names.append(f"{b_name}.exe")
+                if os.path.isdir(b.get("root", "")):
+                    try:
+                        for f in os.scandir(b["root"]):
+                            if f.is_file(follow_symlinks=False) and f.name.lower().endswith(".exe"):
+                                process_names.append(f.name)
+                    except Exception:
+                        pass
 
         target_names = {name.lower() for name in process_names}
         try:
@@ -1554,10 +1560,11 @@ ConvertTo-Json -Compress @{
                         terminated.append(proc.info.get('name') or pname)
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass
-            if terminated:
+            if terminated or sys.platform != "win32":
                 return list(dict.fromkeys(terminated))
         except Exception:
-            pass
+            if sys.platform != "win32":
+                return []
 
         for name in dict.fromkeys(process_names):
             try:
@@ -1620,6 +1627,98 @@ ConvertTo-Json -Compress @{
             }
 
         try:
+            if sys.platform == "darwin":
+                set_progress(10, "Scanning and safeguarding macOS Roblox settings...")
+                home_lib = os.path.expanduser("~/Library")
+                mac_roblox_dir = os.path.join(home_lib, "Roblox")
+                logs.append({"level": "info", "msg": "Initiating macOS Roblox trace cleanup and session purge"})
+
+                preserved_items = []
+                if preserve_settings:
+                    gbs_path = os.path.join(mac_roblox_dir, "GlobalBasicSettings_13.xml")
+                    if os.path.isfile(gbs_path):
+                        try:
+                            with open(gbs_path, "rb") as f:
+                                preserved_items.append(("Global Client Settings", gbs_path, f.read()))
+                            logs.append({"level": "info", "msg": "Safeguarded GlobalBasicSettings_13.xml"})
+                        except Exception:
+                            pass
+                else:
+                    gbs_path = os.path.join(mac_roblox_dir, "GlobalBasicSettings_13.xml")
+                    if self._remove_path(gbs_path):
+                        logs.append({"level": "success", "msg": "Cleaned GlobalBasicSettings_13.xml"})
+
+                if preserve_fastflags:
+                    for ff_path in (
+                        os.path.join(mac_roblox_dir, "ClientSettings", "ClientAppSettings.json"),
+                        "/Applications/Roblox.app/Contents/MacOS/ClientSettings/ClientAppSettings.json",
+                    ):
+                        if os.path.isfile(ff_path):
+                            try:
+                                with open(ff_path, "rb") as f:
+                                    preserved_items.append(("FastFlags", ff_path, f.read()))
+                                logs.append({"level": "info", "msg": f"Safeguarded FastFlags ({ff_path})"})
+                            except Exception:
+                                pass
+
+                if preserve_app_settings:
+                    app_storage_path = os.path.join(mac_roblox_dir, "LocalStorage", "appStorage.json")
+                    if os.path.isfile(app_storage_path):
+                        try:
+                            with open(app_storage_path, "rb") as f:
+                                preserved_items.append(("App Settings", app_storage_path, f.read()))
+                            logs.append({"level": "info", "msg": "Safeguarded Roblox App Settings (appStorage.json)"})
+                        except Exception:
+                            pass
+
+                set_progress(25, "Checking for active Roblox client processes...")
+                terminated = self.terminate_roblox_processes()
+                if terminated:
+                    logs.append({"level": "success", "msg": f"Terminated {len(terminated)} active Roblox process(es): {', '.join(terminated)}"})
+                    time.sleep(1.0)
+                else:
+                    logs.append({"level": "info", "msg": "No active Roblox client processes were running"})
+
+                set_progress(50, "Cleaning macOS Roblox logs, caches, and saved states...")
+                cleanup_targets = [
+                    (os.path.join(home_lib, "Logs", "Roblox"), "macOS Roblox Logs"),
+                    (os.path.join(home_lib, "Caches", "com.roblox.RobloxPlayer"), "RobloxPlayer Cache"),
+                    (os.path.join(home_lib, "Caches", "com.roblox.roblox"), "Roblox Cache"),
+                    (os.path.join(home_lib, "Saved Application State", "com.roblox.RobloxPlayer.savedState"), "Saved Application State"),
+                    (os.path.join(mac_roblox_dir, "Downloads"), "Roblox Downloads"),
+                    (os.path.join(mac_roblox_dir, "logs"), "Roblox Telemetry Logs"),
+                    (os.path.join(mac_roblox_dir, "http"), "Roblox HTTP Cache"),
+                    (os.path.join(mac_roblox_dir, "rbxcache"), "Roblox rbxCache"),
+                ]
+                for target_p, label in cleanup_targets:
+                    if self._remove_path(target_p):
+                        logs.append({"level": "success", "msg": f"Cleaned {label}"})
+
+                if purge_auth:
+                    set_progress(75, "Purging macOS authentication cookies and LocalStorage...")
+                    auth_targets = [
+                        (os.path.join(mac_roblox_dir, "LocalStorage"), "LocalStorage session data"),
+                        (os.path.join(home_lib, "HTTPStorages", "com.roblox.RobloxPlayer.binarycookies"), "RobloxPlayer binarycookies"),
+                        (os.path.join(home_lib, "HTTPStorages", "com.roblox.RobloxPlayer"), "RobloxPlayer HTTPStorage"),
+                    ]
+                    for target_p, label in auth_targets:
+                        if self._remove_path(target_p):
+                            logs.append({"level": "success", "msg": f"Purged {label}"})
+
+                set_progress(92, "Restoring preserved user configurations...")
+                for label, path_str, raw_bytes in preserved_items:
+                    try:
+                        os.makedirs(os.path.dirname(path_str), exist_ok=True)
+                        with open(path_str, "wb") as f:
+                            f.write(raw_bytes)
+                        logs.append({"level": "success", "msg": f"Restored {label}: {os.path.basename(path_str)}"})
+                    except Exception as e:
+                        logs.append({"level": "warn", "msg": f"Failed restoring {label}: {e}"})
+
+                logs.append({"level": "success", "msg": "macOS Roblox trace cleanup completed successfully"})
+                set_progress(100, "Roblox trace cleanup completed")
+                return {"success": True, "logs": logs}
+
             set_progress(5, "Scanning and safeguarding settings...")
             local_app_data = os.environ.get("LOCALAPPDATA")
             app_data = os.environ.get("APPDATA")

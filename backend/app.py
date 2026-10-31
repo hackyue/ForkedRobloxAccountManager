@@ -249,6 +249,7 @@ def enforce_api_auth():
             return None
         auth_exempt = (
             '/api/health',
+            '/api/system/platform',
             '/api/auth/token',
             '/api/auth/status',
             '/api/auth/unlock',
@@ -291,6 +292,7 @@ def enforce_vault_lock():
             '/api/auth/token',
             '/api/auth/switch-encryption',
             '/api/health',
+            '/api/system/platform',
             '/api/system/logs',
             '/api/setup/complete',
             '/api/setup/encryption-status',
@@ -845,6 +847,37 @@ def save_data(data: Dict[str, Any]):
         headless_manager.sync_watchdog(data.get('settings', {}).get('headlessMode', False))
 
 def sync_startup_registry(enable: bool):
+    if platform.system() == "Darwin":
+        try:
+            import plistlib
+            plist_dir = os.path.expanduser("~/Library/LaunchAgents")
+            plist_path = os.path.join(plist_dir, "com.forkedaccountmanager.app.plist")
+            if not enable:
+                if os.path.exists(plist_path):
+                    os.remove(plist_path)
+                return
+
+            exe_path = "/Applications/Forked Account Manager.app/Contents/MacOS/FRAM"
+            cur = os.path.abspath(sys.executable)
+            if ".app/Contents/" in cur:
+                app_bundle = cur.split(".app/Contents/")[0] + ".app"
+                candidate_bin = os.path.join(app_bundle, "Contents", "MacOS", "FRAM")
+                if os.path.isfile(candidate_bin):
+                    exe_path = candidate_bin
+
+            os.makedirs(plist_dir, exist_ok=True)
+            plist_data = {
+                "Label": "com.forkedaccountmanager.app",
+                "ProgramArguments": [exe_path],
+                "RunAtLoad": True,
+                "KeepAlive": False,
+            }
+            with open(plist_path, "wb") as f:
+                plistlib.dump(plist_data, f)
+        except Exception as e:
+            print(f"Error syncing macOS LaunchAgent: {e}")
+        return
+
     if platform.system() != "Windows":
         return
     try:
@@ -854,6 +887,17 @@ def sync_startup_registry(enable: bool):
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
         if enable:
             exe_path = sys.executable
+            base_dir = os.path.dirname(os.path.abspath(exe_path))
+            for search_dir in (base_dir, os.path.dirname(base_dir), os.path.dirname(os.path.dirname(base_dir))):
+                found_gui = False
+                for gui_name in ("FRAM.exe", "Forked Account Manager.exe", "forked-account-manager.exe"):
+                    candidate = os.path.join(search_dir, gui_name)
+                    if os.path.isfile(candidate):
+                        exe_path = candidate
+                        found_gui = True
+                        break
+                if found_gui:
+                    break
             winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{exe_path}"')
         else:
             try:
@@ -1370,6 +1414,41 @@ def launch_roblox_app():
         version_path = req_data.get('versionPath') or req_data.get('version_path') or ''
         version_name = req_data.get('version') or ''
 
+        if platform.system() == 'Darwin':
+            target_bundle = None
+            for raw_p in (version_path, load_data().get('settings', {}).get('robloxPath', '')):
+                if not raw_p:
+                    continue
+                norm_p = os.path.expanduser(os.path.expandvars(str(raw_p).strip()))
+                if norm_p.endswith('.app') and os.path.isdir(norm_p):
+                    target_bundle = norm_p
+                    break
+                if os.path.isdir(os.path.join(norm_p, 'Roblox.app')):
+                    target_bundle = os.path.join(norm_p, 'Roblox.app')
+                    break
+                if os.path.isfile(norm_p) and '.app/Contents/' in norm_p:
+                    target_bundle = norm_p.split('.app/Contents/')[0] + '.app'
+                    break
+            if not target_bundle and version_name:
+                for v in RobloxAPI.get_installed_versions():
+                    if v.get('version') == version_name:
+                        vp = v.get('path', '')
+                        if vp.endswith('.app') and os.path.isdir(vp):
+                            target_bundle = vp
+                            break
+                        if os.path.isdir(os.path.join(vp, 'Roblox.app')):
+                            target_bundle = os.path.join(vp, 'Roblox.app')
+                            break
+            if not target_bundle:
+                for default_app in ('/Applications/Roblox.app', os.path.expanduser('~/Applications/Roblox.app')):
+                    if os.path.isdir(default_app):
+                        target_bundle = default_app
+                        break
+            if target_bundle and os.path.isdir(target_bundle):
+                subprocess.Popen(['open', '-n', '-a', target_bundle], close_fds=True)
+                return jsonify({'success': True, 'message': f'Launched {os.path.basename(target_bundle)}'})
+            return jsonify({'success': False, 'error': "Roblox isn't installed"}), 404
+
         target_exe = None
         if version_path:
             norm_path = os.path.expandvars(str(version_path)).strip()
@@ -1457,8 +1536,10 @@ def uninstall_roblox_version():
         if not os.path.isdir(norm_path):
             return jsonify({'success': False, 'error': 'Version folder not found'}), 404
 
+        from utils.paths import get_root_app_dir
         allowed_roots = [
             os.path.abspath(os.path.expandvars(r'%LOCALAPPDATA%\Roblox\Versions')),
+            os.path.abspath(os.path.join(get_root_app_dir(), 'RobloxVersions')),
         ]
         for b in RobloxAPI.BOOTSTRAPPER_CLIENTS:
             for v_dir in b.get('version_dirs', ('Versions',)):
@@ -1899,10 +1980,11 @@ def get_multi_instance_status():
     """Get current multi-instance status"""
     data = load_data()
     enabled = data['settings'].get('multiInstance', False)
+    is_active = bool(multi_instance_controller.is_enabled) if platform.system() != "Windows" else (len(multi_instance_controller.mutex_handles) > 0)
     return jsonify({
         'success': True,
         'enabled': enabled,
-        'active': len(multi_instance_controller.mutex_handles) > 0
+        'active': is_active
     })
 
 @app.route('/api/multi-instance/toggle', methods=['POST'])
@@ -1921,10 +2003,11 @@ def toggle_multi_instance():
         multi_instance_controller.sync_state(data['settings']['multiInstance'])
         txn.save()
 
+    is_active = bool(multi_instance_controller.is_enabled) if platform.system() != "Windows" else (len(multi_instance_controller.mutex_handles) > 0)
     return jsonify({
         'success': True,
         'enabled': new_state,
-        'active': len(multi_instance_controller.mutex_handles) > 0,
+        'active': is_active,
         'message': f"Multi-instance {'enabled' if new_state else 'disabled'}"
     })
 
@@ -2161,18 +2244,100 @@ def add_browser_extension():
         log_detailed_error("Failed to add browser extension", exc=e, source="extensions_api")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/extensions/browse-folder', methods=['POST', 'GET', 'OPTIONS'])
-def browse_extension_folder_dialog():
-    if request.method == 'OPTIONS':
-        return '', 200
+def _choose_folder_native(prompt_title: str) -> str:
+    if platform.system() == "Darwin":
+        safe_title = str(prompt_title or "Select Folder").replace('"', '\\"')
+        res = subprocess.run(
+            ["osascript", "-e", f'POSIX path of (choose folder with prompt "{safe_title}")'],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip().rstrip("/")
+        return ""
     try:
         import tkinter as tk
         from tkinter import filedialog
         root = tk.Tk()
         root.withdraw()
         root.attributes('-topmost', True)
-        folder_selected = filedialog.askdirectory(title="Select Unpacked Extension Folder")
+        folder_selected = filedialog.askdirectory(title=prompt_title)
         root.destroy()
+        return folder_selected or ""
+    except Exception:
+        if platform.system() == "Windows":
+            safe_title = str(prompt_title or "Select Folder").replace("'", "''")
+            ps_cmd = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                f"$f.Description = '{safe_title}'; "
+                "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }"
+            )
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-STA", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                timeout=120,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        return ""
+
+def _choose_file_native(prompt_title: str, file_type: str = "any") -> str:
+    if platform.system() == "Darwin":
+        safe_title = str(prompt_title or "Select File").replace('"', '\\"')
+        res = subprocess.run(
+            ["osascript", "-e", f'POSIX path of (choose file with prompt "{safe_title}")'],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+        return ""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        if file_type == 'crx':
+            filetypes = [("Chrome Extension (*.crx)", "*.crx"), ("All Files", "*.*")]
+        elif file_type == 'xpi':
+            filetypes = [("Firefox Add-on (*.xpi)", "*.xpi"), ("All Files", "*.*")]
+        else:
+            filetypes = [("Extension Packages (*.crx;*.xpi)", "*.crx;*.xpi"), ("All Files", "*.*")]
+        file_selected = filedialog.askopenfilename(title=prompt_title, filetypes=filetypes)
+        root.destroy()
+        return file_selected or ""
+    except Exception:
+        if platform.system() == "Windows":
+            safe_title = str(prompt_title or "Select File").replace("'", "''")
+            ps_cmd = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$f = New-Object System.Windows.Forms.OpenFileDialog; "
+                f"$f.Title = '{safe_title}'; "
+                "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }"
+            )
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-STA", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                timeout=120,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        return ""
+
+@app.route('/api/extensions/browse-folder', methods=['POST', 'GET', 'OPTIONS'])
+def browse_extension_folder_dialog():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        folder_selected = _choose_folder_native("Select Unpacked Extension Folder")
         if folder_selected:
             return jsonify({'success': True, 'path': folder_selected})
         return jsonify({'success': False, 'cancelled': True})
@@ -2186,19 +2351,7 @@ def browse_extension_file_dialog():
     try:
         data = request.get_json(silent=True) or {}
         file_type = str(data.get('file_type') or 'any').lower()
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        if file_type == 'crx':
-            filetypes = [("Chrome Extension (*.crx)", "*.crx"), ("All Files", "*.*")]
-        elif file_type == 'xpi':
-            filetypes = [("Firefox Add-on (*.xpi)", "*.xpi"), ("All Files", "*.*")]
-        else:
-            filetypes = [("Extension Packages (*.crx;*.xpi)", "*.crx;*.xpi"), ("All Files", "*.*")]
-        file_selected = filedialog.askopenfilename(title="Select Extension File", filetypes=filetypes)
-        root.destroy()
+        file_selected = _choose_file_native("Select Extension File", file_type)
         if file_selected:
             return jsonify({'success': True, 'path': file_selected})
         return jsonify({'success': False, 'cancelled': True})
@@ -2220,8 +2373,8 @@ def get_currently_running_usernames():
     try:
         for proc in psutil.process_iter(['pid', 'name', 'create_time']):
             try:
-                pname = str(proc.info.get('name') or '')
-                if 'robloxplayerbeta' not in pname.lower():
+                pname = str(proc.info.get('name') or '').lower()
+                if pname not in ('robloxplayerbeta.exe', 'robloxplayerbeta', 'robloxplayer', 'robloxplayer.exe'):
                     continue
                 pid = proc.info['pid']
                 creation_time_sec = proc.info.get('create_time') or None
@@ -2615,7 +2768,10 @@ def resolve_pid_account(pid, creation_time_sec=None, accounts_by_user=None, acco
 
     if not resolved_result:
         try:
-            logs_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Roblox", "logs")
+            if platform.system() == "Darwin":
+                logs_dir = os.path.expanduser("~/Library/Logs/Roblox")
+            else:
+                logs_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Roblox", "logs")
             if os.path.isdir(logs_dir):
                 entries = [os.path.join(logs_dir, n) for n in os.listdir(logs_dir) if n.lower().endswith(".log")]
                 entries.sort(key=lambda p: os.path.getmtime(p), reverse=True)
@@ -2726,7 +2882,7 @@ def get_running_instances():
         game_instances = []
         crash_handlers = []
         other_instances = []
-        if platform.system() == "Windows":
+        if platform.system() in ("Windows", "Darwin"):
             target_keywords = ('roblox', 'bloxstrap', 'fishstrap', 'voidstrap', 'froststrap', 'exploitstrap')
             procs_data = []
             try:
@@ -2748,7 +2904,7 @@ def get_running_instances():
             except Exception:
                 procs_data = []
 
-            if not procs_data:
+            if not procs_data and platform.system() == "Windows":
                 ps_script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'Roblox|Bloxstrap|Fishstrap|Voidstrap|FrostStrap|ExploitStrap' } | Select-Object ProcessId, Name, WorkingSetSize, CreationDate | ConvertTo-Json -Compress"
                 res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 if res.returncode == 0 and res.stdout.strip():
@@ -2812,7 +2968,7 @@ def get_running_instances():
                 if re.search(r'crashhandler', pname, re.IGNORECASE):
                     inst_obj["process_type"] = "crash_handler"
                     crash_handlers.append(inst_obj)
-                elif re.search(r'robloxplayerbeta', pname, re.IGNORECASE):
+                elif re.search(r'robloxplayer(?:beta)?(?:\.exe)?$', pname, re.IGNORECASE):
                     inst_obj["process_type"] = "game"
                     acc_info = resolve_pid_account(pid, creation_time_sec, accounts_by_user, accounts_by_id)
                     if acc_info:
@@ -2829,7 +2985,9 @@ def get_running_instances():
                             inst_obj["place_id"] = str(resolved_place)
 
                     is_hidden = False
-                    if platform.system() == "Windows" and win32gui:
+                    if platform.system() == "Darwin":
+                        is_hidden = pid in headless_manager.hidden_hwnds
+                    elif platform.system() == "Windows" and win32gui:
                         try:
                             wins = headless_manager.get_roblox_windows(target_pids={pid}, include_hidden=True)
                             if wins:
@@ -2861,6 +3019,7 @@ def get_running_instances():
         except Exception:
             pass
 
+        is_mutex_active = bool(multi_instance_controller.is_enabled) if platform.system() != "Windows" else (len(multi_instance_controller.mutex_handles) > 0)
         result_payload = {
             'success': True,
             'instances': game_instances,
@@ -2873,7 +3032,7 @@ def get_running_instances():
             'multiInstanceEnabled': app_settings.get('multiInstance', False),
             'autoTrimEnabled': app_settings.get('autoMemoryTrimEnabled', False),
             'autoTrimInterval': app_settings.get('autoMemoryTrimIntervalMinutes', 5),
-            'mutexActive': len(multi_instance_controller.mutex_handles) > 0
+            'mutexActive': is_mutex_active
         }
         with _INSTANCES_CACHE_LOCK:
             _INSTANCES_CACHE = result_payload
@@ -3254,14 +3413,22 @@ def kill_specific_instance():
             last_launch_times.pop(uname_lower, None)
 
             try:
-                with data_transaction() as data:
-                    for acc in data.get('accounts', []):
+                with data_transaction() as txn:
+                    updated_ar = False
+                    for acc in txn.data.get('accounts', []):
                         if str(acc.get('username', '')).lower() == uname_lower:
                             acc['auto_rejoin_enabled'] = False
+                            updated_ar = True
+                    if updated_ar:
+                        txn.save()
                 if manager and hasattr(manager, 'accounts') and isinstance(manager.accounts, dict):
                     for acc_key, acc_val in manager.accounts.items():
                         if str(acc_key).lower() == uname_lower and isinstance(acc_val, dict):
                             acc_val['auto_rejoin_enabled'] = False
+                    try:
+                        manager.save_accounts()
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[WARN] Failed to disable auto_rejoin_enabled for {resolved_username}: {e}")
 
@@ -3391,6 +3558,26 @@ def relaunch_specific_instance():
         return jsonify({'success': False, 'error': 'An internal error occurred'}), 500
 
 def focus_instance(pid: int) -> Tuple[bool, str]:
+    if platform.system() == "Darwin":
+        try:
+            headless_manager.restore_window(pid)
+            headless_manager.restored_pids.add(int(pid))
+            headless_manager.set_process_priority(pid, headless_manager._NORMAL_PRIORITY_CLASS)
+            script = (
+                f'tell application "System Events"\n'
+                f'  repeat with p in (every process whose unix id is {int(pid)})\n'
+                f'    set visible of p to true\n'
+                f'    set frontmost of p to true\n'
+                f'  end repeat\n'
+                f'end tell'
+            )
+            res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=3)
+            if res.returncode == 0:
+                return True, "Window focused"
+            return False, (res.stderr or "Failed to focus macOS window").strip()
+        except Exception as e:
+            return False, str(e)
+
     if platform.system() != "Windows" or not win32gui or not win32process:
         return False, "Not supported on this platform"
     try:
@@ -3436,6 +3623,18 @@ def focus_instance(pid: int) -> Tuple[bool, str]:
         return False, str(e)
 
 def hide_instance(pid: int) -> Tuple[bool, str]:
+    if platform.system() == "Darwin":
+        try:
+            headless_manager.restored_pids.discard(int(pid))
+            headless_manager.restored_hwnds.discard(int(pid))
+            if headless_manager.hide_window(pid):
+                if headless_manager.is_idle_priority_enabled():
+                    headless_manager.set_process_priority(pid, headless_manager._IDLE_PRIORITY_CLASS)
+                return True, "Hidden 1 window(s)"
+            return False, f"Failed to hide window for PID {pid}"
+        except Exception as e:
+            return False, str(e)
+
     if platform.system() != "Windows" or not win32gui:
         return False, "Not supported on this platform"
     try:
@@ -3458,6 +3657,21 @@ def hide_instance(pid: int) -> Tuple[bool, str]:
         return False, str(e)
 
 def unhide_instance(pid: int) -> Tuple[bool, str]:
+    if platform.system() == "Darwin":
+        try:
+            if headless_manager.restore_window(pid):
+                headless_manager.restored_pids.add(int(pid))
+                headless_manager.set_process_priority(pid, headless_manager._NORMAL_PRIORITY_CLASS)
+                if auto_arranger and auto_arranger.is_enabled():
+                    try:
+                        auto_arranger.trigger_delayed_arrange(0.5)
+                    except Exception:
+                        pass
+                return True, "Restored 1 window(s)"
+            return False, f"Failed to restore window for PID {pid}"
+        except Exception as e:
+            return False, str(e)
+
     if platform.system() != "Windows" or not win32gui:
         return False, "Not supported on this platform"
     try:
@@ -3701,13 +3915,7 @@ def select_folder_dialog():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        folder_selected = filedialog.askdirectory(title="Select FRAMdata or AccountManagerData Folder")
-        root.destroy()
+        folder_selected = _choose_folder_native("Select FRAMdata or AccountManagerData Folder")
         if folder_selected:
             return jsonify({'success': True, 'path': folder_selected})
         return jsonify({'success': False, 'cancelled': True})
@@ -4201,13 +4409,16 @@ def clear_all_data():
         'autoUpdateToLatestRelease': True,
         'autoCheckRobloxUpdates': True,
         'disableExecutorPresets': False,
+        'swapPreserveSettings': True,
         'encryptionEnabled': False,
         'encryptionMethod': 'none',
         'preferredBrowser': 'auto',
+        'credentialImportInstances': 1,
         'multiInstance': False,
         'showTableAvatars': True,
         'downloadAvatarIcons': True,
         'showSavedGamesBar': True,
+        'autoSaveLaunchDetails': True,
         'showDetailPanel': True,
         'detailPanelPosition': 'right',
         'launchBarPosition': 'bottom',
@@ -4223,18 +4434,37 @@ def clear_all_data():
         'confirmBulkDelete': True,
         'autoKillRobloxOnExit': False,
         'minimizeToTray': False,
+        'startAtStartup': False,
         'streamerMode': False,
         'streamerHideUsernames': True,
         'streamerHideAvatars': True,
         'streamerHideSensitiveInfo': True,
         'streamerHideGroupsAndNotes': False,
         'streamerBlurLevel': 'medium',
-        'streamerRevealOnHover': False
+        'streamerRevealOnHover': False,
+        'autoArrangeScope': 'both',
+        'autoArrangeDimensionMode': 'auto',
+        'autoArrangeTargetWidth': 800,
+        'autoArrangeTargetHeight': 600,
+        'keepClientsArranged': False,
+        'headlessMode': False,
+        'headlessTrimMemory': True,
+        'headlessIdlePriority': True,
+        'headlessDetectionDelaySeconds': 0,
+        'antiAfkEnabled': False,
+        'antiAfkIntervalMinutes': 10,
+        'antiAfkKeyName': 'M1',
+        'antiAfkKeyCode': 0,
+        'antiAfkShowNextLabel': False,
+        'preferredRegion': '',
+        'serverPerAccount': False,
+        'pick_server_per_account': False
     }
 
     fresh_data = {
         'accounts': [],
         'games': [],
+        'saved_users': [],
         'settings': default_settings
     }
 
@@ -4951,9 +5181,37 @@ def resolve_private_server():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+def _get_platform_capabilities() -> Dict[str, Any]:
+    sys_name = platform.system()
+    is_win = sys_name == "Windows"
+    is_mac = sys_name == "Darwin"
+    os_name = "macos" if is_mac else ("windows" if is_win else "linux")
+    return {
+        "platform": os_name,
+        "arch": platform.machine().lower(),
+        "capabilities": {
+            "multi_instance": is_win or is_mac,
+            "memory_trim": is_win,
+            "crash_handler_killer": is_win,
+            "bootstrappers": is_win,
+            "executor_presets": is_win,
+            "anti_afk": is_win or is_mac,
+            "anti_afk_overlay": is_win,
+            "headless_mode": is_win or is_mac,
+            "auto_arrange": is_win or is_mac,
+            "rblxswap_hwid": is_win,
+            "rblxswap_mac": is_win,
+            "rblxswap_traces": is_win or is_mac,
+        }
+    }
+
+@app.route('/api/system/platform', methods=['GET'])
+def get_system_platform():
+    return jsonify({'success': True, **_get_platform_capabilities()})
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat(), **_get_platform_capabilities()})
 
 @app.route('/api/auth/token', methods=['GET'])
 def get_auth_token():

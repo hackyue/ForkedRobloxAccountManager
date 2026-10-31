@@ -386,14 +386,18 @@ class RobloxAccountManager:
             root / "chrome-win64" / "chrome.exe",
             root / "chrome-win32" / "chrome.exe",
             root / "chrome-win" / "chrome.exe",
+            root / "chrome-mac-arm64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing",
+            root / "chrome-mac-x64" / "Google Chrome for Testing.app" / "Contents" / "MacOS" / "Google Chrome for Testing",
+            root / "chrome-linux64" / "chrome",
         ]
         for candidate in candidates:
             if candidate.is_file():
                 return candidate
         try:
-            for candidate in sorted(root.glob("chrome-*/chrome.exe")):
-                if candidate.is_file():
-                    return candidate
+            for pattern in ("chrome-*/chrome.exe", "chrome-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing", "chrome-*/chrome"):
+                for candidate in sorted(root.glob(pattern)):
+                    if candidate.is_file():
+                        return candidate
         except OSError:
             return None
         return None
@@ -404,14 +408,18 @@ class RobloxAccountManager:
             root / "chromedriver-win64" / "chromedriver.exe",
             root / "chromedriver-win32" / "chromedriver.exe",
             root / "chromedriver-win" / "chromedriver.exe",
+            root / "chromedriver-mac-arm64" / "chromedriver",
+            root / "chromedriver-mac-x64" / "chromedriver",
+            root / "chromedriver-linux64" / "chromedriver",
         ]
         for candidate in candidates:
             if candidate.is_file():
                 return candidate
         try:
-            for candidate in sorted(root.glob("chromedriver-*/chromedriver.exe")):
-                if candidate.is_file():
-                    return candidate
+            for pattern in ("chromedriver-*/chromedriver.exe", "chromedriver-*/chromedriver"):
+                for candidate in sorted(root.glob(pattern)):
+                    if candidate.is_file():
+                        return candidate
         except OSError:
             return None
         return None
@@ -426,6 +434,25 @@ class RobloxAccountManager:
         if name == "chromium":
             return self.get_managed_chromium_binary_path()
         if name not in {"chrome", "edge", "msedge", "firefox", "waterfox"}:
+            return None
+
+        if platform.system() == "Darwin":
+            mac_app_bundles = {
+                "chrome": ("Google Chrome.app", "Google Chrome"),
+                "edge": ("Microsoft Edge.app", "Microsoft Edge"),
+                "msedge": ("Microsoft Edge.app", "Microsoft Edge"),
+                "firefox": ("Firefox.app", "firefox"),
+                "waterfox": ("Waterfox.app", "waterfox"),
+            }
+            bundle_name, bin_name = mac_app_bundles[name]
+            app_roots = [Path("/Applications"), Path.home() / "Applications"]
+            for app_root in app_roots:
+                candidate = app_root / bundle_name / "Contents" / "MacOS" / bin_name
+                if candidate.is_file():
+                    return candidate
+            resolved = shutil.which(bin_name.lower().replace(" ", "-")) or shutil.which(name)
+            if resolved and Path(resolved).is_file():
+                return Path(resolved)
             return None
 
         executable_name_by_browser = {
@@ -625,14 +652,24 @@ class RobloxAccountManager:
             if not edge_bin or not edge_bin.is_file():
                 return None
 
-            escaped_path = str(edge_bin).replace("'", "''")
-            cmd = ["powershell", "-NoProfile", "-Command", f"(Get-Item -LiteralPath '{escaped_path}').VersionInfo.FileVersion"]
-            flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000) if platform.system() == "Windows" else 0
-            version = subprocess.check_output(cmd, creationflags=flags).decode().strip()
+            version = ""
+            if platform.system() == "Darwin":
+                out = subprocess.check_output([str(edge_bin), "--version"], stderr=subprocess.DEVNULL, text=True).strip()
+                m = re.search(r"(\d+\.\d+\.\d+\.\d+)", out)
+                if m:
+                    version = m.group(1)
+                machine = platform.machine().lower()
+                arch = "mac64_m1" if machine in ("arm64", "aarch64") else "mac64"
+            else:
+                escaped_path = str(edge_bin).replace("'", "''")
+                cmd = ["powershell", "-NoProfile", "-Command", f"(Get-Item -LiteralPath '{escaped_path}').VersionInfo.FileVersion"]
+                flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000) if platform.system() == "Windows" else 0
+                version = subprocess.check_output(cmd, creationflags=flags).decode().strip()
+                arch = "win64" if sys.maxsize > 2**32 else "win32"
+
             if not version:
                 return None
 
-            arch = "win64" if sys.maxsize > 2**32 else "win32"
             url = f"https://msedgedriver.microsoft.com/{version}/edgedriver_{arch}.zip"
 
             import zipfile
@@ -650,6 +687,11 @@ class RobloxAccountManager:
                 except Exception:
                     pass
                 if driver_exe.is_file():
+                    if os.name != "nt":
+                        try:
+                            os.chmod(driver_exe, 0o755)
+                        except OSError:
+                            pass
                     return str(driver_exe)
         except Exception:
             pass

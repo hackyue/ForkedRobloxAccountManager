@@ -6,11 +6,14 @@ import time
 import shutil
 import zipfile
 import tempfile
+import platform
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional
 import requests
 from classes.roblox_api import RobloxAPI
+from utils.paths import get_root_app_dir
 
 WEAO_VERSIONS_CURRENT_PATH = "/api/versions/current"
 WEAO_VERSIONS_FUTURE_PATH = "/api/versions/future"
@@ -19,6 +22,7 @@ WEAO_API_HOSTS = ("weao.xyz", "whatexpsare.online", "weao.gg", "whatexploitsaret
 WEAO_API_USER_AGENT = "WEAO-3PService"
 
 ROBLOX_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/WindowsPlayer"
+ROBLOX_MAC_CLIENT_SETTINGS_URL = "https://clientsettings.roblox.com/v2/client-version/MacPlayer"
 ROBLOX_DOWNLOAD_HEADERS = {
     "User-Agent": "Roblox/WinInet",
     "Referer": "https://www.roblox.com/",
@@ -28,7 +32,8 @@ ROBLOX_DOWNLOAD_HEADERS = {
 RDD_HOST_PATH = "https://setup-aws.rbxcdn.com"
 RDD_BINARY_TYPES = {
     "WindowsPlayer": {"blob_dir": "/"},
-    "WindowsStudio64": {"blob_dir": "/"}
+    "WindowsStudio64": {"blob_dir": "/"},
+    "MacPlayer": {"blob_dir": "/mac/"},
 }
 
 RDD_EXTRACT_ROOTS = {
@@ -189,35 +194,40 @@ class RobloxInstallerManager:
             if not isinstance(data, dict) or data.get("error"):
                 continue
 
-            win = data.get("Windows")
-            if not win or not isinstance(win, str):
+            is_mac = platform.system() == "Darwin"
+            ver_key = "Mac" if is_mac else "Windows"
+            date_key = "MacDate" if is_mac else "WindowsDate"
+            ver_str = data.get(ver_key)
+            if not ver_str or not isinstance(ver_str, str):
                 continue
-            win = win.strip()
-            if not re.fullmatch(r"version-[0-9a-fA-F]+", win):
+            ver_str = ver_str.strip()
+            if not re.fullmatch(r"version-[0-9a-fA-F]+", ver_str):
                 continue
             return {
-                "version": win,
+                "version": ver_str,
                 "status": status,
-                "date": data.get("WindowsDate"),
+                "date": data.get(date_key),
                 "download_channel": "LIVE",
                 "source": "WEAO",
-                "label": f"[{status}] {win}"
+                "label": f"[{status}] {ver_str}"
             }
 
         if status == "LIVE":
             try:
-                response = session.get(ROBLOX_CLIENT_SETTINGS_URL, timeout=2.5)
+                is_mac = platform.system() == "Darwin"
+                settings_url = ROBLOX_MAC_CLIENT_SETTINGS_URL if is_mac else ROBLOX_CLIENT_SETTINGS_URL
+                response = session.get(settings_url, timeout=2.5)
                 if response.ok:
                     data = response.json()
-                    win = data.get("clientVersionUpload") or data.get("version")
-                    if win and isinstance(win, str) and win.startswith("version-"):
+                    ver_str = data.get("clientVersionUpload") or data.get("version")
+                    if ver_str and isinstance(ver_str, str) and ver_str.startswith("version-"):
                         return {
-                            "version": win.strip(),
+                            "version": ver_str.strip(),
                             "status": "LIVE",
                             "date": None,
                             "download_channel": "LIVE",
                             "source": "RobloxAPI",
-                            "label": f"[LIVE] {win.strip()}"
+                            "label": f"[LIVE] {ver_str.strip()}"
                         }
             except Exception:
                 pass
@@ -331,6 +341,16 @@ class RobloxInstallerManager:
         return local
 
     def get_installed_clients(self) -> List[Dict[str, Any]]:
+        if platform.system() == "Darwin":
+            mac_versions_dir = os.path.join(get_root_app_dir(), "RobloxVersions")
+            os.makedirs(mac_versions_dir, exist_ok=True)
+            return [{
+                "id": "roblox",
+                "name": "Roblox",
+                "versions_path": mac_versions_dir,
+                "installed": os.path.isdir("/Applications/Roblox.app") or os.path.isdir(mac_versions_dir)
+            }]
+
         candidates = []
         known_paths = set()
 
@@ -517,17 +537,85 @@ class RobloxInstallerManager:
                     raise RuntimeError(f"Failed to remove existing folder {target_dir}: {exc}")
 
             channel = str(version_entry.get("download_channel") or "LIVE").strip().upper()
-            binary_type = "WindowsPlayer"
-            blob_dir = RDD_BINARY_TYPES.get(binary_type, {}).get("blob_dir", "/")
-
-            update_state(status="Fetching version manifest...", progress=5)
-
             session = requests.Session()
             session.trust_env = False
 
             channel_path = RDD_HOST_PATH
             if channel != "LIVE":
                 channel_path = f"{RDD_HOST_PATH}/channel/{channel.lower()}"
+
+            if platform.system() == "Darwin":
+                blob_dir = RDD_BINARY_TYPES["MacPlayer"]["blob_dir"]
+                zip_url = f"{channel_path}{blob_dir}{version}-RobloxPlayer.zip"
+                temp_root = tempfile.mkdtemp(prefix="fram_rdd_mac_")
+                zip_path = os.path.join(temp_root, "RobloxPlayer.zip")
+
+                update_state(status=f"Downloading macOS Roblox {version}...", progress=10)
+                with session.get(zip_url, headers=ROBLOX_DOWNLOAD_HEADERS, stream=True, timeout=(15, 180)) as r:
+                    r.raise_for_status()
+                    total_bytes = int(r.headers.get("Content-Length") or 0)
+                    downloaded = 0
+                    with open(zip_path, "wb") as out:
+                        for chunk in r.iter_content(chunk_size=1024 * 512):
+                            if chunk:
+                                out.write(chunk)
+                                downloaded += len(chunk)
+                                if total_bytes > 0:
+                                    pct = 10.0 + (downloaded / total_bytes) * 65.0
+                                    update_state(
+                                        status=f"Downloading RobloxPlayer.zip ({downloaded / (1024 * 1024):.1f} / {total_bytes / (1024 * 1024):.1f} MB)...",
+                                        progress=round(pct, 1)
+                                    )
+
+                update_state(status="Extracting Roblox.app...", progress=80)
+                os.makedirs(target_dir, exist_ok=True)
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    for info in zf.infolist():
+                        name = info.filename
+                        if not name or name.endswith("/") or name.endswith("\\"):
+                            continue
+                        fixed = name.replace("\\", "/").lstrip("/")
+                        normalized = os.path.normpath(fixed)
+                        if normalized.startswith("..") or os.path.isabs(normalized):
+                            continue
+                        dest_path = os.path.join(target_dir, normalized)
+                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                        with zf.open(info, "r") as src_f, open(dest_path, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                        unix_attr = info.external_attr >> 16
+                        if unix_attr:
+                            try:
+                                os.chmod(dest_path, unix_attr)
+                            except OSError:
+                                pass
+
+                app_bundle = os.path.join(target_dir, "Roblox.app")
+                if not os.path.isdir(app_bundle):
+                    alt_bundle = os.path.join(target_dir, "RobloxPlayer.app")
+                    if os.path.isdir(alt_bundle):
+                        os.rename(alt_bundle, app_bundle)
+
+                for root_dir, _, files in os.walk(app_bundle):
+                    if os.path.basename(root_dir) == "MacOS":
+                        for fname in files:
+                            fpath = os.path.join(root_dir, fname)
+                            try:
+                                os.chmod(fpath, 0o755)
+                            except OSError:
+                                pass
+
+                try:
+                    subprocess.run(["xattr", "-cr", app_bundle], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+
+                update_state(status=f"Successfully installed {version} into {client['name']}!", progress=100, success=True)
+                return
+
+            binary_type = "WindowsPlayer"
+            blob_dir = RDD_BINARY_TYPES.get(binary_type, {}).get("blob_dir", "/")
+
+            update_state(status="Fetching version manifest...", progress=5)
 
             version_path = f"{channel_path}{blob_dir}{version}-"
             manifest_url = version_path + "rbxPkgManifest.txt"

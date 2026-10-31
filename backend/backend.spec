@@ -72,7 +72,7 @@ a = Analysis(
         'ipaddress',
         'dataclasses',
         'ctypes',
-        'ctypes.wintypes',
+        *(['ctypes.wintypes'] if sys.platform == 'win32' else []),
         'hashlib',
         'hmac',
         'secrets',
@@ -124,6 +124,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(backend_dir, '..', 'src-tauri', 'icons', 'icon.ico'),
-    version=os.path.join(backend_dir, 'version_info.txt'),
+    icon=os.path.join(backend_dir, '..', 'src-tauri', 'icons', 'icon.ico' if sys.platform == 'win32' else 'icon.icns'),
+    version=os.path.join(backend_dir, 'version_info.txt') if sys.platform == 'win32' else None,
 )

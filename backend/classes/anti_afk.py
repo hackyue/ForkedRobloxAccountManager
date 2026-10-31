@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import platform
+import subprocess
 import threading
 import re
 import ctypes
@@ -18,6 +19,8 @@ except ImportError:
 ROBLOX_CLIENT_EXECUTABLES: Set[str] = {
     "robloxplayerbeta.exe",
     "robloxplayer.exe",
+    "robloxplayer",
+    "robloxplayerbeta",
 }
 
 BOOTSTRAPPER_EXECUTABLES: Set[str] = {
@@ -359,6 +362,23 @@ class AntiAfkManager:
                 self._suppressed_hwnds.pop(h, None)
 
     def get_roblox_windows(self, include_hidden: bool = False) -> List[Tuple[int, int, str]]:
+        if platform.system() == "Darwin":
+            windows_mac: List[Tuple[int, int, str]] = []
+            try:
+                import psutil
+                for proc in psutil.process_iter(['pid', 'name']):
+                    try:
+                        name = str(proc.info.get('name') or '').lower()
+                        if name in self.TARGET_EXECUTABLES:
+                            p = int(proc.info['pid'])
+                            windows_mac.append((p, p, "Roblox"))
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            windows_mac.sort(key=lambda item: item[0])
+            return windows_mac
+
         if platform.system() != "Windows" or not win32gui or not win32process:
             return []
 
@@ -690,6 +710,41 @@ class AntiAfkManager:
         user32.SendInput(1, ctypes.byref(inp_up), ctypes.sizeof(INPUT))
 
     def post_window_input(self, hwnd: int, key_name: str, restore_focus: bool = True) -> bool:
+        if platform.system() == "Darwin":
+            try:
+                mac_key_codes = {
+                    "Space": 49,
+                    "Up Arrow": 126,
+                    "Down Arrow": 125,
+                    "Left Arrow": 123,
+                    "Right Arrow": 124,
+                    "W": 13,
+                    "A": 0,
+                    "S": 1,
+                    "D": 2,
+                    "E": 14,
+                    "F": 3,
+                }
+                kc = mac_key_codes.get(key_name, 49)
+                script = (
+                    f'tell application "System Events"\n'
+                    f'  set prevFront to name of first application process whose frontmost is true\n'
+                    f'  repeat with p in (every process whose unix id is {int(hwnd)})\n'
+                    f'    set frontmost of p to true\n'
+                    f'    delay 0.05\n'
+                    f'    key code {kc}\n'
+                    f'  end repeat\n'
+                    f'  repeat with fp in (every process whose name is prevFront)\n'
+                    f'    set frontmost of fp to true\n'
+                    f'  end repeat\n'
+                    f'end tell'
+                )
+                res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=4)
+                return res.returncode == 0
+            except Exception as e:
+                self._log(f"AntiAFK macOS input error for pid {hwnd}: {e}")
+                return False
+
         if platform.system() != "Windows" or not win32gui or not win32con:
             return False
         try:
@@ -869,13 +924,14 @@ class AntiAfkManager:
                     skipped += 1
                     continue
 
-                try:
-                    if not win32gui or not win32gui.IsWindow(hwnd):
+                if platform.system() == "Windows":
+                    try:
+                        if not win32gui or not win32gui.IsWindow(hwnd):
+                            skipped += 1
+                            continue
+                    except Exception:
                         skipped += 1
                         continue
-                except Exception:
-                    skipped += 1
-                    continue
 
                 if self.post_window_input(hwnd, key_name, restore_focus=False):
                     success += 1
