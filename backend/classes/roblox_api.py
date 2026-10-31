@@ -2214,26 +2214,23 @@ class RobloxAPI:
         def _launch_with_launcher(launcher_id, target_url, context, working_dir=None):
             """Launch via a verified bootstrapper or launcher executable."""
             if launcher_id not in RobloxAPI.BOOTSTRAPPER_EXE_MAP:
-                return
+                return False
             launcher_rel_path, req_player = RobloxAPI.BOOTSTRAPPER_EXE_MAP[launcher_id]
             launcher_bin = os.path.expandvars(launcher_rel_path)
             if not RobloxAPI._is_strict_roblox_launch_url(target_url):
-                return
+                return False
             clean_url = str(target_url).strip()
             if not clean_url.startswith("roblox-player:"):
-                return
-            if req_player:
-                launch_cmd = [launcher_bin, "-player", clean_url]
-            else:
-                launch_cmd = [launcher_bin, clean_url]
-            subprocess.Popen(
-                launch_cmd,
-                cwd=working_dir,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **RobloxAPI._subprocess_no_window_kwargs(),
-            )
+                return False
             _log_debug(f"Launching {context} via {launcher_id} with URL: {clean_url}")
+            if hasattr(os, "startfile") and os.path.isfile(launcher_bin):
+                try:
+                    args = f"-player {clean_url}" if req_player else clean_url
+                    os.startfile(launcher_bin, arguments=args)
+                    return True
+                except Exception as exc:
+                    _log_debug(f"startfile failed for {launcher_bin}: {exc}")
+            return RobloxAPI._launch_protocol_url(clean_url)
 
         roblox_exe = None
         effective_path = None
