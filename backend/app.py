@@ -91,7 +91,7 @@ def handle_global_exception(e):
         level="CRITICAL",
         source="flask_api"
     )
-    add_backend_log(f"Unhandled API Error: {str(e)}", level='error', category='api', source='flask_api')
+    add_backend_log("Unhandled API Error occurred", level='error', category='api', source='flask_api')
     return jsonify({"error": "Internal server error"}), 500
 
 ALLOWED_ORIGINS = [
@@ -494,10 +494,11 @@ def get_account_manager(password=None):
             print(f"Error initializing account manager: {e}")
             account_manager = None
             if "Failed to decrypt" in str(e) or "Decryption failed" in str(e):
-                last_account_decryption_error = str(e)
+                last_account_decryption_error = "Decryption failed. Please check master password."
                 exc_type, exc_value, exc_tb = sys.exc_info()
                 error_detector.record_exception(exc_type or ValueError, e, exc_tb, source="account_manager_init")
             else:
+                last_account_decryption_error = "Account manager initialization failed."
                 raise e
         return account_manager
 
@@ -646,9 +647,11 @@ def load_data(force_reload: bool = False) -> Dict[str, Any]:
         except Exception as e:
             print(f"Error loading from account manager: {e}")
             if "Failed to decrypt" in str(e) or "Decryption failed" in str(e):
-                last_account_decryption_error = str(e)
+                last_account_decryption_error = "Decryption failed. Please check master password."
                 exc_type, exc_value, exc_tb = sys.exc_info()
                 error_detector.record_exception(exc_type or ValueError, e, exc_tb, source="account_manager_load")
+            else:
+                last_account_decryption_error = "Failed to load accounts."
 
     if not last_account_decryption_error and os.path.exists(ACCOUNTS_FILE):
         try:
@@ -1101,7 +1104,8 @@ def bulk_import_cookies():
             'errors': errors
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to bulk import cookies", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to bulk import cookies'}), 500
 
 @app.route('/api/accounts/<int:account_id>', methods=['GET'])
 def get_account(account_id):
@@ -1217,7 +1221,8 @@ def reorder_accounts():
 
         return jsonify({'success': True, 'accounts': new_accounts})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to reorder accounts", exc=e)
+        return jsonify({'error': 'Failed to reorder accounts'}), 500
 
 @app.route('/api/accounts/bulk-vip', methods=['POST'])
 def bulk_vip_accounts():
@@ -1419,7 +1424,8 @@ def get_roblox_versions():
         versions = RobloxAPI.get_installed_versions(custom_path=custom_path)
         return jsonify({'success': True, 'versions': versions})
     except Exception as e:
-        return jsonify({'success': False, 'versions': [], 'error': str(e)})
+        log_detailed_error("Failed to retrieve Roblox versions", exc=e)
+        return jsonify({'success': False, 'versions': [], 'error': 'Failed to retrieve Roblox versions'})
 
 @app.route('/api/roblox/launch-app', methods=['POST', 'OPTIONS'])
 def launch_roblox_app():
@@ -1514,7 +1520,8 @@ def launch_roblox_app():
 
         return jsonify({'success': False, 'error': "Roblox isn't installed"}), 404
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to launch Roblox application", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to launch Roblox application'}), 500
 
 @app.route('/api/roblox/uninstall-version', methods=['POST', 'OPTIONS'])
 def uninstall_roblox_version():
@@ -1593,7 +1600,8 @@ def uninstall_roblox_version():
         shutil.rmtree(target_to_delete)
         return jsonify({'success': True, 'message': f'Successfully uninstalled {version_name or os.path.basename(target_to_delete)}'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to uninstall Roblox version", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to uninstall Roblox version'}), 500
 
 @app.route('/api/accounts/launch-home', methods=['POST'])
 def launch_home_browser():
@@ -1619,7 +1627,8 @@ def launch_home_browser():
             return jsonify({'success': True, 'message': f"Opened browser for @{username}"})
         return jsonify({'success': False, 'error': launch_error or "Failed to open browser"}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to open browser", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to open browser'}), 500
 
 @app.route('/api/accounts/validate-all', methods=['POST'])
 def validate_all_accounts():
@@ -1695,7 +1704,8 @@ def validate_all_accounts():
             txn.save()
             return jsonify({'accounts': data['accounts'], 'summary': summary})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to validate accounts", exc=e)
+        return jsonify({'error': 'Failed to validate accounts'}), 500
 
 @app.route('/api/accounts/<int:account_id>/validate', methods=['POST'])
 def validate_single_account(account_id):
@@ -1757,7 +1767,8 @@ def validate_single_account(account_id):
             txn.save()
             return jsonify({'account': target, 'status': status, 'valid': status == 'valid'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to validate account", exc=e)
+        return jsonify({'error': 'Failed to validate account'}), 500
 
 @app.route('/api/games', methods=['GET'])
 def get_games():
@@ -1927,9 +1938,11 @@ def bloxgen_api_request(endpoint, method='GET', params=None, body_data=None):
         except Exception:
             return {'success': False, 'message': f'HTTP Error {e.code}'}, e.code
     except urllib.error.URLError as e:
-        return {'success': False, 'message': f'BloxGen connection error: {e.reason}'}, 502
+        log_detailed_error("BloxGen connection error", exc=e)
+        return {'success': False, 'message': 'BloxGen connection error'}, 502
     except Exception as e:
-        return {'success': False, 'message': str(e)}, 502
+        log_detailed_error("BloxGen request failed", exc=e)
+        return {'success': False, 'message': 'BloxGen request failed'}, 502
 
 @app.route('/api/bloxgen/balance', methods=['GET'])
 def bloxgen_get_balance():
@@ -2076,7 +2089,8 @@ def toggle_headless_mode():
             'message': f"Headless mode {'enabled' if data['settings']['headlessMode'] else 'disabled'}"
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to toggle headless mode", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to toggle headless mode'}), 500
 
 @app.route('/api/headless/apply', methods=['POST', 'OPTIONS'])
 def apply_headless_now():
@@ -2093,7 +2107,8 @@ def apply_headless_now():
             'message': f"Applied headless mode: hidden {res.get('hidden', 0)} window(s), trimmed {res.get('trimmed', 0)} process(es)"
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to apply headless mode", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to apply headless mode'}), 500
 
 @app.route('/api/headless/restore', methods=['POST', 'OPTIONS'])
 def restore_headless_windows():
@@ -2108,7 +2123,8 @@ def restore_headless_windows():
             'message': f"Restored {res.get('restored', 0)} Roblox window(s) to visible state"
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to restore headless windows", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to restore headless windows'}), 500
 
 @app.route('/api/anti-afk/status', methods=['GET', 'OPTIONS'])
 def get_anti_afk_status():
@@ -2117,7 +2133,8 @@ def get_anti_afk_status():
     try:
         return jsonify(anti_afk_manager.get_status())
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get Anti-AFK status", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get Anti-AFK status'}), 500
 
 @app.route('/api/anti-afk/settings', methods=['POST', 'OPTIONS'])
 def update_anti_afk_settings():
@@ -2150,7 +2167,8 @@ def update_anti_afk_settings():
         anti_afk_manager.sync_overlay()
         return jsonify(anti_afk_manager.get_status())
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to update Anti-AFK settings", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to update Anti-AFK settings'}), 500
 
 @app.route('/api/anti-afk/trigger', methods=['POST', 'OPTIONS'])
 def trigger_anti_afk_pass():
@@ -2160,7 +2178,8 @@ def trigger_anti_afk_pass():
         res = anti_afk_manager.trigger_pass()
         return jsonify(res)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to trigger Anti-AFK pass", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to trigger Anti-AFK pass'}), 500
 
 @app.route('/api/extensions', methods=['GET', 'OPTIONS'])
 def get_browser_extensions():
@@ -2185,7 +2204,7 @@ def get_browser_extensions():
         return jsonify({'success': True, 'extensions': res})
     except Exception as e:
         log_detailed_error("Failed to list browser extensions", exc=e, source="extensions_api")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to list browser extensions'}), 500
 
 @app.route('/api/extensions/toggle', methods=['POST', 'OPTIONS'])
 def toggle_browser_extension():
@@ -2200,10 +2219,10 @@ def toggle_browser_extension():
         extension_manager.set_extension_enabled(key, enabled)
         return jsonify({'success': True, 'key': key, 'enabled': enabled})
     except BrowserExtensionError as e:
-        return jsonify({'success': False, 'error': str(e)}), 400
+        return jsonify({'success': False, 'error': 'Invalid browser extension request'}), 400
     except Exception as e:
         log_detailed_error("Failed to toggle browser extension", exc=e, source="extensions_api")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to toggle browser extension'}), 500
 
 @app.route('/api/extensions/delete', methods=['POST', 'OPTIONS'])
 def delete_browser_extension():
@@ -2217,10 +2236,10 @@ def delete_browser_extension():
         extension_manager.remove_extension(key)
         return jsonify({'success': True, 'key': key})
     except BrowserExtensionError as e:
-        return jsonify({'success': False, 'error': str(e)}), 400
+        return jsonify({'success': False, 'error': 'Invalid browser extension request'}), 400
     except Exception as e:
         log_detailed_error("Failed to delete browser extension", exc=e, source="extensions_api")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to delete browser extension'}), 500
 
 @app.route('/api/extensions/add', methods=['POST', 'OPTIONS'])
 def add_browser_extension():
@@ -2269,10 +2288,10 @@ def add_browser_extension():
             }
         })
     except BrowserExtensionError as e:
-        return jsonify({'success': False, 'error': str(e)}), 400
+        return jsonify({'success': False, 'error': 'Invalid browser extension request'}), 400
     except Exception as e:
         log_detailed_error("Failed to add browser extension", exc=e, source="extensions_api")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to add browser extension'}), 500
 
 def _choose_folder_native(prompt_title: str) -> str:
     if platform.system() == "Darwin":
@@ -2372,7 +2391,8 @@ def browse_extension_folder_dialog():
             return jsonify({'success': True, 'path': folder_selected})
         return jsonify({'success': False, 'cancelled': True})
     except Exception as e:
-        return jsonify({'success': False, 'cancelled': True, 'error': str(e)}), 200
+        log_detailed_error("Failed to browse extension folder", exc=e)
+        return jsonify({'success': False, 'cancelled': True, 'error': 'Failed to browse extension folder'}), 200
 
 @app.route('/api/extensions/browse-file', methods=['POST', 'GET', 'OPTIONS'])
 def browse_extension_file_dialog():
@@ -2386,7 +2406,8 @@ def browse_extension_file_dialog():
             return jsonify({'success': True, 'path': file_selected})
         return jsonify({'success': False, 'cancelled': True})
     except Exception as e:
-        return jsonify({'success': False, 'cancelled': True, 'error': str(e)}), 200
+        log_detailed_error("Failed to browse extension file", exc=e)
+        return jsonify({'success': False, 'cancelled': True, 'error': 'Failed to browse extension file'}), 200
 
 recent_launches = []
 
@@ -2677,7 +2698,8 @@ def get_auto_relaunch_status():
             'last_summary': group_auto_relaunch_state.get('last_relaunch_summary')
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get auto-relaunch status", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get auto-relaunch status'}), 500
 
 @app.route('/api/auto-relaunch/settings', methods=['POST', 'OPTIONS'])
 def update_auto_relaunch_settings():
@@ -2709,7 +2731,8 @@ def update_auto_relaunch_settings():
             group_auto_relaunch_state['next_run_ts'] = time.time() + (interval_min * 60)
         return get_auto_relaunch_status()
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to update auto-relaunch settings", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to update auto-relaunch settings'}), 500
 
 @app.route('/api/auto-relaunch/trigger', methods=['POST', 'OPTIONS'])
 def trigger_auto_relaunch_now():
@@ -2719,7 +2742,8 @@ def trigger_auto_relaunch_now():
         threading.Thread(target=run_group_auto_relaunch, daemon=True).start()
         return jsonify({'success': True, 'message': 'Group auto-relaunch triggered.'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to trigger auto-relaunch", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to trigger auto-relaunch'}), 500
 
 _PID_INFO_CACHE = {}
 _PID_INFO_CACHE_LOCK = threading.Lock()
@@ -3070,7 +3094,8 @@ def get_running_instances():
 
         return jsonify(result_payload)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get running instances", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get running instances'}), 500
 
 class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
     _fields_ = [
@@ -3193,8 +3218,8 @@ def trim_roblox_memory_endpoint():
             'message': f"Trimmed {count} instance(s), reclaimed {saved_mb} MB RAM"
         })
     except Exception as e:
-        print(f"[ERROR] Memory trim endpoint error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Memory trim endpoint error", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to trim memory'}), 500
 
 @app.route('/api/roblox/auto-arrange', methods=['POST', 'OPTIONS'])
 def auto_arrange_roblox_clients_endpoint():
@@ -3228,8 +3253,8 @@ def auto_arrange_roblox_clients_endpoint():
         else:
             return jsonify(result), 200
     except Exception as e:
-        print(f"[ERROR] Auto-arrange clients failed: {e}")
-        return jsonify({'success': False, 'count': 0, 'error': str(e)}), 500
+        log_detailed_error("Auto-arrange clients failed", exc=e)
+        return jsonify({'success': False, 'count': 0, 'error': 'Failed to arrange clients'}), 500
 
 @app.route('/api/roblox/auto-arrange/monitors', methods=['GET'])
 def get_auto_arrange_monitors_endpoint():
@@ -3248,7 +3273,8 @@ def get_auto_arrange_monitors_endpoint():
             })
         return jsonify({'success': True, 'monitors': monitors_list})
     except Exception as e:
-        return jsonify({'success': False, 'monitors': [], 'error': str(e)}), 500
+        log_detailed_error("Failed to get monitors", exc=e)
+        return jsonify({'success': False, 'monitors': [], 'error': 'Failed to get monitors'}), 500
 
 @app.route('/api/roblox/auto-arrange/status', methods=['GET'])
 def get_auto_arrange_status_endpoint():
@@ -3268,7 +3294,8 @@ def get_auto_arrange_status_endpoint():
             'targetHeight': settings.get('autoArrangeTargetHeight', 600)
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get auto-arrange status", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get auto-arrange status'}), 500
 
 @app.route('/api/roblox/auto-arrange/toggle', methods=['POST', 'OPTIONS'])
 def toggle_auto_arrange_endpoint():
@@ -3295,7 +3322,8 @@ def toggle_auto_arrange_endpoint():
             'message': f"Auto-arrange {'enabled' if new_state else 'disabled'}"
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to toggle auto-arrange", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to toggle auto-arrange'}), 500
 
 
 
@@ -3378,7 +3406,8 @@ def kill_all_crash_handlers():
         killed = terminate_crash_handlers(log_if_killed=True)
         return jsonify({'success': True, 'killed': killed, 'message': f'Terminated {killed} crash handler process(es)'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to terminate crash handlers", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to terminate crash handlers'}), 500
 
 def _is_roblox_pid(pid):
     try:
@@ -3606,7 +3635,8 @@ def focus_instance(pid: int) -> Tuple[bool, str]:
                 return True, "Window focused"
             return False, (res.stderr or "Failed to focus macOS window").strip()
         except Exception as e:
-            return False, str(e)
+            log_detailed_error("Failed to focus macOS window", exc=e)
+            return False, "Failed to focus window"
 
     if platform.system() != "Windows" or not win32gui or not win32process:
         return False, "Not supported on this platform"
@@ -3650,7 +3680,8 @@ def focus_instance(pid: int) -> Tuple[bool, str]:
                     pass
         return True, "Window focused"
     except Exception as e:
-        return False, str(e)
+        log_detailed_error("Failed to focus Windows window", exc=e)
+        return False, "Failed to focus window"
 
 def hide_instance(pid: int) -> Tuple[bool, str]:
     if platform.system() == "Darwin":
@@ -3663,7 +3694,8 @@ def hide_instance(pid: int) -> Tuple[bool, str]:
                 return True, "Hidden 1 window(s)"
             return False, f"Failed to hide window for PID {pid}"
         except Exception as e:
-            return False, str(e)
+            log_detailed_error("Failed to hide macOS window", exc=e)
+            return False, "Failed to hide window"
 
     if platform.system() != "Windows" or not win32gui:
         return False, "Not supported on this platform"
@@ -3684,7 +3716,8 @@ def hide_instance(pid: int) -> Tuple[bool, str]:
 
         return True, f"Hidden {count} window(s)"
     except Exception as e:
-        return False, str(e)
+        log_detailed_error("Failed to hide Windows window", exc=e)
+        return False, "Failed to hide window"
 
 def unhide_instance(pid: int) -> Tuple[bool, str]:
     if platform.system() == "Darwin":
@@ -3700,7 +3733,8 @@ def unhide_instance(pid: int) -> Tuple[bool, str]:
                 return True, "Restored 1 window(s)"
             return False, f"Failed to restore window for PID {pid}"
         except Exception as e:
-            return False, str(e)
+            log_detailed_error("Failed to restore macOS window", exc=e)
+            return False, "Failed to restore window"
 
     if platform.system() != "Windows" or not win32gui:
         return False, "Not supported on this platform"
@@ -3726,7 +3760,8 @@ def unhide_instance(pid: int) -> Tuple[bool, str]:
 
         return True, f"Restored {count} window(s)"
     except Exception as e:
-        return False, str(e)
+        log_detailed_error("Failed to restore Windows window", exc=e)
+        return False, "Failed to restore window"
 
 def trim_instance(pid: int) -> Tuple[bool, float, str]:
     if platform.system() != "Windows":
@@ -3738,7 +3773,8 @@ def trim_instance(pid: int) -> Tuple[bool, float, str]:
             return True, saved_mb, f"Reclaimed {saved_mb} MB RAM"
         return False, 0.0, "Failed to trim working set"
     except Exception as e:
-        return False, 0.0, str(e)
+        log_detailed_error("Failed to trim process working set", exc=e)
+        return False, 0.0, "Failed to trim working set"
 
 @app.route('/api/instances/focus', methods=['POST', 'OPTIONS'])
 def focus_instance_endpoint():
@@ -3763,7 +3799,8 @@ def focus_instance_endpoint():
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to focus instance", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to focus instance'}), 500
 
 @app.route('/api/instances/hide', methods=['POST', 'OPTIONS'])
 def hide_instance_endpoint():
@@ -3788,7 +3825,8 @@ def hide_instance_endpoint():
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to hide instance", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to hide instance'}), 500
 
 @app.route('/api/instances/unhide', methods=['POST', 'OPTIONS'])
 def unhide_instance_endpoint():
@@ -3813,7 +3851,8 @@ def unhide_instance_endpoint():
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to restore instance", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to restore instance'}), 500
 
 @app.route('/api/instances/trim', methods=['POST', 'OPTIONS'])
 def trim_instance_endpoint():
@@ -3838,7 +3877,8 @@ def trim_instance_endpoint():
             return jsonify({'success': True, 'savedMb': saved_mb, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to trim instance working set", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to trim instance working set'}), 500
 
 @app.route('/api/setup/complete', methods=['POST', 'OPTIONS'])
 def complete_setup():
@@ -3934,8 +3974,8 @@ def complete_setup():
                 _cached_encryption_mtime = os.path.getmtime(encryption_config_path)
             invalidate_data_cache()
         except Exception as e:
-            print(f"Error setting up encryption: {e}")
-            return jsonify({'error': f'Encryption setup failed: {str(e)}'}), 500
+            log_detailed_error("Encryption setup failed", exc=e)
+            return jsonify({'error': 'Encryption setup failed'}), 500
     
     save_data(data)
     return jsonify({'success': True, 'settings': data['settings']})
@@ -3953,7 +3993,8 @@ def select_folder_dialog():
             return jsonify({'success': True, 'path': folder_selected})
         return jsonify({'success': False, 'cancelled': True})
     except Exception as e:
-        return jsonify({'success': False, 'cancelled': True, 'error': str(e)}), 200
+        log_detailed_error("Failed to select folder", exc=e)
+        return jsonify({'success': False, 'cancelled': True, 'error': 'Failed to select folder'}), 200
 
 @app.route('/api/setup/preview-framdata', methods=['POST', 'OPTIONS'])
 def preview_framdata():
@@ -3975,7 +4016,8 @@ def preview_framdata():
         res = manager.preview_framdata_folder(norm_folder, password=password)
         return jsonify(res)
     except Exception as e:
-        return jsonify({'success': False, 'valid': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to preview FRAM data", exc=e)
+        return jsonify({'success': False, 'valid': False, 'error': 'Failed to preview FRAM data'}), 500
 
 @app.route('/api/setup/import-framdata', methods=['POST', 'OPTIONS'])
 def import_framdata():
@@ -4068,7 +4110,8 @@ def import_framdata():
 
         return jsonify(res)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to import FRAM data", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to import FRAM data'}), 500
 
 
 @app.route('/api/system/last-error', methods=['GET'])
@@ -4194,7 +4237,8 @@ def switch_encryption():
                 
             manager.accounts = manager.load_accounts()
         except Exception as load_err:
-            return jsonify({'success': False, 'error': f'Failed to decrypt current accounts: {str(load_err)}'}), 400
+            log_detailed_error("Failed to decrypt current accounts", exc=load_err)
+            return jsonify({'success': False, 'error': 'Failed to decrypt current accounts'}), 400
             
         try:
             accounts_file = os.path.join(data_folder, 'saved_accounts.json')
@@ -4247,7 +4291,8 @@ def switch_encryption():
                 'settings': data['settings']
             })
         except Exception as e:
-            return jsonify({'success': False, 'error': f'Failed to switch encryption: {str(e)}'}), 500
+            log_detailed_error("Failed to switch encryption", exc=e)
+            return jsonify({'success': False, 'error': 'Failed to switch encryption'}), 500
 
 @app.route('/api/setup/encryption-status', methods=['GET'])
 def encryption_status():
@@ -4264,7 +4309,8 @@ def encryption_status():
                     'method': config.get('encryption_method', 'none')
                 })
         except Exception as e:
-            return jsonify({'enabled': False, 'method': 'none', 'error': str(e)}), 500
+            log_detailed_error("Failed to get encryption status", exc=e)
+            return jsonify({'enabled': False, 'method': 'none', 'error': 'Failed to get encryption status'}), 500
     
     return jsonify({'enabled': False, 'method': 'none'})
 
@@ -4307,7 +4353,8 @@ def export_data():
                 json.dump(data, f, indent=2)
             return jsonify({'success': True, 'path': norm_file_path, 'count': len(data.get('accounts', []))})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            log_detailed_error("Failed to export data", exc=e)
+            return jsonify({'error': 'Failed to export data'}), 500
 
     return jsonify(data)
 
@@ -4667,7 +4714,8 @@ if exist "{root_dir}" (
 
         return jsonify({'success': True, 'message': 'Application uninstall sequence started'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to refresh DHCP lease", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to refresh DHCP lease'}), 500
 
 @app.route('/api/clear-accounts', methods=['POST'])
 def clear_accounts():
@@ -4718,8 +4766,9 @@ def add_account_browser():
                     fresh_data = load_data(force_reload=True)
                     save_data(fresh_data)
             except Exception as e:
+                log_detailed_error("Browser account addition failed", exc=e)
                 result['success'] = False
-                result['message'] = str(e)
+                result['message'] = 'Failed to add accounts' 
         
         thread = threading.Thread(target=add_accounts)
         thread.start()
@@ -4727,7 +4776,8 @@ def add_account_browser():
         return jsonify({'status': 'started', 'message': 'Browser automation started'})
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to export data", exc=e)
+        return jsonify({'error': 'Failed to export data'}), 500
 
 @app.route('/api/accounts/add-credentials', methods=['POST'])
 def add_account_credentials():
@@ -4766,8 +4816,9 @@ def add_account_credentials():
                     fresh_data = load_data(force_reload=True)
                     save_data(fresh_data)
             except Exception as e:
+                log_detailed_error("Browser account addition failed", exc=e)
                 result['success'] = False
-                result['message'] = str(e)
+                result['message'] = 'Failed to add accounts' 
         
         thread = threading.Thread(target=add_creds)
         thread.start()
@@ -4775,7 +4826,8 @@ def add_account_credentials():
         return jsonify({'status': 'started', 'message': 'Credential login started'})
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to start credential login", exc=e)
+        return jsonify({'error': 'Failed to start credential login'}), 500
 
 @app.route('/api/browser/status', methods=['GET'])
 def browser_status():
@@ -4812,6 +4864,7 @@ def browser_status():
             'accounts_count': len(manager.accounts)
         })
     except Exception as e:
+        log_detailed_error("Failed to retrieve browser status", exc=e)
         return jsonify({
             'manager_available': False,
             'browsers_available': [],
@@ -4820,7 +4873,7 @@ def browser_status():
             'active_instances': 0,
             'user_closed': False,
             'last_close_reason': None,
-            'error': str(e)
+            'error': 'Failed to retrieve browser status'
         }), 500
 
 @app.route('/api/browser/chromium/status', methods=['GET'])
@@ -4830,7 +4883,7 @@ def get_chromium_status():
         return jsonify({'success': True, 'status': status_info})
     except Exception as e:
         log_detailed_error("Failed to get chromium status", exc=e, source="chromium_api")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to get chromium status'}), 500
 
 @app.route('/api/browser/chromium/download', methods=['POST'])
 def start_chromium_download():
@@ -4843,7 +4896,7 @@ def start_chromium_download():
         return jsonify(res)
     except Exception as e:
         log_detailed_error("Failed to start chromium download", exc=e, source="chromium_api")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to start chromium download'}), 500
 
 @app.route('/api/browser/chromium/uninstall', methods=['POST'])
 def uninstall_chromium():
@@ -4856,7 +4909,7 @@ def uninstall_chromium():
         return jsonify(res)
     except Exception as e:
         log_detailed_error("Failed to uninstall chromium", exc=e, source="chromium_api")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to uninstall chromium'}), 500
 
 @app.route('/api/accounts/add-quick-signin', methods=['POST'])
 def add_quick_signin():
@@ -4945,9 +4998,10 @@ def add_quick_signin():
                         result_container['status'] = 'error'
                         result_container['status_message'] = result.get('error', 'Quick Sign-In failed')
             except Exception as e:
-                result_container['result'] = {'success': False, 'error': str(e)}
+                log_detailed_error("Quick Sign-In worker failed", exc=e)
+                result_container['result'] = {'success': False, 'error': 'Quick Sign-In encountered an error'}
                 result_container['status'] = 'error'
-                result_container['status_message'] = str(e)
+                result_container['status_message'] = 'Quick Sign-In encountered an error'
                 result_container['completed_at'] = time.time()
 
         thread = threading.Thread(target=run_quick_signin, daemon=True)
@@ -4963,7 +5017,8 @@ def add_quick_signin():
             'status_message': 'Starting Quick Sign-In process...'
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to start Quick Sign-In", exc=e)
+        return jsonify({'error': 'Failed to start Quick Sign-In'}), 500
 
 @app.route('/api/quick-signin/status/<session_id>', methods=['GET'])
 def get_quick_signin_status(session_id):
@@ -4986,7 +5041,8 @@ def get_quick_signin_status(session_id):
             }
         return jsonify(response)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to get Quick Sign-In status", exc=e)
+        return jsonify({'error': 'Failed to get Quick Sign-In status'}), 500
 
 @app.route('/api/quick-signin/cancel/<session_id>', methods=['POST'])
 def cancel_quick_signin(session_id):
@@ -5003,7 +5059,8 @@ def cancel_quick_signin(session_id):
                 return jsonify({'success': True, 'message': 'Session cancelled successfully'})
         return jsonify({'error': 'Session not found'}), 404
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to cancel Quick Sign-In", exc=e)
+        return jsonify({'error': 'Failed to cancel Quick Sign-In'}), 500
 
 @app.route('/api/roblox/validate-cookie', methods=['POST'])
 def validate_cookie():
@@ -5045,7 +5102,8 @@ def validate_cookie():
             'avatar_url': avatar_url
         })
     except Exception as e:
-        return jsonify({'valid': False, 'status': 'expired', 'error': str(e)}), 500
+        log_detailed_error("Failed to validate cookie", exc=e)
+        return jsonify({'valid': False, 'status': 'expired', 'error': 'Failed to validate cookie'}), 500
 
 @app.route('/api/roblox/user-info', methods=['POST'])
 def get_user_info():
@@ -5099,7 +5157,8 @@ def get_user_info():
             'status': status
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to retrieve user information", exc=e)
+        return jsonify({'error': 'Failed to retrieve user information'}), 500
 
 @app.route('/api/roblox/game-info', methods=['POST'])
 def get_game_info():
@@ -5131,7 +5190,8 @@ def get_game_info():
             'icon_url': ''
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to retrieve game information", exc=e)
+        return jsonify({'error': 'Failed to retrieve game information'}), 500
 
 
 @app.route('/api/roblox/clear-icon-cache', methods=['POST'])
@@ -5140,7 +5200,8 @@ def clear_icon_cache():
         icon_cache.clear()
         return jsonify({'success': True, 'message': 'Icon cache cleared successfully'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to clear icon cache", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to clear icon cache'}), 500
 
 @app.route('/api/roblox/icon-cache/stats', methods=['GET'])
 def get_icon_cache_stats():
@@ -5148,7 +5209,8 @@ def get_icon_cache_stats():
         stats = icon_cache.get_stats()
         return jsonify({'success': True, 'stats': stats})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to clear icon cache", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to clear icon cache'}), 500
 
 @app.route('/api/roblox/icon-file/<path:filename>', methods=['GET'])
 def get_icon_file(filename):
@@ -5172,7 +5234,8 @@ def get_subplaces_endpoint(place_id):
         subplaces = RobloxAPI.get_subplaces(place_id)
         return jsonify({'success': True, 'place_id': place_id, 'subplaces': subplaces})
     except Exception as e:
-        return jsonify({'success': False, 'subplaces': [], 'error': str(e)}), 500
+        log_detailed_error("Failed to retrieve subplaces", exc=e)
+        return jsonify({'success': False, 'subplaces': [], 'error': 'Failed to retrieve subplaces'}), 500
 
 @app.route('/api/roblox/private-server-resolve', methods=['POST'])
 def resolve_private_server():
@@ -5225,7 +5288,8 @@ def resolve_private_server():
             'place_id': place_id
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_detailed_error("Failed to start browser automation", exc=e)
+        return jsonify({'error': 'Failed to start browser automation'}), 500
 
 def _get_platform_capabilities() -> Dict[str, Any]:
     sys_name = platform.system()
@@ -5360,7 +5424,8 @@ def get_installer_available_versions():
         versions = roblox_installer_manager.get_available_versions()
         return jsonify({'success': True, 'versions': versions})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get icon cache statistics", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get icon cache statistics'}), 500
 
 @app.route('/api/installer/clients', methods=['GET'])
 def get_installer_clients():
@@ -5368,7 +5433,8 @@ def get_installer_clients():
         clients = roblox_installer_manager.get_installed_clients()
         return jsonify({'success': True, 'clients': clients})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get available versions", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get available versions'}), 500
 
 @app.route('/api/installer/start', methods=['POST'])
 def start_installer_download():
@@ -5380,7 +5446,8 @@ def start_installer_download():
         res = roblox_installer_manager.start_installation(version_entry, client_id, overwrite)
         return jsonify(res)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get installer clients", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get installer clients'}), 500
 
 @app.route('/api/installer/status', methods=['GET'])
 def get_installer_status():
@@ -5388,7 +5455,8 @@ def get_installer_status():
         status_info = roblox_installer_manager.get_status()
         return jsonify({'success': True, 'status': status_info})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to start installer download", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to start installer download'}), 500
 
 @app.route('/api/installer/weao-exploits', methods=['GET'])
 def get_installer_weao_exploits():
@@ -5396,7 +5464,8 @@ def get_installer_weao_exploits():
         exploits = roblox_installer_manager.get_weao_exploits()
         return jsonify({'success': True, 'exploits': exploits})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get installer status", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get installer status'}), 500
 
 @app.route('/api/updater/check', methods=['GET'])
 def check_app_updates():
@@ -5420,7 +5489,8 @@ def check_app_updates():
         )
         return jsonify(res)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get WEAO exploits", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get WEAO exploits'}), 500
 
 @app.route('/api/updater/download', methods=['POST'])
 def start_app_update_download():
@@ -5438,7 +5508,8 @@ def start_app_update_download():
         )
         return jsonify(res)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to check for app updates", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to check for app updates'}), 500
 
 @app.route('/api/updater/status', methods=['GET'])
 def get_app_update_status():
@@ -5446,7 +5517,8 @@ def get_app_update_status():
         status_info = updater_manager.get_status()
         return jsonify({'success': True, 'status': status_info})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to start app update download", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to start app update download'}), 500
 
 @app.route('/api/updater/apply', methods=['POST'])
 def apply_app_update():
@@ -5454,7 +5526,8 @@ def apply_app_update():
         res = updater_manager.apply_update()
         return jsonify(res)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get app update status", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get app update status'}), 500
 
 @app.route('/api/updater/releases', methods=['GET'])
 def get_app_releases():
@@ -5463,7 +5536,8 @@ def get_app_releases():
         releases = updater_manager.get_all_releases(force=force)
         return jsonify({'success': True, 'releases': releases})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e), 'releases': []}), 500
+        log_detailed_error("Failed to get app releases", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get app releases', 'releases': []}), 500
 
 @app.route('/api/system/logs', methods=['GET'])
 def get_system_logs():
@@ -5487,7 +5561,8 @@ def handle_roblox_global_settings():
                 return jsonify(result)
             return jsonify(result), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to apply app update", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to apply app update'}), 500
 
 @app.route('/api/roblox/ixp-settings', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 def handle_roblox_ixp_settings():
@@ -5509,7 +5584,8 @@ def handle_roblox_ixp_settings():
             result = roblox_ixp_settings_manager.reset_settings()
             return jsonify(result)
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to handle Roblox global settings", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to handle Roblox global settings'}), 500
 
 @app.route('/api/roblox/fastflags', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 def handle_roblox_fastflags():
@@ -5541,7 +5617,8 @@ def handle_roblox_fastflags():
                 return jsonify({'success': True, 'message': 'FastFlags saved successfully.'})
             return jsonify({'success': False, 'error': 'Failed to save FastFlags.'}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to handle Roblox device preferences", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to handle Roblox device preferences'}), 500
 
 @app.route('/api/roblox/fastflags/validate', methods=['POST', 'OPTIONS'])
 def validate_roblox_fastflag():
@@ -5555,7 +5632,8 @@ def validate_roblox_fastflag():
         valid, message = manager.validate_flag_name(flag_name)
         return jsonify({'success': True, 'valid': valid, 'message': message})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to handle FastFlags", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to handle FastFlags'}), 500
 
 @app.route('/api/roblox/fastflags/backup', methods=['POST', 'OPTIONS'])
 def backup_roblox_fastflags():
@@ -5569,7 +5647,8 @@ def backup_roblox_fastflags():
             return jsonify({'success': True, 'message': 'FastFlags backup created successfully.'})
         return jsonify({'success': False, 'error': 'Failed to backup FastFlags.'}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to validate FastFlag", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to validate FastFlag'}), 500
 
 @app.route('/api/roblox/fastflags/restore', methods=['POST', 'OPTIONS'])
 def restore_roblox_fastflags():
@@ -5583,7 +5662,8 @@ def restore_roblox_fastflags():
             return jsonify({'success': True, 'message': 'FastFlags restored from backup successfully.'})
         return jsonify({'success': False, 'error': 'Failed to restore FastFlags.'}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to backup FastFlags", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to backup FastFlags'}), 500
 
 @app.route('/api/roblox/fastflags/reset', methods=['POST', 'OPTIONS'])
 def reset_roblox_fastflags():
@@ -5597,7 +5677,8 @@ def reset_roblox_fastflags():
             return jsonify({'success': True, 'message': 'FastFlags reset to default successfully.'})
         return jsonify({'success': False, 'error': 'Failed to reset FastFlags.'}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to restore FastFlags", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to restore FastFlags'}), 500
 
 @app.route('/api/webhook/config', methods=['GET', 'OPTIONS'])
 def get_webhook_config():
@@ -5610,7 +5691,8 @@ def get_webhook_config():
             'history': webhook_manager.get_history()
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to reset FastFlags", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to reset FastFlags'}), 500
 
 @app.route('/api/webhook/config', methods=['POST', 'OPTIONS'])
 def save_webhook_config():
@@ -5625,7 +5707,8 @@ def save_webhook_config():
             'message': 'Webhook settings saved successfully.'
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get webhook configuration", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get webhook configuration'}), 500
 
 @app.route('/api/webhook/test', methods=['POST', 'OPTIONS'])
 def test_webhook():
@@ -5637,7 +5720,8 @@ def test_webhook():
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to save webhook configuration", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to save webhook configuration'}), 500
 
 @app.route('/api/webhook/send', methods=['POST', 'OPTIONS'])
 def send_webhook_custom():
@@ -5654,7 +5738,8 @@ def send_webhook_custom():
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to test webhook", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to test webhook'}), 500
 
 @app.route('/api/webhook/test-screenshot', methods=['POST', 'OPTIONS'])
 def test_webhook_screenshot():
@@ -5668,7 +5753,8 @@ def test_webhook_screenshot():
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to send webhook", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to send webhook'}), 500
 
 @app.route('/api/webhook/test-instances', methods=['POST', 'OPTIONS'])
 def test_webhook_instances():
@@ -5680,7 +5766,8 @@ def test_webhook_instances():
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to send screenshot webhook", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to send screenshot webhook'}), 500
 
 @app.route('/api/rblxswap/status', methods=['GET', 'OPTIONS'])
 def get_rblxswap_status():
@@ -5697,7 +5784,8 @@ def get_rblxswap_status():
             'anticheats': anticheats
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to send instances webhook", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to send instances webhook'}), 500
 
 @app.route('/api/rblxswap/clean', methods=['POST', 'OPTIONS'])
 def clean_rblx_traces():
@@ -5742,8 +5830,9 @@ def clean_rblx_traces():
             add_backend_log(f"[TraceCleaner] {l.get('msg', '')}", level=lvl, category='spoofer')
         return jsonify(res)
     except Exception as e:
-        add_backend_log(f"[TraceCleaner] Error: {str(e)}", level='error', category='spoofer')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to clean Roblox traces", exc=e)
+        add_backend_log("[TraceCleaner] Trace cleanup failed", level='error', category='spoofer')
+        return jsonify({'success': False, 'error': 'Failed to clean Roblox traces'}), 500
 
 @app.route('/api/rblxswap/clean-status', methods=['GET', 'OPTIONS'])
 def get_rblxswap_clean_status():
@@ -5752,7 +5841,8 @@ def get_rblxswap_clean_status():
     try:
         return jsonify({'success': True, 'status': roblox_swap_manager.clean_status})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get hardware status", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get hardware status'}), 500
 
 @app.route('/api/rblxswap/adapters', methods=['GET', 'OPTIONS'])
 def get_rblxswap_adapters():
@@ -5762,7 +5852,8 @@ def get_rblxswap_adapters():
         adapters = roblox_swap_manager.get_adapters()
         return jsonify({'success': True, 'adapters': adapters})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get cleaner status", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get cleaner status'}), 500
 
 @app.route('/api/rblxswap/spoof-mac', methods=['POST', 'OPTIONS'])
 def spoof_rblx_mac():
@@ -5803,8 +5894,9 @@ def spoof_rblx_mac():
             add_backend_log(f"[Spoofer] Spoofed MAC for {adapter_name or adapter_desc}: {new_mac}", level='info', category='spoofer')
             return jsonify({'success': ok, 'mac': new_mac})
     except Exception as e:
-        add_backend_log(f"[Spoofer] Spoof MAC error: {str(e)}", level='error', category='spoofer')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to spoof MAC address", exc=e)
+        add_backend_log("[Spoofer] MAC spoof failed", level='error', category='spoofer')
+        return jsonify({'success': False, 'error': 'Failed to spoof MAC address'}), 500
 
 @app.route('/api/rblxswap/reset-mac', methods=['POST', 'OPTIONS'])
 def reset_rblx_mac():
@@ -5838,7 +5930,8 @@ def reset_rblx_mac():
             add_backend_log(f"[Spoofer] Reset MAC address for {adapter_name or adapter_desc}", level='info', category='spoofer')
             return jsonify({'success': ok})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get network adapters", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get network adapters'}), 500
 
 @app.route('/api/rblxswap/restart-adapter', methods=['POST', 'OPTIONS'])
 def restart_rblx_adapter():
@@ -5853,7 +5946,8 @@ def restart_rblx_adapter():
         add_backend_log(f"[Spoofer] Cycled network adapter {adapter_name}", level='info', category='spoofer')
         return jsonify({'success': ok})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to reset MAC address", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to reset MAC address'}), 500
 
 @app.route('/api/rblxswap/dhcp-refresh', methods=['POST', 'OPTIONS'])
 def refresh_rblx_dhcp():
@@ -5864,7 +5958,8 @@ def refresh_rblx_dhcp():
         add_backend_log(f"[Spoofer] Refreshed DHCP IP address lease", level='info', category='spoofer')
         return jsonify({'success': ok})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to restart network adapter", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to restart network adapter'}), 500
 
 @app.route('/api/rblxswap/spoof-hwid', methods=['POST', 'OPTIONS'])
 def spoof_rblx_hwid():
@@ -5882,8 +5977,9 @@ def spoof_rblx_hwid():
                 add_backend_log(f"[Spoofer] Failed rotating {r.get('name')}: {r.get('error')}", level='warning', category='spoofer')
         return jsonify({'success': any(r.get('ok', False) for r in results), 'results': results})
     except Exception as e:
-        add_backend_log(f"[Spoofer] HWID spoof error: {str(e)}", level='error', category='spoofer')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to spoof HWID", exc=e)
+        add_backend_log("[Spoofer] HWID spoof failed", level='error', category='spoofer')
+        return jsonify({'success': False, 'error': 'Failed to spoof HWID'}), 500
 
 @app.route('/api/rblxswap/restore', methods=['POST', 'OPTIONS'])
 def restore_rblx_identifiers():
@@ -5898,8 +5994,9 @@ def restore_rblx_identifiers():
         add_backend_log(f"[Spoofer] Restored genuine hardware identifiers from snapshot", level='info', category='spoofer')
         return jsonify(res)
     except Exception as e:
-        add_backend_log(f"[Spoofer] Restore identifiers error: {str(e)}", level='error', category='spoofer')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to restore identifiers", exc=e)
+        add_backend_log("[Spoofer] Restore identifiers failed", level='error', category='spoofer')
+        return jsonify({'success': False, 'error': 'Failed to restore hardware identifiers'}), 500
 
 @app.route('/api/rblxswap/restore-point', methods=['POST', 'OPTIONS'])
 def create_rblx_restore_point():
@@ -5912,8 +6009,9 @@ def create_rblx_restore_point():
         add_backend_log(f"[Spoofer] System restore point requested: {desc}", level='info', category='spoofer')
         return jsonify(res)
     except Exception as e:
-        add_backend_log(f"[Spoofer] System restore point error: {str(e)}", level='error', category='spoofer')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to create system restore point", exc=e)
+        add_backend_log("[Spoofer] System restore point failed", level='error', category='spoofer')
+        return jsonify({'success': False, 'error': 'Failed to create system restore point'}), 500
 
 @app.route('/api/rblxswap/spoof-all', methods=['POST', 'OPTIONS'])
 def spoof_rblx_all():
@@ -5951,8 +6049,9 @@ def spoof_rblx_all():
             add_backend_log(f"[Spoofer] Hardware & MAC spoof failed: {res.get('error')}", level='warning', category='spoofer')
         return jsonify(res)
     except Exception as e:
-        add_backend_log(f"[Spoofer] Unified spoof error: {str(e)}", level='error', category='spoofer')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Unified spoof operation failed", exc=e)
+        add_backend_log("[Spoofer] Unified spoof failed", level='error', category='spoofer')
+        return jsonify({'success': False, 'error': 'Unified spoof operation failed'}), 500
 
 if __name__ == '__main__':
     import socket

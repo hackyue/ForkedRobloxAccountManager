@@ -162,11 +162,12 @@ class WebhookManager:
                     self._add_history(title, err)
                     return False, err
         except urllib.error.HTTPError as e:
-            err = f"HTTP Error {e.code}: {e.reason}"
+            err = f"HTTP Error {e.code}"
             self._add_history(title, err)
             return False, err
         except Exception as e:
-            err = str(e)
+            print(f"[ERROR] Webhook delivery failed: {e}")
+            err = "Webhook delivery failed"
             self._add_history(title, err)
             return False, err
 
@@ -271,7 +272,8 @@ class WebhookManager:
                     self._add_history("Monitor Screenshot", err)
                     return False, err
         except Exception as e:
-            err = str(e)
+            print(f"[ERROR] Screenshot webhook delivery failed: {e}")
+            err = "Failed to send screenshot webhook"
             self._add_history("Monitor Screenshot", err)
             return False, err
         finally:

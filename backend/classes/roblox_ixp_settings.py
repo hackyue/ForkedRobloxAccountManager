@@ -39,12 +39,13 @@ class RobloxIxpSettingsManager:
                     "settings": {}
                 }
         except Exception as e:
+            print(f"[ERROR] Failed to load IxpSettings: {e}")
             return {
                 "success": False,
                 "exists": True,
                 "file_path": self.file_path,
                 "settings": {},
-                "error": str(e)
+                "error": "Failed to load device preferences"
             }
 
     def save_settings(self, new_settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -58,9 +59,10 @@ class RobloxIxpSettingsManager:
                 "message": "Device Preferences (IxpSettings.json) saved successfully!"
             }
         except Exception as e:
+            print(f"[ERROR] Failed to save IxpSettings: {e}")
             return {
                 "success": False,
-                "error": f"Failed to save IxpSettings.json: {e}"
+                "error": "Failed to save device preferences"
             }
 
     def reset_settings(self) -> Dict[str, Any]:
@@ -72,9 +74,10 @@ class RobloxIxpSettingsManager:
                 "message": "IxpSettings.json reset successfully."
             }
         except Exception as e:
+            print(f"[ERROR] Failed to reset IxpSettings: {e}")
             return {
                 "success": False,
-                "error": f"Failed to reset IxpSettings.json: {e}"
+                "error": "Failed to reset device preferences"
             }
 
 roblox_ixp_settings_manager = RobloxIxpSettingsManager()

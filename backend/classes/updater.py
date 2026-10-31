@@ -384,8 +384,8 @@ class AppUpdaterManager:
             with self.lock:
                 self.download_state["active"] = False
                 self.download_state["success"] = False
-                self.download_state["error"] = str(e)
-                self.download_state["status"] = f"Download failed: {e}"
+                self.download_state["error"] = "Download failed"
+                self.download_state["status"] = "Download failed"
 
     def apply_update(self) -> Dict[str, Any]:
         with self.lock:
@@ -491,6 +491,7 @@ del /f /q "%~f0" >nul
             return {"success": True, "message": "Updater launched. Application will now update and restart."}
 
         except Exception as e:
-            return {"success": False, "error": f"Failed to apply update: {e}"}
+            print(f"[ERROR] Failed to apply update: {e}")
+            return {"success": False, "error": "Failed to apply update"}
 
 updater_manager = AppUpdaterManager()

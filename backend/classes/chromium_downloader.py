@@ -345,13 +345,13 @@ class ChromiumDownloaderManager:
                 self.download_state["version"] = version
 
         except Exception as exc:
-            error_msg = str(exc)
+            print(f"[ERROR] Chromium installation failed: {exc}")
             with self.lock:
                 self.download_state["active"] = False
-                self.download_state["status"] = f"Installation failed: {error_msg}"
+                self.download_state["status"] = "Installation failed"
                 self.download_state["progress"] = 0
                 self.download_state["success"] = False
-                self.download_state["error"] = error_msg
+                self.download_state["error"] = "Installation failed"
         finally:
             if staging_dir.exists():
                 try:
@@ -390,7 +390,8 @@ class ChromiumDownloaderManager:
                 try:
                     shutil.rmtree(root)
                 except Exception as e:
-                    errors.append(f"Failed to remove chromium directory: {e}")
+                    print(f"[ERROR] Failed to remove chromium directory: {e}")
+                    errors.append("Failed to remove chromium directory")
             
             if staging_dir.exists():
                 try:

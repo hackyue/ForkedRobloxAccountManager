@@ -227,13 +227,14 @@ class RobloxGlobalSettingsManager:
                 "specs": specs
             }
         except Exception as e:
+            print(f"[ERROR] Error parsing XML: {e}")
             return {
                 "exists": True,
                 "file_path": self.settings_path,
                 "is_roblox_running": self.is_roblox_running(),
                 "settings": values,
                 "specs": specs,
-                "error": f"Error parsing XML: {e}"
+                "error": "Error parsing XML"
             }
 
     def save_settings(self, new_settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -267,9 +268,10 @@ class RobloxGlobalSettingsManager:
                 xml_tree = ET.ElementTree(root_el)
                 xml_tree.write(self.settings_path, encoding="unicode", xml_declaration=False)
             except Exception as e:
+                print(f"[ERROR] Failed to initialize settings file: {e}")
                 if app_storage_subset:
                     return {"success": True, "message": "Global Roblox settings saved successfully!"}
-                return {"success": False, "error": f"Failed to initialize settings file: {e}"}
+                return {"success": False, "error": "Failed to initialize settings file"}
 
         try:
             xml_tree = ET.parse(self.settings_path)
@@ -287,6 +289,7 @@ class RobloxGlobalSettingsManager:
             xml_tree.write(self.settings_path, encoding="unicode", xml_declaration=False)
             return {"success": True, "message": "Global Roblox settings saved successfully!"}
         except Exception as e:
-            return {"success": False, "error": f"Failed to save settings: {e}"}
+            print(f"[ERROR] Failed to save settings: {e}")
+            return {"success": False, "error": "Failed to save settings"}
 
 roblox_global_settings_manager = RobloxGlobalSettingsManager()

@@ -2359,8 +2359,8 @@ class RobloxAPI:
                     return True, "Roblox launched successfully"
                 return True
             except Exception as e:
-                err_msg = "Roblox isn't installed" if isinstance(e, FileNotFoundError) or "isn't installed" in str(e).lower() or "protocol handler" in str(e).lower() else f"Failed to launch Roblox: {e}"
-                print(f"[ERROR] {err_msg}")
+                err_msg = "Roblox isn't installed" if isinstance(e, FileNotFoundError) or "isn't installed" in str(e).lower() or "protocol handler" in str(e).lower() else "Failed to launch Roblox"
+                print(f"[ERROR] Failed to launch Roblox: {e}")
                 if return_details:
                     return False, err_msg
                 return False
@@ -2519,8 +2519,8 @@ class RobloxAPI:
                 return True, "Roblox launched successfully"
             return True
         except Exception as e:
-            err_msg = "Roblox isn't installed" if isinstance(e, FileNotFoundError) or "isn't installed" in str(e).lower() or "protocol handler" in str(e).lower() else f"Failed to launch Roblox: {e}"
-            print(f"[ERROR] {err_msg}")
+            err_msg = "Roblox isn't installed" if isinstance(e, FileNotFoundError) or "isn't installed" in str(e).lower() or "protocol handler" in str(e).lower() else "Failed to launch Roblox"
+            print(f"[ERROR] Failed to launch Roblox: {e}")
             if return_details:
                 return False, err_msg
             return False

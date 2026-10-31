@@ -202,7 +202,8 @@ try {{
             )
         except Exception as e:
             self._cleanup_temp_files([tmp_out, tmp_err])
-            return False, f"Elevation execution failed: {e}"
+            print(f"[ERROR] Elevation execution failed: {e}")
+            return False, "Elevation execution failed"
 
         if os.path.exists(tmp_err):
             try:
@@ -638,7 +639,8 @@ try {{
             err_msg = parsed.get("error") if isinstance(parsed, dict) else "Sector write failed"
             return {"drive": drv, "ok": False, "error": err_msg or "Sector write failed"}
         except Exception as e:
-            return {"drive": drv, "ok": False, "error": str(e)}
+            print(f"[ERROR] Failed to update volume serial: {e}")
+            return {"drive": drv, "ok": False, "error": "Failed to update volume serial"}
 
     def restore_volume_serial(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         if not entry or not entry.get("sector"):
@@ -646,7 +648,8 @@ try {{
         try:
             sector_bytes = base64.b64decode(re.sub(r"\s+", "", entry["sector"]))
         except Exception as e:
-            return {"drive": entry.get("drive"), "restored": False, "reboot": False, "reason": f"Corrupt base64: {e}"}
+            print(f"[ERROR] Failed decoding backup volume sector: {e}")
+            return {"drive": entry.get("drive"), "restored": False, "reboot": False, "reason": "Corrupt base64 backup data"}
 
         if not self._is_boot_sector(sector_bytes):
             return {"drive": entry.get("drive"), "restored": False, "reboot": False, "reason": "Backup data is not a valid boot sector"}
@@ -996,7 +999,8 @@ ConvertTo-Json -Compress @{
                         results.append({"name": "volumeSerial", "value": vol_data["serial"], "ok": False, "error": v_info.get("error") or "Failed sector write", "reboot": False})
             return results
         except Exception as e:
-            return [{"name": "spoof", "ok": False, "error": f"Failed parsing elevated output: {e}"}]
+            print(f"[ERROR] Failed parsing elevated output: {e}")
+            return [{"name": "spoof", "ok": False, "error": "Failed parsing elevated output"}]
 
     def restore_identifiers(self, guids: bool = True, mac: bool = True, volume: bool = True) -> Dict[str, Any]:
         backup = self.read_backup()
@@ -1032,8 +1036,9 @@ ConvertTo-Json -Compress @{
                             self.cycle_adapter(name)
                         results["adapters"].append({"name": name or desc, "restored": True})
                     except Exception as e:
-                        results["adapters"].append({"name": name or desc, "restored": False, "reason": str(e)})
-                        results["errors"].append(f"{name or desc}: {e}")
+                        print(f"[ERROR] Failed to restore adapter MAC: {e}")
+                        results["adapters"].append({"name": name or desc, "restored": False, "reason": "Failed to restore adapter MAC"})
+                        results["errors"].append(f"{name or desc}: Failed to restore adapter MAC")
 
             if volume and backup.get("volume"):
                 vol_res = self.restore_volume_serial(backup["volume"])
@@ -1178,7 +1183,8 @@ ConvertTo-Json -Compress @{
                     pass
             return {"ok": all_clean, **results}
         except Exception as e:
-            return {"ok": False, "reason": f"Failed parsing restore output: {e}", "errors": [str(e)]}
+            print(f"[ERROR] Failed parsing restore output: {e}")
+            return {"ok": False, "reason": "Failed parsing restore output", "errors": ["Failed parsing restore output"]}
 
     def spoof_all(
         self,
@@ -1423,7 +1429,8 @@ ConvertTo-Json -Compress @{
                 }
             return {"success": False, "error": "Invalid response format from elevated script"}
         except Exception as e:
-            return {"success": False, "error": f"Failed parsing elevated output: {e}"}
+            print(f"[ERROR] Failed parsing elevated output: {e}")
+            return {"success": False, "error": "Failed parsing elevated output"}
 
     def _discover_all_bootstrappers(self, local_app_data: Optional[str] = None, app_data: Optional[str] = None) -> List[Dict[str, Any]]:
         bootstrappers = []
@@ -1747,7 +1754,8 @@ ConvertTo-Json -Compress @{
                             f.write(raw_bytes)
                         logs.append({"level": "success", "msg": f"Restored {label}: {os.path.basename(path_str)}"})
                     except Exception as e:
-                        logs.append({"level": "warn", "msg": f"Failed restoring {label}: {e}"})
+                        print(f"[ERROR] Failed restoring {label}: {e}")
+                        logs.append({"level": "warn", "msg": f"Failed restoring {label}"})
 
                 logs.append({"level": "success", "msg": "macOS Roblox trace cleanup completed successfully"})
                 set_progress(100, "Roblox trace cleanup completed")
@@ -1979,7 +1987,8 @@ ConvertTo-Json -Compress @{
                         f.write(item["data"])
                     logs.append({"level": "success", "msg": f"Restored Global Client Settings: {os.path.basename(item['path'])}"})
                 except Exception as e:
-                    logs.append({"level": "warn", "msg": f"Failed restoring Global Client Settings {os.path.basename(item['path'])}: {e}"})
+                    print(f"[ERROR] Failed restoring Global Client Settings: {e}")
+                    logs.append({"level": "warn", "msg": f"Failed restoring Global Client Settings {os.path.basename(item['path'])}"})
 
             for item in preserved_fflags:
                 try:
@@ -1988,7 +1997,8 @@ ConvertTo-Json -Compress @{
                         f.write(item["data"])
                     logs.append({"level": "success", "msg": f"Restored FastFlags: {os.path.basename(item['path'])}"})
                 except Exception as e:
-                    logs.append({"level": "warn", "msg": f"Failed restoring FastFlags {os.path.basename(item['path'])}: {e}"})
+                    print(f"[ERROR] Failed restoring FastFlags: {e}")
+                    logs.append({"level": "warn", "msg": f"Failed restoring FastFlags {os.path.basename(item['path'])}"})
 
             for item in preserved_app_settings:
                 try:
@@ -1997,17 +2007,19 @@ ConvertTo-Json -Compress @{
                         f.write(item["data"])
                     logs.append({"level": "success", "msg": f"Restored App Settings: {os.path.basename(item['path'])}"})
                 except Exception as e:
-                    logs.append({"level": "warn", "msg": f"Failed restoring App Settings {os.path.basename(item['path'])}: {e}"})
+                    print(f"[ERROR] Failed restoring App Settings: {e}")
+                    logs.append({"level": "warn", "msg": f"Failed restoring App Settings {os.path.basename(item['path'])}"})
 
             logs.append({"level": "success", "msg": "Roblox trace cleanup completed successfully"})
             set_progress(100, "Roblox trace cleanup completed")
             return {"success": True, "logs": logs}
         except Exception as e:
-            logs.append({"level": "error", "msg": f"Cleanup encountered an error: {e}"})
+            print(f"[ERROR] Cleanup encountered an error: {e}")
+            logs.append({"level": "error", "msg": "Cleanup encountered an error"})
             self.clean_status = {
                 "active": False,
                 "progress": 100,
-                "step": f"Error: {e}",
+                "step": "Error: Cleanup encountered an error",
                 "logs": list(logs)
             }
-            return {"success": False, "error": str(e), "logs": logs}
+            return {"success": False, "error": "Cleanup encountered an error", "logs": logs}

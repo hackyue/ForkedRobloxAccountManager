@@ -2550,7 +2550,7 @@ class RobloxAccountManager:
         except Exception as e:
             print(f"[ERROR] Failed to launch browser: {e}")
             if return_details:
-                return False, f"Failed to launch browser: {e}"
+                return False, "Failed to launch browser"
             return False
 
     def launch_home_app(self, username, version=None, enable_debug=False, return_details=False):
