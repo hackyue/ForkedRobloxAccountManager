@@ -67,15 +67,29 @@
 > **No Python or Node.js setup required!** Download the installer bundle and install.
 
 1. Go to the [Releases Page](https://github.com/hackyue/ForkedRobloxAccountManager/releases).
-2. Download the installer bundle from the latest release:
-   - **`FRAM_<version>_x64-setup.exe`** (NSIS Installer - Recommended)
-   - or **`FRAM_<version>_x64_en-US.msi`** (Windows MSI Package)
-3. Run the installer and complete the setup.
-4. Launch **Forked Roblox Account Manager** from your Start Menu or Desktop!
+2. Download the installer bundle for your operating system:
+   - **Windows:**
+     - **`FRAM_<version>_x64-setup.exe`** (NSIS Installer - Recommended)
+     - or **`FRAM_<version>_x64_en-US.msi`** (Windows MSI Package)
+   - **macOS:**
+     - **`FRAM_<version>_aarch64.dmg`** (Apple Silicon M1/M2/M3/M4)
+     - or **`FRAM.app.tar.gz`** (Portable App bundle)
+3. Install the application:
+   - **Windows:** Run the `.exe` or `.msi` and complete the setup.
+   - **macOS:** Open the `.dmg` and drag **FRAM** into your **Applications** folder.
+4. Launch **Forked Roblox Account Manager**!
 
 > [!NOTE]
-> **System Requirements**: Windows 10/11 with Google Chrome, Edge, Firefox, Waterfox, or Chromium installed.
-> If Windows Defender shows a SmartScreen warning, click **"More info" → "Run anyway"**.
+> **Windows Notes:** Windows 10/11 with Chrome, Edge, Firefox, Waterfox, or Chromium installed. If Windows Defender SmartScreen shows a warning, click **"More info" → "Run anyway"**.
+
+> [!IMPORTANT]
+> **macOS Notes (Gatekeeper / "App is damaged"):**  
+> Because FRAM is free and open-source without an expensive Apple Developer ID certificate, macOS may show a warning saying *"FRAM is damaged and can't be opened"*.  
+> To fix this in seconds, open **Terminal** and run:
+> ```bash
+> xattr -cr /Applications/FRAM.app
+> ```
+> Then open FRAM normally. You will only ever need to run this command once after installing.
 
 ---
 
@@ -100,20 +114,21 @@
 
 3. **Start Development Server**:
 
-   **PowerShell**:
-   ```powershell
-   .\start-tauri-dev.ps1
+   **macOS / Linux / Windows (Cross-Platform)**:
+   ```bash
+   npm run start
    ```
 
-   **Command Prompt**:
-   ```cmd
-   .\start-tauri-dev.bat
-   ```
+   **Or using native scripts**:
+   - **PowerShell (Windows):** `.\start-tauri-dev.ps1`
+   - **Command Prompt (Windows):** `.\start-tauri-dev.bat`
+   - **Bash (macOS/Linux):** `./start-tauri-dev.sh`
 
 4. **Build Release Bundle**:
-   ```cmd
-   .\build-release.bat
+   ```bash
+   npm run release
    ```
+   *(Or run `.\build-release.bat` on Windows)*
 
 
 ---
@@ -171,7 +186,12 @@ Forked Roblox Account Manager v3 uses **AES-256-GCM** encryption to protect acco
 <details>
 <summary><b>Q: Where is my account data stored?</b></summary>
 <br>
-<b>A:</b> Application data (accounts, saved games, settings, VIP servers) is stored locally in <code>%LOCALAPPDATA%\Forked Account Manager\data\</code> (or in the directory configured via the <code>FRAM_APP_DIR</code> environment variable).
+<b>A:</b> Application data (accounts, saved games, settings, VIP servers) is stored locally:
+<ul>
+  <li><b>Windows:</b> <code>%LOCALAPPDATA%\Forked Account Manager\data\</code></li>
+  <li><b>macOS:</b> <code>~/Library/Application Support/Forked Account Manager/data/</code></li>
+</ul>
+(Or in the custom directory configured via the <code>FRAM_APP_DIR</code> environment variable).
 </details>
 
 <details>
@@ -179,13 +199,13 @@ Forked Roblox Account Manager v3 uses **AES-256-GCM** encryption to protect acco
 <br>
 <b>A:</b> The easiest way is using the built-in <b>Backup & Import</b> feature:
 <ol>
-  <li>On your current PC, navigate to <b>Settings → Data</b> and click <b>Backup</b> under <i>Backup & Import</i> to save your <code>accounts.json</code> file.</li>
+  <li>On your current computer, navigate to <b>Settings → Data</b> and click <b>Backup</b> under <i>Backup & Import</i> to save your <code>accounts.json</code> file.</li>
   <li>Transfer the exported JSON file to your new computer.</li>
-  <li>Install FRAM on the new PC, go to <b>Settings → Data</b>, click <b>Import</b>, and select your backup file.</li>
+  <li>Install FRAM on the new machine, go to <b>Settings → Data</b>, click <b>Import</b>, and select your backup file.</li>
 </ol>
-Alternatively, you can manually copy the application data folder at <code>%LOCALAPPDATA%\Forked Account Manager\data\</code> to the same path on your new PC.
+Alternatively, you can manually copy the application data folder to the corresponding path on your new machine.
 <br><br>
-<b>Important:</b> If you use <b>Hardware Encryption</b> and manually copy the folder, the data is tied to your original machine's hardware ID and cannot be unlocked on another PC. Using the <b>Backup & Import</b> feature (or switching to <b>Password Encryption</b>) ensures your accounts transfer smoothly.
+<b>Important:</b> If you use <b>Hardware Encryption</b> and manually copy the folder, the data is tied to your original machine's hardware ID and cannot be unlocked on another computer. Using the <b>Backup & Import</b> feature (or switching to <b>Password Encryption</b>) ensures your accounts transfer smoothly across Windows and macOS.
 </details>
 
 <details>
@@ -195,9 +215,14 @@ Alternatively, you can manually copy the application data folder at <code>%LOCAL
 </details>
 
 <details>
-<summary><b>Q: Why does Windows Defender or SmartScreen show a warning?</b></summary>
+<summary><b>Q: Why does Windows SmartScreen or macOS Gatekeeper show a warning?</b></summary>
 <br>
-<b>A:</b> Windows SmartScreen often displays warnings for newly released, open-source executables that are not signed with a commercial certificate. This is a false positive. You can safely proceed by clicking <b>"More info" → "Run anyway"</b>. The complete source code is open-source and can be inspected or compiled from source.
+<b>A:</b>
+<ul>
+  <li><b>Windows:</b> SmartScreen may display a warning for newly released, open-source binaries that aren't signed with an expensive certificate. Click <b>"More info" → "Run anyway"</b>.</li>
+  <li><b>macOS:</b> Gatekeeper may say <i>"FRAM is damaged and can't be opened"</i> because it is unnotarized. Open Terminal and run <code>xattr -cr /Applications/FRAM.app</code> to allow it.</li>
+</ul>
+The complete source code is 100% open-source and can be inspected or compiled from source at any time.
 </details>
 
 ---
