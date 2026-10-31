@@ -2202,25 +2202,38 @@ class RobloxAPI:
                             allowed_launchers[c_path.lower()] = (c_path, "RobloxPlayerLauncher", False)
                             allowed_launchers[os.path.realpath(c_path).lower()] = (c_path, "RobloxPlayerLauncher", False)
 
-        def _launch_with_launcher(target_url, context):
+        def _launch_with_launcher(exe_path, target_url, context, req_player_flag=False, disp_name=None):
             """Launch via the resolved launcher executable with shared logging."""
-            if not launcher_exe or not os.path.isfile(launcher_exe):
+            if not exe_path or not os.path.isfile(exe_path):
+                return
+            base_exe = os.path.basename(exe_path).lower()
+            allowed_launcher_names = {
+                "bloxstrap.exe",
+                "fishstrap.exe",
+                "voidstrap.exe",
+                "froststrap.exe",
+                "exploitstrap.exe",
+                "robloxplayerlauncher.exe",
+            }
+            if base_exe not in allowed_launcher_names:
                 return
             if not RobloxAPI._is_strict_roblox_launch_url(target_url):
                 return
-            import shlex
-            command = [str(launcher_exe)]
-            if launcher_requires_player_flag:
+            clean_url = str(target_url).strip()
+            if not clean_url.startswith("roblox-player:"):
+                return
+            command = [exe_path]
+            if req_player_flag:
                 command.append("-player")
-            command.append(shlex.quote(str(target_url)))
+            command.append(clean_url)
             subprocess.Popen(
                 command,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **RobloxAPI._subprocess_no_window_kwargs(),
             )
-            launcher_display = launcher_name or os.path.basename(launcher_exe)
-            _log_debug(f"Launching {context} via {launcher_display} with URL: {target_url}")
+            launcher_display = disp_name or base_exe
+            _log_debug(f"Launching {context} via {launcher_display} with URL: {clean_url}")
 
         roblox_exe = None
         effective_path = None
@@ -2294,7 +2307,13 @@ class RobloxAPI:
                     )
                     _log_debug(f"Launching Roblox Home on macOS via open -n -a {mac_app_bundle} --args {url}")
                 elif launcher_exe:
-                    _launch_with_launcher(url, "Roblox Home")
+                    _launch_with_launcher(
+                        launcher_exe,
+                        url,
+                        "Roblox Home",
+                        req_player_flag=launcher_requires_player_flag,
+                        disp_name=launcher_name,
+                    )
                 elif using_local_install:
                     try:
                         subprocess.Popen(
@@ -2306,20 +2325,9 @@ class RobloxAPI:
                         )
                         _log_debug(f"Launching Roblox Home via RobloxPlayerBeta.exe with URL arg: {url}")
                     except Exception as exc:
-                        _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to -t flow: {exc}")
-                        launch_args = [
-                            roblox_exe,
-                            "-a", "https://www.roblox.com/Login/Negotiate.ashx",
-                            "-t", auth_ticket,
-                        ]
-                        subprocess.Popen(
-                            launch_args,
-                            cwd=effective_path,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            creationflags=creation_flags
-                        )
-                        _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
+                        _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to protocol launch: {exc}")
+                        if not RobloxAPI._launch_protocol_url(url):
+                            raise
                 elif RobloxAPI._launch_protocol_url(url):
                     _log_debug(f"Launching Roblox Home via protocol URL: {url}")
                 else:
@@ -2454,7 +2462,13 @@ class RobloxAPI:
                 )
                 _log_debug(f"Launching game on macOS via open -n -a {mac_app_bundle} --args {url}")
             elif launcher_exe:
-                _launch_with_launcher(url, "game")
+                _launch_with_launcher(
+                    launcher_exe,
+                    url,
+                    "game",
+                    req_player_flag=launcher_requires_player_flag,
+                    disp_name=launcher_name,
+                )
             else:
                 if using_local_install:
                     try:
@@ -2473,29 +2487,9 @@ class RobloxAPI:
                             return True, "Roblox launched successfully"
                         return True
                     except Exception as exc:
-                        _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to -t flow: {exc}")
-                    place_launch_url = place_launch_base
-                    if not RobloxAPI._is_valid_placelauncher_url(place_launch_url):
-                        err = f"Invalid PlaceLauncher URL: '{place_launch_url}'"
-                        print(f"[ERROR] {err}")
-                        if return_details:
-                            return False, err
-                        return False
-                    import shlex
-                    launch_args = [
-                        str(roblox_exe),
-                        "-a", "https://www.roblox.com/Login/Negotiate.ashx",
-                        "-t", shlex.quote(str(auth_ticket)),
-                        "-j", shlex.quote(str(place_launch_url)),
-                    ]
-                    subprocess.Popen(
-                        launch_args,
-                        cwd=effective_path,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=creation_flags
-                    )
-                    _log_debug(f"Launching custom Roblox executable with args: {' '.join(launch_args)}")
+                        _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to protocol launch: {exc}")
+                        if not RobloxAPI._launch_protocol_url(url):
+                            raise
                 elif RobloxAPI._launch_protocol_url(url):
                     _log_debug(f"Launching game via protocol URL: {url}")
                 else:
