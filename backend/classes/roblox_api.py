@@ -2222,12 +2222,12 @@ class RobloxAPI:
             clean_url = str(target_url).strip()
             if not clean_url.startswith("roblox-player:"):
                 return
-            command = [launcher_bin]
             if req_player:
-                command.append("-player")
-            command.append(clean_url)
+                launch_cmd = [launcher_bin, "-player", clean_url]
+            else:
+                launch_cmd = [launcher_bin, clean_url]
             subprocess.Popen(
-                command,
+                launch_cmd,
                 cwd=working_dir,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
