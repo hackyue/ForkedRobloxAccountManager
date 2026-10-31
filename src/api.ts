@@ -378,32 +378,65 @@ class ApiService {
   private _authToken: string | null = null;
   private _tokenPromise: Promise<string> | null = null;
 
-  private async _getAuthToken(): Promise<string> {
+  private async fetchWithTimeout(
+    url: string,
+    options: RequestInit = {},
+    timeoutMs: number = 8000
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async _getAuthToken(forceRefresh: boolean = false): Promise<string> {
+    if (forceRefresh) {
+      this._authToken = null;
+      this._tokenPromise = null;
+    }
     if (this._authToken) return this._authToken;
     if (this._tokenPromise) return this._tokenPromise;
 
     this._tokenPromise = (async () => {
       try {
-        const token = await invoke<string>('get_api_token');
-        if (token) {
-          this._authToken = token;
-          return token;
+        if (!forceRefresh) {
+          try {
+            const token = await invoke<string>('get_api_token');
+            if (token) {
+              this._authToken = token;
+              return token;
+            }
+          } catch (_) { }
         }
-      } catch (_) { }
 
-      try {
-        const resp = await fetch(`${API_BASE_URL}/api/auth/token`);
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.token) {
-            this._authToken = data.token;
-            return data.token;
+        try {
+          const resp = await this.fetchWithTimeout(`${API_BASE_URL}/api/auth/token`, {}, 2500);
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data.token) {
+              this._authToken = data.token;
+              return data.token;
+            }
           }
-        }
-      } catch (_) { }
+        } catch (_) { }
 
-      this._tokenPromise = null;
-      return '';
+        if (forceRefresh) {
+          try {
+            const token = await invoke<string>('get_api_token');
+            if (token) {
+              this._authToken = token;
+              return token;
+            }
+          } catch (_) { }
+        }
+
+        return '';
+      } finally {
+        this._tokenPromise = null;
+      }
     })();
 
     return this._tokenPromise;
@@ -420,6 +453,7 @@ class ApiService {
         ? `api${endpoint}`
         : `api/${endpoint}`;
 
+    let ipcErrorMsg = '';
     try {
       const bodyStr = body ? JSON.stringify(body) : undefined;
       const resStr = await invoke<string>('python_backend_request', {
@@ -430,15 +464,18 @@ class ApiService {
       const parsed = JSON.parse(resStr);
       if (parsed && typeof parsed === 'object' && parsed.error === 'Unauthorized') {
         this._authToken = null;
+      } else {
+        return parsed as T;
       }
-      return parsed as T;
     } catch (error: any) {
-      if (error && String(error.message || error).includes('Unauthorized')) {
+      ipcErrorMsg = String(error?.message || error || '');
+      if (ipcErrorMsg.includes('Unauthorized')) {
         this._authToken = null;
       }
       console.error('Tauri IPC request failed, attempting fetch fallback:', error);
     }
 
+    const fallbackTimeoutMs = ipcErrorMsg ? 2500 : 10000;
     let token = await this._getAuthToken();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -457,15 +494,14 @@ class ApiService {
     }
 
     try {
-      let response = await fetch(`${API_BASE_URL}/${formattedEndpoint}`, options);
+      let response = await this.fetchWithTimeout(`${API_BASE_URL}/${formattedEndpoint}`, options, fallbackTimeoutMs);
 
       if (response.status === 401) {
-        this._authToken = null;
-        token = await this._getAuthToken();
+        token = await this._getAuthToken(true);
         if (token) {
           headers['X-FRAM-Token'] = token;
           options.headers = headers;
-          response = await fetch(`${API_BASE_URL}/${formattedEndpoint}`, options);
+          response = await this.fetchWithTimeout(`${API_BASE_URL}/${formattedEndpoint}`, options, fallbackTimeoutMs);
         }
       }
 
@@ -485,8 +521,18 @@ class ApiService {
 
       return await response.json();
     } catch (error: any) {
+      const fetchErrMsg = error?.message || String(error);
+      if (
+        ipcErrorMsg &&
+        (error?.name === 'AbortError' ||
+          fetchErrMsg.includes('Failed to fetch') ||
+          fetchErrMsg.includes('NetworkError') ||
+          fetchErrMsg.includes('Load failed'))
+      ) {
+        throw new Error(ipcErrorMsg);
+      }
       console.error(`[API Request Exception] ${method} /${formattedEndpoint}:`, {
-        message: error?.message || String(error),
+        message: fetchErrMsg,
         stack: error?.stack,
         endpoint: formattedEndpoint,
         method

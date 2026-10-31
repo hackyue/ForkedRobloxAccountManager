@@ -43,28 +43,61 @@ fn is_valid_backend_exe(path: &Path) -> bool {
     }
 }
 
+fn is_valid_python_exe(path: &Path) -> bool {
+    if let Ok(meta) = fs::metadata(path) {
+        if !meta.is_file() || meta.len() == 0 {
+            return false;
+        }
+        let path_lower = path.to_string_lossy().to_lowercase();
+        if path_lower.contains("windowsapps") && meta.len() < 100_000 {
+            return false;
+        }
+        true
+    } else {
+        false
+    }
+}
+
+fn read_recent_error_log(err_log_path: &Path, log_path: &Path) -> String {
+    for p in &[err_log_path, log_path] {
+        if let Ok(content) = fs::read_to_string(p) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                let lines: Vec<&str> = trimmed.lines().collect();
+                let start = if lines.len() > 6 { lines.len() - 6 } else { 0 };
+                return lines[start..].join(" | ");
+            }
+        }
+    }
+    String::new()
+}
+
 fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     for dir in base_dirs {
-        #[cfg(target_os = "windows")]
-        {
-            let venv_py = dir.join(".venv").join("Scripts").join("python.exe");
-            if venv_py.exists() {
-                candidates.push(venv_py);
-            }
-            let venv_py2 = dir.join("venv").join("Scripts").join("python.exe");
-            if venv_py2.exists() {
-                candidates.push(venv_py2);
-            }
+        let mut check_dirs = vec![dir.clone()];
+        if let Some(parent) = dir.parent() {
+            check_dirs.push(parent.to_path_buf());
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            for venv_name in &[".venv", "venv"] {
-                for bin_name in &["python3", "python"] {
-                    let venv_py = dir.join(venv_name).join("bin").join(bin_name);
-                    if venv_py.exists() && !candidates.contains(&venv_py) {
+        for d in check_dirs {
+            #[cfg(target_os = "windows")]
+            {
+                for venv_name in &[".venv", "venv"] {
+                    let venv_py = d.join(venv_name).join("Scripts").join("python.exe");
+                    if is_valid_python_exe(&venv_py) && !candidates.contains(&venv_py) {
                         candidates.push(venv_py);
+                    }
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                for venv_name in &[".venv", "venv"] {
+                    for bin_name in &["python3", "python"] {
+                        let venv_py = d.join(venv_name).join("bin").join(bin_name);
+                        if is_valid_python_exe(&venv_py) && !candidates.contains(&venv_py) {
+                            candidates.push(venv_py);
+                        }
                     }
                 }
             }
@@ -79,8 +112,45 @@ fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
     for dir in base_dirs {
         for name in &exe_names {
             let path = dir.join(name);
-            if path.exists() && !candidates.contains(&path) {
+            if is_valid_python_exe(&path) && !candidates.contains(&path) {
                 candidates.push(path);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let py_dir = PathBuf::from(&local_app_data).join("Programs").join("Python");
+            if let Ok(entries) = fs::read_dir(&py_dir) {
+                for entry in entries.flatten() {
+                    let py_exe = entry.path().join("python.exe");
+                    if is_valid_python_exe(&py_exe) && !candidates.contains(&py_exe) {
+                        candidates.push(py_exe);
+                    }
+                }
+            }
+        }
+        for env_key in &["ProgramFiles", "ProgramFiles(x86)", "SystemDrive"] {
+            if let Ok(base) = std::env::var(env_key) {
+                let base_path = PathBuf::from(&base);
+                if let Ok(entries) = fs::read_dir(&base_path) {
+                    for entry in entries.flatten() {
+                        let fname = entry.file_name().to_string_lossy().to_lowercase();
+                        if fname.starts_with("python") {
+                            let py_exe = entry.path().join("python.exe");
+                            if is_valid_python_exe(&py_exe) && !candidates.contains(&py_exe) {
+                                candidates.push(py_exe);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(windir) = std::env::var("WINDIR") {
+            let py_launcher = PathBuf::from(windir).join("py.exe");
+            if is_valid_python_exe(&py_launcher) && !candidates.contains(&py_launcher) {
+                candidates.push(py_launcher);
             }
         }
     }
@@ -96,7 +166,7 @@ fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
         for mdir in &mac_dirs {
             for name in &exe_names {
                 let path = PathBuf::from(mdir).join(name);
-                if path.exists() && !candidates.contains(&path) {
+                if is_valid_python_exe(&path) && !candidates.contains(&path) {
                     candidates.push(path);
                 }
             }
@@ -107,7 +177,7 @@ fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
         for dir in std::env::split_paths(&path_var) {
             for name in &exe_names {
                 let path = dir.join(name);
-                if path.exists() && !candidates.contains(&path) {
+                if is_valid_python_exe(&path) && !candidates.contains(&path) {
                     candidates.push(path);
                 }
             }
@@ -115,33 +185,10 @@ fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
     }
 
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        let py_dir = PathBuf::from(&local_app_data).join("Programs").join("Python");
-        if let Ok(entries) = fs::read_dir(&py_dir) {
-            for entry in entries.flatten() {
-                let py_exe = entry.path().join("python.exe");
-                if py_exe.exists() && !candidates.contains(&py_exe) {
-                    candidates.push(py_exe);
-                }
-            }
-        }
         let win_app_py = PathBuf::from(&local_app_data).join("Microsoft").join("WindowsApps").join("python.exe");
-        if let Ok(meta) = fs::metadata(&win_app_py) {
-            if meta.len() > 100_000 && !candidates.contains(&win_app_py) {
-                candidates.push(win_app_py);
-            }
+        if is_valid_python_exe(&win_app_py) && !candidates.contains(&win_app_py) {
+            candidates.push(win_app_py);
         }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        candidates.push(PathBuf::from("python3"));
-        candidates.push(PathBuf::from("python"));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        candidates.push(PathBuf::from("python"));
-        candidates.push(PathBuf::from("py"));
-        candidates.push(PathBuf::from("python3"));
     }
 
     candidates
@@ -223,6 +270,9 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
         return (None, BackendStatus { started: true, reason: "Backend already running".to_string() });
     }
 
+    let stale_token_path = app_dir.join("data").join(".api_token");
+    let _ = fs::remove_file(&stale_token_path);
+
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new("."));
     let cur_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -237,6 +287,13 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
         cur_dir.join("resources"),
         exe_dir.join("resources").join("bin"),
         cur_dir.join("src-tauri").join("resources"),
+        cur_dir.join("..").join("src-tauri").join("resources"),
+        cur_dir.join("dist"),
+        cur_dir.join("..").join("dist"),
+        cur_dir.join("backend").join("dist"),
+        cur_dir.join("..").join("backend").join("dist"),
+        exe_dir.join("..").join("Resources"),
+        exe_dir.join("..").join("Resources").join("resources"),
     ];
 
     let backend_exe_candidates = find_backend_executable(&exe_search_dirs);
@@ -256,14 +313,24 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
             cmd.creation_flags(CREATE_NO_WINDOW);
 
             match cmd.spawn() {
-                Ok(child) => {
-                    for _ in 0..60 {
+                Ok(mut child) => {
+                    let mut crashed = false;
+                    for _ in 0..200 {
                         std::thread::sleep(Duration::from_millis(50));
                         if is_backend_running() {
                             return (Some(child), BackendStatus { started: true, reason: "Backend started successfully (standalone)".to_string() });
                         }
+                        if let Ok(Some(_)) = child.try_wait() {
+                            crashed = true;
+                            break;
+                        }
                     }
-                    return (Some(child), BackendStatus { started: true, reason: "Backend process spawned but health check timed out".to_string() });
+                    if !crashed {
+                        if is_backend_running() {
+                            return (Some(child), BackendStatus { started: true, reason: "Backend started successfully (standalone)".to_string() });
+                        }
+                        let _ = child.kill();
+                    }
                 }
                 Err(_) => continue,
             }
@@ -277,6 +344,10 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
         exe_dir.join("..").join("Resources").join("backend").join("app.py"),
         exe_dir.join("..").join("Resources").join("_up_").join("backend").join("app.py"),
         cur_dir.join("backend").join("app.py"),
+        cur_dir.join("..").join("backend").join("app.py"),
+        exe_dir.join("..").join("backend").join("app.py"),
+        exe_dir.join("..").join("..").join("backend").join("app.py"),
+        exe_dir.join("..").join("..").join("..").join("backend").join("app.py"),
         PathBuf::from("backend/app.py"),
     ];
 
@@ -291,8 +362,14 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
     let target_script = match script_path {
         Some(p) => p,
         None => {
-            let _ = fs::write(&log_path, "Error: Could not locate backend binary or backend/app.py in application resources.");
-            return (None, BackendStatus { started: false, reason: "Could not locate backend binary or backend/app.py in application resources.".to_string() });
+            let err_detail = read_recent_error_log(&err_log_path, &log_path);
+            let msg = if err_detail.is_empty() {
+                "Could not locate backend binary or backend/app.py in application resources.".to_string()
+            } else {
+                format!("Standalone backend failed to start ({}) and backend/app.py was not found.", err_detail)
+            };
+            let _ = fs::write(&log_path, format!("Error: {}", msg));
+            return (None, BackendStatus { started: false, reason: msg });
         }
     };
 
@@ -317,21 +394,42 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
         cmd.creation_flags(CREATE_NO_WINDOW);
 
         match cmd.spawn() {
-            Ok(child) => {
-                for _ in 0..60 {
+            Ok(mut child) => {
+                let mut crashed = false;
+                for _ in 0..160 {
                     std::thread::sleep(Duration::from_millis(50));
                     if is_backend_running() {
                         return (Some(child), BackendStatus { started: true, reason: "Backend started successfully".to_string() });
                     }
+                    if let Ok(Some(_)) = child.try_wait() {
+                        crashed = true;
+                        break;
+                    }
                 }
-                return (Some(child), BackendStatus { started: true, reason: "Backend process spawned but health check timed out".to_string() });
+                if !crashed {
+                    if is_backend_running() {
+                        return (Some(child), BackendStatus { started: true, reason: "Backend started successfully".to_string() });
+                    }
+                    let _ = child.kill();
+                }
             }
             Err(_) => continue,
         }
     }
 
-    let _ = fs::write(&log_path, "Error: Could not find backend binary or Python executable on host system.");
-    (None, BackendStatus { started: false, reason: "Python is not installed. Please install Python 3.8+ from python.org and ensure it is added to your system PATH.".to_string() })
+    let err_detail = read_recent_error_log(&err_log_path, &log_path);
+    if !python_candidates.is_empty() && !err_detail.is_empty() {
+        return (
+            None,
+            BackendStatus {
+                started: false,
+                reason: format!("Backend process exited before binding port 5050: {}", err_detail),
+            },
+        );
+    }
+
+    let _ = fs::write(&log_path, "Error: Could not find backend binary or a working Python executable on host system.");
+    (None, BackendStatus { started: false, reason: "Backend failed to start. Ensure Python 3.8+ with required packages (pip install -r backend/requirements.txt) or the bundled backend executable is present.".to_string() })
 }
 
 #[tauri::command]
@@ -392,6 +490,12 @@ fn read_auth_token(app_dir: &Path) -> String {
 
 #[tauri::command]
 fn get_backend_status(state: tauri::State<BackendStartStatus>) -> Result<BackendStatus, String> {
+    if is_backend_running() {
+        return Ok(BackendStatus {
+            started: true,
+            reason: "Backend running".to_string(),
+        });
+    }
     let lock = state.0.lock().map_err(|e| e.to_string())?;
     Ok(lock.clone())
 }
@@ -431,6 +535,15 @@ async fn get_api_token(
     state: tauri::State<'_, AuthToken>,
     http_client: tauri::State<'_, HttpClient>,
 ) -> Result<String, String> {
+    let app_dir = get_root_app_dir();
+    let disk_token = read_auth_token(&app_dir);
+    if !disk_token.is_empty() {
+        if let Ok(mut lock) = state.0.lock() {
+            *lock = disk_token.clone();
+        }
+        return Ok(disk_token);
+    }
+
     let current_token = {
         let lock = state.0.lock().map_err(|e| e.to_string())?;
         lock.clone()
@@ -439,13 +552,8 @@ async fn get_api_token(
         return Ok(current_token);
     }
 
-    let app_dir = get_root_app_dir();
-    let disk_token = read_auth_token(&app_dir);
-    if !disk_token.is_empty() {
-        if let Ok(mut lock) = state.0.lock() {
-            *lock = disk_token.clone();
-        }
-        return Ok(disk_token);
+    if !is_backend_running() {
+        return Ok(String::new());
     }
 
     let client = &http_client.0;
@@ -472,6 +580,24 @@ async fn python_backend_request(
     state: tauri::State<'_, AuthToken>,
     http_client: tauri::State<'_, HttpClient>,
 ) -> Result<String, String> {
+    let app_dir = get_root_app_dir();
+    let log_path = app_dir.join("logs").join("backend.log");
+    let err_log_path = app_dir.join("logs").join("backend_err.log");
+
+    if !is_backend_running() {
+        let err_detail = read_recent_error_log(&err_log_path, &log_path);
+        if !err_detail.is_empty() {
+            return Err(format!(
+                "Python backend is not running on port 5050 ({})",
+                err_detail
+            ));
+        }
+        return Err(format!(
+            "Python backend is not running on port 5050. Check {}",
+            err_log_path.display()
+        ));
+    }
+
     let mut token = {
         let lock = state.0.lock().map_err(|e| e.to_string())?;
         lock.clone()
@@ -480,7 +606,6 @@ async fn python_backend_request(
     let client = &http_client.0;
 
     if token.trim().is_empty() {
-        let app_dir = get_root_app_dir();
         token = read_auth_token(&app_dir);
         if token.trim().is_empty() {
             if let Ok(resp) = client.get("http://127.0.0.1:5050/api/auth/token").send().await {
@@ -535,16 +660,21 @@ async fn python_backend_request(
 
     if let Ok(ref resp) = response {
         if resp.status() == 401 {
-            if let Ok(token_resp) = client.get("http://127.0.0.1:5050/api/auth/token").send().await {
-                if let Ok(json) = token_resp.json::<serde_json::Value>().await {
-                    if let Some(t) = json.get("token").and_then(|v| v.as_str()) {
-                        let new_token = t.to_string();
-                        if let Ok(mut lock) = state.0.lock() {
-                            *lock = new_token.clone();
+            let mut new_token = read_auth_token(&app_dir);
+            if new_token.is_empty() || new_token == token {
+                if let Ok(token_resp) = client.get("http://127.0.0.1:5050/api/auth/token").send().await {
+                    if let Ok(json) = token_resp.json::<serde_json::Value>().await {
+                        if let Some(t) = json.get("token").and_then(|v| v.as_str()) {
+                            new_token = t.to_string();
                         }
-                        response = send_req(new_token).await;
                     }
                 }
+            }
+            if !new_token.is_empty() {
+                if let Ok(mut lock) = state.0.lock() {
+                    *lock = new_token.clone();
+                }
+                response = send_req(new_token).await;
             }
         }
     }
@@ -555,8 +685,7 @@ async fn python_backend_request(
             Ok(text)
         }
         Err(e) => {
-            let err_log = get_root_app_dir().join("logs").join("backend_err.log");
-            Err(format!("Failed to connect to Python backend on port 5050: {}. Check {}.", e, err_log.display()))
+            Err(format!("Failed to connect to Python backend on port 5050: {}. Check {}.", e, err_log_path.display()))
         }
     }
 }
@@ -640,9 +769,11 @@ fn main() {
     let (child, backend_status) = start_backend_if_needed(&app_dir);
     let token = read_auth_token(&app_dir);
     let http_client = reqwest::Client::builder()
+        .no_proxy()
         .tcp_nodelay(true)
+        .connect_timeout(Duration::from_millis(1500))
         .pool_idle_timeout(Duration::from_secs(60))
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(15))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 

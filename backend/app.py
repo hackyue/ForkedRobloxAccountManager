@@ -63,7 +63,6 @@ anti_afk_manager = AntiAfkManager(
     headless_manager=headless_manager,
     log_callback=lambda msg: print(msg),
 )
-anti_afk_manager.start_loop()
 
 extension_manager = BrowserExtensionManager(get_data_folder())
 roblox_swap_manager = RobloxSwapManager(get_data_folder())
@@ -102,9 +101,26 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5050",
     "tauri://localhost",
     "https://tauri.localhost",
-    "http://tauri.localhost"
+    "http://tauri.localhost",
+    "asset://localhost",
+    r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+    r"^https?://tauri\.localhost(:\d+)?$",
+    r"^tauri://.*$"
 ]
 CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
+
+_TRUSTED_ORIGIN_RE = re.compile(
+    r"^(https?://(localhost|127\.0\.0\.1|\[::1\]|tauri\.localhost)(:\d+)?|tauri://[a-zA-Z0-9._-]*|asset://[a-zA-Z0-9._-]*)(\/.*)?$",
+    re.IGNORECASE
+)
+
+def _is_trusted_local_origin(val: str) -> bool:
+    if not val or val == 'null':
+        return True
+    v = val.strip().rstrip('/')
+    if v in ALLOWED_ORIGINS:
+        return True
+    return bool(_TRUSTED_ORIGIN_RE.match(v))
 
 API_AUTH_TOKEN = secrets.token_urlsafe(48)
 
@@ -1360,6 +1376,7 @@ def launch_account():
 last_manual_kill_timestamp = 0.0
 last_launch_times = {}
 last_launch_info = {}
+anti_afk_manager.start_loop()
 
 @app.route('/api/roblox/kill', methods=['POST', 'OPTIONS'])
 def kill_roblox_processes():
@@ -5217,10 +5234,14 @@ def health_check():
 def get_auth_token():
     origin = request.headers.get('Origin', '')
     referer = request.headers.get('Referer', '')
-    is_allowed_origin = origin and origin in ALLOWED_ORIGINS
-    is_allowed_referer = referer and any(referer.startswith(o) for o in ALLOWED_ORIGINS)
-    is_local = request.remote_addr in ('127.0.0.1', '::1', 'localhost') and not origin and not referer
-    if not is_allowed_origin and not is_allowed_referer and not is_local:
+    is_local_addr = request.remote_addr in ('127.0.0.1', '::1', 'localhost', '::ffff:127.0.0.1')
+    is_allowed_origin = _is_trusted_local_origin(origin) if origin else False
+    is_allowed_referer = _is_trusted_local_origin(referer) if referer else False
+    if not is_local_addr and not is_allowed_origin and not is_allowed_referer:
+        return jsonify({'error': 'Unauthorized origin'}), 403
+    if origin and not is_allowed_origin:
+        return jsonify({'error': 'Unauthorized origin'}), 403
+    if referer and not is_allowed_referer:
         return jsonify({'error': 'Unauthorized origin'}), 403
     return jsonify({'token': API_AUTH_TOKEN})
 
@@ -5894,10 +5915,24 @@ def spoof_rblx_all():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
+    import socket
+    import socketserver
     port = int(os.environ.get('PORT', 5050))
-    if platform.system() == 'Windows':
-        import socketserver
-        socketserver.TCPServer.allow_reuse_address = False
+
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=0.4):
+            try:
+                req = urllib.request.Request(f'http://127.0.0.1:{port}/api/health')
+                with urllib.request.urlopen(req, timeout=0.8) as resp:
+                    if resp.status == 200:
+                        print(f"[INFO] Backend is already running on 127.0.0.1:{port}")
+                        sys.exit(0)
+            except Exception:
+                pass
+    except OSError:
+        pass
+
+    socketserver.TCPServer.allow_reuse_address = True
 
     max_bind_attempts = 10
     for attempt in range(max_bind_attempts):

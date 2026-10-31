@@ -15,8 +15,8 @@ const currentPlatform: SupportedPlatform = /mac|iphone|ipad|ipod/i.test(navigato
     ? 'windows'
     : 'linux';
 document.documentElement.dataset.os = currentPlatform;
-const isMacOS = (): boolean => currentPlatform === 'macos';
-const isWindows = (): boolean => currentPlatform === 'windows';
+export const isMacOS = (): boolean => currentPlatform === 'macos';
+export const isWindows = (): boolean => currentPlatform === 'windows';
 
 
 async function pickNativeFolder(title?: string): Promise<string | null> {
@@ -517,19 +517,26 @@ async function loadFromBackend(retries = 5, delay = 600): Promise<void> {
   showAppLoader();
   updateAppLoaderProgress(20, 'Connecting to Python backend...');
 
+  let backendFailureReason = '';
   try {
     const backendStatus = await invoke<any>('get_backend_status');
     if (backendStatus && !backendStatus.started) {
-      addLog('Backend failed to start: ' + backendStatus.reason, 'error');
-      showLoaderError(backendStatus.reason);
-      return;
+      backendFailureReason = backendStatus.reason || '';
+      addLog('Backend not running at startup (' + backendFailureReason + '), checking manual connection...', 'warning');
     }
   } catch (_) { }
 
   let lastErrorMsg = '';
+  let attemptedAutoRelaunch = false;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
+      updateAppLoaderProgress(
+        20,
+        attempt === 1
+          ? 'Connecting to Python backend...'
+          : `Connecting to Python backend (attempt ${attempt}/${retries})...`
+      );
       addLog(`Connecting to backend server (attempt ${attempt}/${retries})...`, 'info');
 
       const authStatus = await apiService.getAuthStatus();
@@ -648,14 +655,27 @@ async function loadFromBackend(retries = 5, delay = 600): Promise<void> {
       }
       return;
     } catch (error: any) {
-      lastErrorMsg = error?.message || String(error) || 'Failed to connect to backend server at http://127.0.0.1:5050';
+      lastErrorMsg = error?.message || String(error) || backendFailureReason || 'Failed to connect to backend server at http://127.0.0.1:5050';
       const isDecryptionError = lastErrorMsg.toLowerCase().includes('decrypt');
+      if (!isDecryptionError && attempt === 1 && !attemptedAutoRelaunch) {
+        attemptedAutoRelaunch = true;
+        updateAppLoaderProgress(20, 'Starting Python backend service...');
+        try {
+          const relaunchRes = await apiService.relaunchBackend();
+          if (relaunchRes && !relaunchRes.started && relaunchRes.reason) {
+            backendFailureReason = relaunchRes.reason;
+          }
+        } catch (_) { }
+      }
       if (attempt < retries && !isDecryptionError) {
-        updateAppLoaderProgress(20, `Connecting to Python backend (attempt ${attempt}/${retries})...`);
+        updateAppLoaderProgress(20, `Connecting to Python backend (attempt ${attempt + 1}/${retries})...`);
         await new Promise(r => setTimeout(r, delay));
       } else {
-        addLog('Failed to load data from backend: ' + lastErrorMsg, 'error');
-        showLoaderError(lastErrorMsg);
+        const finalErrorMsg = backendFailureReason && lastErrorMsg.includes('Failed to fetch')
+          ? backendFailureReason
+          : lastErrorMsg;
+        addLog('Failed to load data from backend: ' + finalErrorMsg, 'error');
+        showLoaderError(finalErrorMsg);
         return;
       }
     }
