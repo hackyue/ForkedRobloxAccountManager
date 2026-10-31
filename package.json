@@ -18,7 +18,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "node scripts/run_py.mjs scripts/dev.py tauri:dev",
+    "start:web": "node scripts/run_py.mjs scripts/dev.py dev",
     "build": "tsc && vite build",
+    "build:backend": "node scripts/run_py.mjs scripts/build_release.py --backend-only",
+    "release": "node scripts/run_py.mjs scripts/build_release.py --install-python-deps",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
