@@ -90,6 +90,15 @@ class RobloxAPI:
         },
     )
 
+    BOOTSTRAPPER_EXE_MAP = {
+        "bloxstrap": (r"%LOCALAPPDATA%\Bloxstrap\Bloxstrap.exe", True),
+        "fishstrap": (r"%LOCALAPPDATA%\Fishstrap\Fishstrap.exe", True),
+        "voidstrap": (r"%LOCALAPPDATA%\Voidstrap\Voidstrap.exe", True),
+        "froststrap": (r"%LOCALAPPDATA%\FrostStrap\FrostStrap.exe", True),
+        "exploitstrap": (r"%LOCALAPPDATA%\ExploitStrap\ExploitStrap.exe", True),
+        "robloxplayerlauncher": ("RobloxPlayerLauncher.exe", False),
+    }
+
     _protocol_handler_missing_warned = False
     _http_session = None
     _http_session_lock = threading.Lock()
@@ -2202,55 +2211,69 @@ class RobloxAPI:
                             allowed_launchers[c_path.lower()] = (c_path, "RobloxPlayerLauncher", False)
                             allowed_launchers[os.path.realpath(c_path).lower()] = (c_path, "RobloxPlayerLauncher", False)
 
-        def _launch_with_launcher(exe_path, target_url, context, req_player_flag=False, disp_name=None):
-            """Launch via the resolved launcher executable with shared logging."""
-            if not exe_path or not os.path.isfile(exe_path):
+        def _launch_with_launcher(launcher_id, target_url, context, working_dir=None):
+            """Launch via a verified bootstrapper or launcher executable."""
+            if launcher_id not in RobloxAPI.BOOTSTRAPPER_EXE_MAP:
                 return
-            base_exe = os.path.basename(exe_path).lower()
-            allowed_launcher_names = {
-                "bloxstrap.exe",
-                "fishstrap.exe",
-                "voidstrap.exe",
-                "froststrap.exe",
-                "exploitstrap.exe",
-                "robloxplayerlauncher.exe",
-            }
-            if base_exe not in allowed_launcher_names:
-                return
+            launcher_rel_path, req_player = RobloxAPI.BOOTSTRAPPER_EXE_MAP[launcher_id]
+            launcher_bin = os.path.expandvars(launcher_rel_path)
             if not RobloxAPI._is_strict_roblox_launch_url(target_url):
                 return
             clean_url = str(target_url).strip()
             if not clean_url.startswith("roblox-player:"):
                 return
-            command = [exe_path]
-            if req_player_flag:
+            command = [launcher_bin]
+            if req_player:
                 command.append("-player")
             command.append(clean_url)
             subprocess.Popen(
                 command,
+                cwd=working_dir,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 **RobloxAPI._subprocess_no_window_kwargs(),
             )
-            launcher_display = disp_name or base_exe
-            _log_debug(f"Launching {context} via {launcher_display} with URL: {clean_url}")
+            _log_debug(f"Launching {context} via {launcher_id} with URL: {clean_url}")
 
         roblox_exe = None
         effective_path = None
         using_local_install = False
+        launcher_id = None
 
         lookup_key = str(roblox_path_expanded or "").strip().lower()
         if lookup_key:
-            if lookup_key in allowed_launchers:
+            if "bloxstrap" in lookup_key:
+                launcher_id = "bloxstrap"
+            elif "fishstrap" in lookup_key:
+                launcher_id = "fishstrap"
+            elif "voidstrap" in lookup_key:
+                launcher_id = "voidstrap"
+            elif "froststrap" in lookup_key:
+                launcher_id = "froststrap"
+            elif "exploitstrap" in lookup_key:
+                launcher_id = "exploitstrap"
+            elif "robloxplayerlauncher" in lookup_key:
+                launcher_id = "robloxplayerlauncher"
+
+            if launcher_id and launcher_id != "robloxplayerlauncher":
+                launcher_bin_path = os.path.expandvars(RobloxAPI.BOOTSTRAPPER_EXE_MAP[launcher_id][0])
+                if os.path.isfile(launcher_bin_path):
+                    effective_path = os.path.dirname(launcher_bin_path)
+                    roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
+                    using_local_install = True
+                else:
+                    launcher_id = None
+            elif lookup_key in allowed_launchers:
                 launcher_exe, launcher_name, launcher_requires_player_flag = allowed_launchers[lookup_key]
                 effective_path = os.path.dirname(launcher_exe)
                 roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
                 using_local_install = True
+                launcher_id = "robloxplayerlauncher"
             elif lookup_key in allowed_roblox_exes:
                 roblox_exe, effective_path, mac_app_bundle = allowed_roblox_exes[lookup_key]
                 using_local_install = True
 
-        if not roblox_exe and not launcher_exe:
+        if not roblox_exe and not launcher_id:
             default_path = RobloxAPI._get_default_roblox_path()
             if default_path:
                 def_key = default_path.lower()
@@ -2306,13 +2329,12 @@ class RobloxAPI:
                         stderr=subprocess.DEVNULL,
                     )
                     _log_debug(f"Launching Roblox Home on macOS via open -n -a {mac_app_bundle} --args {url}")
-                elif launcher_exe:
+                elif launcher_id:
                     _launch_with_launcher(
-                        launcher_exe,
+                        launcher_id,
                         url,
                         "Roblox Home",
-                        req_player_flag=launcher_requires_player_flag,
-                        disp_name=launcher_name,
+                        working_dir=effective_path,
                     )
                 elif using_local_install:
                     try:
@@ -2461,13 +2483,12 @@ class RobloxAPI:
                     stderr=subprocess.DEVNULL,
                 )
                 _log_debug(f"Launching game on macOS via open -n -a {mac_app_bundle} --args {url}")
-            elif launcher_exe:
+            elif launcher_id:
                 _launch_with_launcher(
-                    launcher_exe,
+                    launcher_id,
                     url,
                     "game",
-                    req_player_flag=launcher_requires_player_flag,
-                    disp_name=launcher_name,
+                    working_dir=effective_path,
                 )
             else:
                 if using_local_install:
