@@ -591,42 +591,42 @@ class RobloxAPI:
             }
 
         try:
-            candidate = text
-            lowered = candidate.lower()
-            if "://" not in candidate and (lowered.startswith("roblox.com") or lowered.startswith("www.roblox.com") or lowered.startswith("roblox://")):
+            candidate = text.strip()
+            if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", candidate):
                 candidate = f"https://{candidate}"
 
-            if "://" in candidate:
-                parsed = urlparse(candidate)
-                scheme = str(parsed.scheme or "").strip().lower()
-                host = str(parsed.netloc or "").strip().lower()
-                path = str(parsed.path or "").strip("/").lower()
-                query_values = parse_qs(parsed.query or "")
+            parsed = urlparse(candidate)
+            scheme = str(parsed.scheme or "").strip().lower()
+            host = str(parsed.netloc or "").strip().lower()
+            if host.startswith("www."):
+                host = host[4:]
+            path = str(parsed.path or "").strip("/").lower()
+            query_values = parse_qs(parsed.query or "")
 
-                share_type_values = query_values.get("type") or query_values.get("pid") or []
-                share_type = str(share_type_values[0] or "").strip().lower() if share_type_values else ""
-                share_code_values = query_values.get("code") or []
-                share_code = str(share_code_values[0] or "").strip() if share_code_values else ""
+            share_type_values = query_values.get("type") or query_values.get("pid") or []
+            share_type = str(share_type_values[0] or "").strip().lower() if share_type_values else ""
+            share_code_values = query_values.get("code") or []
+            share_code = str(share_code_values[0] or "").strip() if share_code_values else ""
 
-                if scheme == "roblox" and host == "navigation" and path == "share_links" and share_type == "server":
-                    result = build_result(share_code)
-                    if result:
-                        return result
+            if scheme == "roblox" and host == "navigation" and path == "share_links" and share_type == "server":
+                result = build_result(share_code)
+                if result:
+                    return result
 
-                if (host == "roblox.com" or host.endswith(".roblox.com")) and path in ("share", "share-links") and share_type == "server":
-                    result = build_result(share_code)
-                    if result:
-                        return result
+            if (host == "roblox.com" or host.endswith(".roblox.com")) and path in ("share", "share-links") and share_type == "server":
+                result = build_result(share_code)
+                if result:
+                    return result
 
-                for nested_key in ("af_dp", "af_web_dp", "deep_link_value"):
-                    nested_values = query_values.get(nested_key) or []
-                    for nested_value in nested_values:
-                        nested_result = RobloxAPI.extract_private_server_share_details(
-                            nested_value,
-                            max_depth=max_depth - 1,
-                        )
-                        if nested_result:
-                            return nested_result
+            for nested_key in ("af_dp", "af_web_dp", "deep_link_value"):
+                nested_values = query_values.get(nested_key) or []
+                for nested_value in nested_values:
+                    nested_result = RobloxAPI.extract_private_server_share_details(
+                        nested_value,
+                        max_depth=max_depth - 1,
+                    )
+                    if nested_result:
+                        return nested_result
         except Exception:
             pass
 
@@ -768,10 +768,13 @@ class RobloxAPI:
             return str(share_details.get("url") or text).strip()
 
         parsed_code = ""
-        lowered = text.lower()
-        if "://" in text or lowered.startswith("roblox.com") or lowered.startswith("www.roblox.com"):
-            try:
-                parsed = urlparse(text if "://" in text else f"https://{text}")
+        candidate = text.strip()
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", candidate):
+            candidate = f"https://{candidate}"
+        try:
+            parsed = urlparse(candidate)
+            hostname = (parsed.hostname or "").lower()
+            if hostname == "roblox.com" or hostname.endswith(".roblox.com"):
                 query_values = parse_qs(parsed.query or "")
                 for key in ("privateServerLinkCode", "linkCode", "privateServerId", "vipServerId"):
                     values = query_values.get(key) or []
@@ -779,8 +782,8 @@ class RobloxAPI:
                         parsed_code = str(values[0] or "").strip()
                         if parsed_code:
                             break
-            except Exception:
-                parsed_code = ""
+        except Exception:
+            parsed_code = ""
 
         if not parsed_code:
             match = re.search(
@@ -2155,49 +2158,54 @@ class RobloxAPI:
         is_mac = platform.system() == "Darwin"
         mac_app_bundle = None
 
-        if is_mac:
-            candidate_mac = roblox_path_expanded or RobloxAPI._get_default_roblox_path() or "/Applications/Roblox.app"
-            if candidate_mac.endswith("RobloxPlayer") and os.path.isfile(candidate_mac):
-                roblox_exe = candidate_mac
-                effective_path = os.path.dirname(candidate_mac)
-                mac_app_bundle = str(Path(candidate_mac).parent.parent.parent)
-                using_local_install = True
-            else:
-                if os.path.isdir(os.path.join(candidate_mac, "Roblox.app")):
-                    candidate_mac = os.path.join(candidate_mac, "Roblox.app")
-                player_bin = os.path.join(candidate_mac, "Contents", "MacOS", "RobloxPlayer")
-                if os.path.isfile(player_bin):
-                    mac_app_bundle = candidate_mac
-                    roblox_exe = player_bin
-                    effective_path = os.path.dirname(player_bin)
-                    using_local_install = True
-                else:
-                    using_local_install = False
-                    effective_path = None
-                    roblox_exe = "RobloxPlayer"
-        else:
-            if roblox_path_expanded and os.path.isfile(roblox_path_expanded):
-                explicit_executable_provided = True
-                explicit_executable_path = roblox_path_expanded
-                effective_path = os.path.dirname(roblox_path_expanded)
-            else:
-                effective_path = roblox_path_expanded or RobloxAPI._get_default_roblox_path()
+        allowed_launchers = {}
+        allowed_roblox_exes = {}
 
-            using_local_install = effective_path and os.path.isdir(effective_path)
-
-        bootstrapper_launchers = []
         if not is_mac:
             for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
-                root = os.path.expandvars(bootstrapper["root"])
-                bootstrapper_launchers.append({
-                    "name": bootstrapper["name"],
-                    "root": root,
-                    "launcher": os.path.join(root, bootstrapper["launcher"]),
-                    "exe_name": str(bootstrapper["launcher"]).lower(),
-                })
+                root = os.path.expandvars(bootstrapper.get("root", ""))
+                l_path = os.path.join(root, bootstrapper.get("launcher", ""))
+                if os.path.isfile(l_path):
+                    b_info = (l_path, bootstrapper.get("name", "Bootstrapper"), True)
+                    allowed_launchers[str(bootstrapper.get("launcher", "")).lower()] = b_info
+                    allowed_launchers[l_path.lower()] = b_info
+                    allowed_launchers[os.path.realpath(l_path).lower()] = b_info
+                    allowed_launchers[str(bootstrapper.get("name", "")).lower()] = b_info
+
+        for ver in RobloxAPI.get_installed_versions():
+            v_dir = ver.get("path")
+            if not v_dir:
+                continue
+            if is_mac:
+                player_bin = os.path.join(v_dir, "Contents", "MacOS", "RobloxPlayer")
+                if os.path.isfile(player_bin):
+                    bundle_info = (player_bin, v_dir, v_dir)
+                    allowed_roblox_exes[v_dir.lower()] = bundle_info
+                    allowed_roblox_exes[os.path.realpath(v_dir).lower()] = bundle_info
+                    allowed_roblox_exes[player_bin.lower()] = bundle_info
+                    allowed_roblox_exes[os.path.realpath(player_bin).lower()] = bundle_info
+                    if ver.get("version"):
+                        allowed_roblox_exes[str(ver["version"]).lower()] = bundle_info
+            else:
+                for c_exe in ("RobloxPlayerBeta.exe", "RobloxPlayerLauncher.exe"):
+                    c_path = os.path.join(v_dir, c_exe)
+                    if os.path.isfile(c_path):
+                        exe_info = (c_path, v_dir, None)
+                        allowed_roblox_exes[v_dir.lower()] = exe_info
+                        allowed_roblox_exes[os.path.realpath(v_dir).lower()] = exe_info
+                        allowed_roblox_exes[c_path.lower()] = exe_info
+                        allowed_roblox_exes[os.path.realpath(c_path).lower()] = exe_info
+                        if ver.get("version"):
+                            allowed_roblox_exes[str(ver["version"]).lower()] = exe_info
+                        if c_exe == "RobloxPlayerLauncher.exe":
+                            allowed_launchers["robloxplayerlauncher.exe"] = (c_path, "RobloxPlayerLauncher", False)
+                            allowed_launchers[c_path.lower()] = (c_path, "RobloxPlayerLauncher", False)
+                            allowed_launchers[os.path.realpath(c_path).lower()] = (c_path, "RobloxPlayerLauncher", False)
 
         def _launch_with_launcher(target_url, context):
             """Launch via the resolved launcher executable with shared logging."""
+            if not launcher_exe or not os.path.isfile(launcher_exe):
+                return
             command = [launcher_exe]
             if launcher_requires_player_flag:
                 command.append("-player")
@@ -2211,98 +2219,44 @@ class RobloxAPI:
             launcher_display = launcher_name or os.path.basename(launcher_exe)
             _log_debug(f"Launching {context} via {launcher_display} with URL: {target_url}")
 
-        if using_local_install and not is_mac:
-            explicit_name = None
-            if explicit_executable_provided and explicit_executable_path:
-                explicit_name = os.path.basename(explicit_executable_path).lower()
+        roblox_exe = None
+        effective_path = None
+        using_local_install = False
 
-            explicit_bootstrapper = next(
-                (
-                    bootstrapper
-                    for bootstrapper in bootstrapper_launchers
-                    if explicit_name == bootstrapper["exe_name"]
-                ),
-                None,
-            )
-            if explicit_bootstrapper:
-                launcher_exe = explicit_executable_path
-                launcher_name = explicit_bootstrapper["name"]
-                launcher_requires_player_flag = True
+        lookup_key = str(roblox_path_expanded or "").strip().lower()
+        if lookup_key:
+            if lookup_key in allowed_launchers:
+                launcher_exe, launcher_name, launcher_requires_player_flag = allowed_launchers[lookup_key]
+                effective_path = os.path.dirname(launcher_exe)
                 roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
-                _log_debug(f"Using explicitly selected bootstrapper at {launcher_exe}")
-            elif explicit_name == "robloxplayerlauncher.exe":
-                launcher_exe = explicit_executable_path
-                launcher_name = "RobloxPlayerLauncher"
-                roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
-                _log_debug(f"Using explicitly selected launcher at {launcher_exe}")
-            elif explicit_executable_provided and explicit_executable_path:
-                roblox_exe = explicit_executable_path
-                _log_debug(f"Using explicitly selected RobloxPlayer at {roblox_exe}")
-            else:
-                roblox_exe = os.path.join(effective_path, "RobloxPlayerBeta.exe")
+                using_local_install = True
+            elif lookup_key in allowed_roblox_exes:
+                roblox_exe, effective_path, mac_app_bundle = allowed_roblox_exes[lookup_key]
+                using_local_install = True
 
-            if launcher_exe and not os.path.exists(launcher_exe):
-                print(f"[ERROR] Launcher executable not found: {launcher_exe}")
-                if return_details:
-                    return False, f"Launcher executable not found: {launcher_name or os.path.basename(launcher_exe)}"
-                return False
-            if (not launcher_exe) and (not os.path.exists(roblox_exe)):
-                print(f"[ERROR] RobloxPlayerBeta.exe not found in {effective_path}")
-                if return_details:
-                    return False, "Roblox executable (RobloxPlayerBeta.exe) not found in version folder"
-                return False
+        if not roblox_exe and not launcher_exe:
+            default_path = RobloxAPI._get_default_roblox_path()
+            if default_path:
+                def_key = default_path.lower()
+                if def_key in allowed_roblox_exes:
+                    roblox_exe, effective_path, mac_app_bundle = allowed_roblox_exes[def_key]
+                    using_local_install = True
+                elif is_mac:
+                    cand_player = os.path.join(default_path, "Contents", "MacOS", "RobloxPlayer")
+                    if os.path.isfile(cand_player):
+                        roblox_exe = cand_player
+                        effective_path = os.path.join(default_path, "Contents", "MacOS")
+                        mac_app_bundle = default_path
+                        using_local_install = True
+                else:
+                    cand_beta = os.path.join(default_path, "RobloxPlayerBeta.exe")
+                    if os.path.isfile(cand_beta):
+                        roblox_exe = cand_beta
+                        effective_path = default_path
+                        using_local_install = True
 
-            if not explicit_executable_provided:
-                effective_lower = effective_path.lower()
-                for bootstrapper in bootstrapper_launchers:
-                    root_lower = bootstrapper["root"].lower()
-                    if not root_lower or not effective_lower.startswith(root_lower):
-                        continue
-                    if os.path.exists(bootstrapper["launcher"]):
-                        launcher_exe = bootstrapper["launcher"]
-                        launcher_name = bootstrapper["name"]
-                        launcher_requires_player_flag = True
-                        _log_debug(f"Using {bootstrapper['name']} launcher at {launcher_exe}")
-                    else:
-                        print(
-                            f"[WARNING] {bootstrapper['name']} path detected but "
-                            f"{os.path.basename(bootstrapper['launcher'])} was not found; "
-                            "falling back to RobloxPlayerBeta.exe"
-                        )
-                    break
-
-                if not launcher_exe:
-                    possible_launcher = os.path.join(effective_path, "RobloxPlayerLauncher.exe")
-                    if os.path.exists(possible_launcher):
-                        launcher_exe = possible_launcher
-                        launcher_name = "RobloxPlayerLauncher"
-                        _log_debug(f"Found RobloxPlayerLauncher.exe at {launcher_exe}")
-                    else:
-                        try:
-                            versions_root = Path(effective_path).parent
-                            launcher_candidates = []
-                            for candidate_dir in versions_root.iterdir():
-                                if not candidate_dir.is_dir() or not candidate_dir.name.startswith("version-"):
-                                    continue
-                                candidate_launcher = candidate_dir / "RobloxPlayerLauncher.exe"
-                                if candidate_launcher.exists():
-                                    launcher_candidates.append(candidate_launcher)
-
-                            if launcher_candidates:
-                                best_launcher = max(launcher_candidates, key=lambda p: p.stat().st_mtime)
-                                launcher_exe = str(best_launcher)
-                                launcher_name = "RobloxPlayerLauncher"
-                                _log_debug(f"Found RobloxPlayerLauncher.exe in {best_launcher.parent.name}: {launcher_exe}")
-                            else:
-                                _log_debug("RobloxPlayerLauncher.exe not found, falling back to RobloxPlayerBeta.exe")
-                        except Exception as exc:
-                            _log_debug(f"RobloxPlayerLauncher.exe scan failed, falling back to RobloxPlayerBeta.exe: {exc}")
-
-            print(f"Using Roblox version from: {effective_path}")
-            _log_debug(f"Roblox executable resolved to {roblox_exe}")
-        elif not is_mac:
-            roblox_exe = 'RobloxPlayerBeta.exe'
-            _log_debug("Using default Roblox installation (RobloxPlayerBeta.exe on PATH)")
+        if not roblox_exe and not is_mac:
+            roblox_exe = "RobloxPlayerBeta.exe"
 
         normalized_launch_mode = str(launch_mode or "game").strip().lower()
         if normalized_launch_mode in ("join_user", "user"):
@@ -2645,20 +2599,7 @@ class RobloxAPI:
             return False
         try:
             resolved = os.path.realpath(os.path.abspath(candidate_path))
-            if not os.path.exists(resolved):
-                return False
-
-            if os.path.isfile(resolved):
-                base_name = os.path.basename(resolved).lower()
-                allowed_exes = {
-                    "robloxplayerbeta.exe",
-                    "robloxplayerlauncher.exe",
-                    "robloxplayerinstaller.exe",
-                    "robloxplayer",
-                }
-                if base_name not in allowed_exes:
-                    return False
-
+            resolved_lower = resolved.lower()
             system = platform.system()
             trusted_roots = []
             if system == "Windows":
@@ -2679,11 +2620,27 @@ class RobloxAPI:
                     os.path.realpath(os.path.expanduser("~")).lower(),
                 ])
 
-            resolved_lower = resolved.lower()
-            return any(
+            if not any(
                 resolved_lower == root or resolved_lower.startswith(root + os.sep)
                 for root in trusted_roots
-            )
+            ):
+                return False
+
+            if not os.path.exists(resolved):
+                return False
+
+            if os.path.isfile(resolved):
+                base_name = os.path.basename(resolved).lower()
+                allowed_exes = {
+                    "robloxplayerbeta.exe",
+                    "robloxplayerlauncher.exe",
+                    "robloxplayerinstaller.exe",
+                    "robloxplayer",
+                }
+                if base_name not in allowed_exes:
+                    return False
+
+            return True
         except Exception:
             return False
 
@@ -2765,28 +2722,9 @@ class RobloxAPI:
             return False
 
         clean_url = str(url).strip()
-        system = platform.system()
-        if system == "Windows":
-            try:
-                os.startfile(clean_url)
-                return True
-            except OSError as exc:
-                winerror = getattr(exc, "winerror", None)
-                if winerror in (-2147221003, 1155):
-                    if not RobloxAPI._protocol_handler_missing_warned:
-                        print("[WARNING] Roblox protocol handler is not registered; skipping protocol launch.")
-                        RobloxAPI._protocol_handler_missing_warned = True
-                else:
-                    print(f"[ERROR] os.startfile failed to launch Roblox protocol: {exc}")
-                return False
-        elif system == "Darwin":
-            command = ["open", clean_url]
-        else:
-            command = ["xdg-open", clean_url]
-
         try:
-            subprocess.run(command, check=True)
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            import webbrowser
+            return bool(webbrowser.open(clean_url))
+        except Exception as exc:
             print(f"[ERROR] Failed to trigger Roblox protocol handler: {exc}")
             return False

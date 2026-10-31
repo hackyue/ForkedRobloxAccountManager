@@ -1432,96 +1432,76 @@ def launch_roblox_app():
         version_name = req_data.get('version') or ''
 
         if platform.system() == 'Darwin':
+            allowed_bundles = {}
+            for default_app in ('/Applications/Roblox.app', os.path.expanduser('~/Applications/Roblox.app')):
+                if os.path.isdir(default_app):
+                    allowed_bundles[default_app.lower()] = default_app
+                    allowed_bundles[os.path.realpath(default_app).lower()] = default_app
+                    allowed_bundles['roblox.app'] = default_app
+
+            for v in RobloxAPI.get_installed_versions():
+                vp = v.get('path', '')
+                if vp and os.path.isdir(vp):
+                    norm_vp = os.path.realpath(vp)
+                    allowed_bundles[vp.lower()] = norm_vp
+                    allowed_bundles[norm_vp.lower()] = norm_vp
+                    if v.get('version'):
+                        allowed_bundles[str(v['version']).lower()] = norm_vp
+
             target_bundle = None
-            for raw_p in (version_path, load_data().get('settings', {}).get('robloxPath', '')):
-                if not raw_p:
-                    continue
-                norm_p = os.path.expanduser(os.path.expandvars(str(raw_p).strip()))
-                if norm_p.endswith('.app') and os.path.isdir(norm_p):
-                    target_bundle = norm_p
-                    break
-                if os.path.isdir(os.path.join(norm_p, 'Roblox.app')):
-                    target_bundle = os.path.join(norm_p, 'Roblox.app')
-                    break
-                if os.path.isfile(norm_p) and '.app/Contents/' in norm_p:
-                    target_bundle = norm_p.split('.app/Contents/')[0] + '.app'
-                    break
-            if not target_bundle and version_name:
-                for v in RobloxAPI.get_installed_versions():
-                    if v.get('version') == version_name:
-                        vp = v.get('path', '')
-                        if vp.endswith('.app') and os.path.isdir(vp):
-                            target_bundle = vp
-                            break
-                        if os.path.isdir(os.path.join(vp, 'Roblox.app')):
-                            target_bundle = os.path.join(vp, 'Roblox.app')
-                            break
-            if not target_bundle:
-                for default_app in ('/Applications/Roblox.app', os.path.expanduser('~/Applications/Roblox.app')):
-                    if os.path.isdir(default_app):
-                        target_bundle = default_app
-                        break
+            req_token = str(version_path or version_name or '').strip().lower()
+            if req_token:
+                target_bundle = allowed_bundles.get(req_token)
+
+            if not target_bundle and allowed_bundles:
+                target_bundle = allowed_bundles.get('/applications/roblox.app') or next(iter(allowed_bundles.values()), None)
+
             if target_bundle and os.path.isdir(target_bundle) and RobloxAPI._is_safe_roblox_path(target_bundle):
                 subprocess.Popen(['open', '-n', '-a', target_bundle], close_fds=True)
                 return jsonify({'success': True, 'message': f'Launched {os.path.basename(target_bundle)}'})
             return jsonify({'success': False, 'error': "Roblox isn't installed"}), 404
 
+        allowed_executables = {}
+        installed_versions = RobloxAPI.get_installed_versions()
+        for v in installed_versions:
+            v_dir = v.get('path', '')
+            if not v_dir:
+                continue
+            for cand in ['RobloxPlayerBeta.exe', 'RobloxPlayerLauncher.exe']:
+                c_path = os.path.join(v_dir, cand)
+                if os.path.isfile(c_path):
+                    allowed_executables[cand.lower()] = c_path
+                    allowed_executables[c_path.lower()] = c_path
+                    allowed_executables[v_dir.lower()] = c_path
+                    if v.get('version'):
+                        allowed_executables[str(v['version']).lower()] = c_path
+                    break
+
+        for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
+            b_root = os.path.expandvars(bootstrapper.get('root', ''))
+            b_launcher = os.path.join(b_root, bootstrapper.get('launcher', ''))
+            if os.path.isfile(b_launcher):
+                allowed_executables[b_launcher.lower()] = b_launcher
+                allowed_executables[b_root.lower()] = b_launcher
+                allowed_executables[str(bootstrapper.get('name', '')).lower()] = b_launcher
+
         target_exe = None
-        if version_path:
-            norm_path = os.path.expandvars(str(version_path)).strip()
-            if RobloxAPI._is_safe_roblox_path(norm_path):
-                if os.path.isdir(norm_path):
-                    for candidate in ['RobloxPlayerBeta.exe', 'RobloxPlayerLauncher.exe']:
-                        c_path = os.path.join(norm_path, candidate)
-                        if os.path.isfile(c_path) and RobloxAPI._is_safe_roblox_path(c_path):
-                            target_exe = c_path
-                            break
-                elif os.path.isfile(norm_path):
-                    target_exe = norm_path
+        requested_token = str(version_path or version_name or '').strip().lower()
+        if requested_token:
+            target_exe = allowed_executables.get(requested_token)
 
-        if not target_exe and version_name:
-            installed = RobloxAPI.get_installed_versions()
-            for v in installed:
-                if v.get('version') == version_name:
-                    v_dir = v.get('path', '')
-                    for candidate in ['RobloxPlayerBeta.exe', 'RobloxPlayerLauncher.exe']:
-                        c_path = os.path.join(v_dir, candidate)
-                        if os.path.isfile(c_path) and RobloxAPI._is_safe_roblox_path(c_path):
-                            target_exe = c_path
-                            break
-                    if target_exe:
-                        break
-
-        if not target_exe:
-            settings = load_data().get('settings', {})
-            custom_path = settings.get('robloxPath', '')
-            if custom_path:
-                norm_c = os.path.expandvars(custom_path).strip()
-                if os.path.isfile(norm_c) and RobloxAPI._is_safe_roblox_path(norm_c):
-                    target_exe = norm_c
-
-        if not target_exe:
-            installed = RobloxAPI.get_installed_versions()
-            if installed:
-                for candidate in ['RobloxPlayerBeta.exe', 'RobloxPlayerLauncher.exe']:
-                    c_path = os.path.join(installed[0]['path'], candidate)
-                    if os.path.isfile(c_path) and RobloxAPI._is_safe_roblox_path(c_path):
-                        target_exe = c_path
-                        break
-
-        if not target_exe:
-            for bootstrapper in RobloxAPI.BOOTSTRAPPER_CLIENTS:
-                b_root = os.path.expandvars(bootstrapper.get('root', ''))
-                b_launcher = os.path.join(b_root, bootstrapper.get('launcher', ''))
-                if os.path.isfile(b_launcher) and RobloxAPI._is_safe_roblox_path(b_launcher):
-                    target_exe = b_launcher
+        if not target_exe and installed_versions:
+            for cand in ['RobloxPlayerBeta.exe', 'RobloxPlayerLauncher.exe']:
+                c_path = os.path.join(installed_versions[0].get('path', ''), cand)
+                if os.path.isfile(c_path):
+                    target_exe = c_path
                     break
 
         creation_flags = 0
         if platform.system() == 'Windows':
             creation_flags = getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
 
-        if target_exe and os.path.isfile(target_exe) and RobloxAPI._is_safe_roblox_path(target_exe):
+        if target_exe and os.path.isfile(target_exe):
             subprocess.Popen([target_exe], creationflags=creation_flags, close_fds=True if platform.system() != 'Windows' else False)
             return jsonify({'success': True, 'message': f'Launched {os.path.basename(target_exe)}'})
 
@@ -1547,12 +1527,8 @@ def uninstall_roblox_version():
         target_path = req_data.get('path') or ''
         version_name = req_data.get('version') or ''
 
-        if not target_path:
-            return jsonify({'success': False, 'error': 'Path is required'}), 400
-
-        norm_path = os.path.abspath(os.path.expandvars(str(target_path).strip()))
-        if not os.path.isdir(norm_path):
-            return jsonify({'success': False, 'error': 'Version folder not found'}), 404
+        if not target_path and not version_name:
+            return jsonify({'success': False, 'error': 'Path or version is required'}), 400
 
         from utils.paths import get_root_app_dir
         fram_versions_root = os.path.abspath(os.path.join(get_root_app_dir(), 'RobloxVersions'))
@@ -1579,35 +1555,34 @@ def uninstall_roblox_version():
             os.path.abspath(os.path.expanduser('~/Applications/Roblox.app')),
         ]
 
-        is_allowed = norm_path in allowed_exact_paths
-        if not is_allowed:
-            for root in allowed_roots:
-                try:
-                    if os.path.commonpath([norm_path, root]) == root and norm_path != root:
-                        is_allowed = True
-                        break
-                except Exception:
-                    pass
+        installed_map = {}
+        for v in RobloxAPI.get_installed_versions():
+            p = v.get('path')
+            if p:
+                norm_p = os.path.abspath(os.path.realpath(p))
+                installed_map[norm_p.lower()] = norm_p
+                installed_map[p.lower()] = norm_p
+                if v.get('version'):
+                    installed_map[str(v['version']).lower()] = norm_p
 
-        if not is_allowed:
-            return jsonify({'success': False, 'error': 'Path is not an allowed Roblox version directory'}), 403
+        requested_token = str(target_path or version_name or '').strip().lower()
+        real_target = installed_map.get(requested_token)
+        if not real_target:
+            # Fallback check against allowed exact paths
+            cand_norm = os.path.abspath(os.path.realpath(str(target_path).strip()))
+            if cand_norm in allowed_exact_paths:
+                real_target = cand_norm
 
-        delete_target = norm_path
-        if (
-            os.path.basename(norm_path) == 'Roblox.app'
-            and os.path.basename(os.path.dirname(norm_path)).startswith('version-')
-            and os.path.commonpath([os.path.dirname(norm_path), fram_versions_root]) == fram_versions_root
-        ):
-            delete_target = os.path.dirname(norm_path)
+        if not real_target:
+            return jsonify({'success': False, 'error': 'Version folder not found or not an installed version'}), 404
 
-        real_target = os.path.realpath(delete_target)
         valid_deletion = False
         if real_target in allowed_exact_paths:
             valid_deletion = True
         else:
             for root in allowed_roots:
-                real_root = os.path.realpath(root)
-                if os.path.commonpath([real_target, real_root]) == real_root and real_target != real_root:
+                real_root = os.path.abspath(os.path.realpath(root))
+                if real_target.startswith(real_root + os.sep) and real_target != real_root:
                     valid_deletion = True
                     break
 
@@ -1615,7 +1590,7 @@ def uninstall_roblox_version():
             return jsonify({'success': False, 'error': 'Forbidden deletion path'}), 403
 
         shutil.rmtree(real_target)
-        return jsonify({'success': True, 'message': f'Successfully uninstalled {version_name or os.path.basename(delete_target)}'})
+        return jsonify({'success': True, 'message': f'Successfully uninstalled {version_name or os.path.basename(real_target)}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -3914,7 +3889,7 @@ def complete_setup():
                 if target_password:
                     new_encryptor = PasswordEncryption(target_password)
                     salt_b64 = new_encryptor.get_salt_b64()
-                    new_hash = hashlib.sha256(new_encryptor.key).hexdigest()
+                    new_hash = PasswordEncryption.compute_verifier(target_password, new_encryptor.salt)
                     config.enable_password_encryption(salt_b64, new_hash)
                     active_master_password = target_password
                     if manager is not None:
@@ -4175,13 +4150,9 @@ def switch_encryption():
         if not current_pwd:
             return jsonify({'success': False, 'error': 'Current master password is required'}), 400
             
-        if salt:
-            temp_enc = PasswordEncryption(current_pwd, salt)
-            entered_hash = hashlib.sha256(temp_enc.key).hexdigest()
-        else:
-            entered_hash = hashlib.sha256(current_pwd.encode()).hexdigest()
-            
-        if not stored_hash or not hmac.compare_digest(entered_hash, stored_hash):
+        temp_enc = PasswordEncryption(current_pwd, salt) if salt else None
+        derived_key = temp_enc.key if temp_enc else None
+        if not PasswordEncryption.verify_password_verifier(current_pwd, salt, stored_hash, derived_key):
             return jsonify({'success': False, 'error': 'Current master password is incorrect'}), 401
             
     if new_method == 'password':
@@ -4215,7 +4186,7 @@ def switch_encryption():
             if new_method == 'password':
                 new_encryptor = PasswordEncryption(new_pwd)
                 salt_b64 = new_encryptor.get_salt_b64()
-                new_hash = hashlib.sha256(new_encryptor.key).hexdigest()
+                new_hash = PasswordEncryption.compute_verifier(new_pwd, new_encryptor.salt)
                 config.enable_password_encryption(salt_b64, new_hash)
                 manager.encryptor = new_encryptor
                 active_master_password = new_pwd
@@ -4304,10 +4275,14 @@ def export_data():
         data['accounts'] = sanitized_accounts
 
     if file_path:
+        norm_file_path = os.path.abspath(os.path.realpath(str(file_path).strip()))
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
+        if not norm_file_path.startswith(user_home + os.sep) or not norm_file_path.lower().endswith('.json'):
+            return jsonify({'error': 'Invalid export destination path'}), 400
         try:
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(norm_file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
-            return jsonify({'success': True, 'path': file_path, 'count': len(data.get('accounts', []))})
+            return jsonify({'success': True, 'path': norm_file_path, 'count': len(data.get('accounts', []))})
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
@@ -5155,13 +5130,14 @@ def get_icon_cache_stats():
 @app.route('/api/roblox/icon-file/<path:filename>', methods=['GET'])
 def get_icon_file(filename):
     try:
-        safe_filename = os.path.basename(filename)
+        from werkzeug.utils import secure_filename
+        safe_filename = secure_filename(os.path.basename(filename))
         if not safe_filename or safe_filename != filename:
             return jsonify({'error': 'Invalid filename'}), 400
         from utils.paths import get_cache_folder
-        icons_dir = os.path.join(get_cache_folder(), 'icons')
-        icon_path = os.path.join(icons_dir, safe_filename)
-        if not os.path.isfile(icon_path):
+        icons_dir = os.path.abspath(os.path.realpath(os.path.join(get_cache_folder(), 'icons')))
+        icon_path = os.path.abspath(os.path.realpath(os.path.join(icons_dir, safe_filename)))
+        if not icon_path.startswith(icons_dir + os.sep) or not os.path.isfile(icon_path):
             return jsonify({'error': 'File not found'}), 404
         return send_from_directory(icons_dir, safe_filename)
     except Exception:
@@ -5711,9 +5687,23 @@ def clean_rblx_traces():
         preserve_app_settings = data.get('preserve_app_settings', True)
         delete_studio = data.get('delete_studio', False)
         purge_auth = data.get('purge_auth', True)
-        weblauncher_dir = data.get('weblauncher_dir')
-        if weblauncher_dir and not RobloxAPI._is_safe_roblox_path(str(weblauncher_dir)):
-            weblauncher_dir = None
+        raw_weblauncher = str(data.get('weblauncher_dir') or '').strip().lower()
+        weblauncher_dir = None
+        if raw_weblauncher:
+            allowed_dirs = {}
+            for v in RobloxAPI.get_installed_versions():
+                p = v.get('path', '')
+                if p:
+                    norm_v = os.path.abspath(os.path.realpath(p))
+                    allowed_dirs[norm_v.lower()] = norm_v
+                    allowed_dirs[p.lower()] = norm_v
+            for b in RobloxAPI.BOOTSTRAPPER_CLIENTS:
+                r = os.path.expandvars(b.get('root', ''))
+                if r:
+                    norm_r = os.path.abspath(os.path.realpath(r))
+                    allowed_dirs[norm_r.lower()] = norm_r
+                    allowed_dirs[r.lower()] = norm_r
+            weblauncher_dir = allowed_dirs.get(raw_weblauncher)
         res = roblox_swap_manager.clean_traces(
             preserve_settings=preserve_settings,
             preserve_fastflags=preserve_fastflags,

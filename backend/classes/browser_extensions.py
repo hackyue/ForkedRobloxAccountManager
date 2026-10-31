@@ -203,7 +203,11 @@ class BrowserExtensionManager:
         )
 
     def add_from_crx(self, crx_path: Path | str) -> BrowserExtension:
-        source_path = Path(crx_path).expanduser().resolve()
+        norm_str = os.path.abspath(os.path.realpath(os.path.expanduser(str(crx_path))))
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser("~")))
+        if not norm_str.startswith(user_home + os.sep) and not norm_str.startswith(str(self.base_folder) + os.sep):
+            raise BrowserExtensionError(f"CRX file must be located in user profile or app directory: {crx_path}")
+        source_path = Path(norm_str)
         if not source_path.is_file():
             raise BrowserExtensionError(f"CRX file was not found: {source_path}")
         try:
@@ -221,7 +225,11 @@ class BrowserExtensionManager:
         )
 
     def add_from_xpi(self, xpi_path: Path | str) -> BrowserExtension:
-        source_path = Path(xpi_path).expanduser().resolve()
+        norm_str = os.path.abspath(os.path.realpath(os.path.expanduser(str(xpi_path))))
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser("~")))
+        if not norm_str.startswith(user_home + os.sep) and not norm_str.startswith(str(self.base_folder) + os.sep):
+            raise BrowserExtensionError(f"XPI file must be located in user profile or app directory: {xpi_path}")
+        source_path = Path(norm_str)
         if not source_path.is_file():
             raise BrowserExtensionError(f"XPI file was not found: {source_path}")
         try:
@@ -239,7 +247,11 @@ class BrowserExtensionManager:
         )
 
     def add_from_unpacked(self, source_dir: Path | str) -> BrowserExtension:
-        source_path = Path(source_dir).expanduser().resolve()
+        norm_str = os.path.abspath(os.path.realpath(os.path.expanduser(str(source_dir))))
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser("~")))
+        if not norm_str.startswith(user_home + os.sep) and not norm_str.startswith(str(self.base_folder) + os.sep):
+            raise BrowserExtensionError(f"Extension directory must be located in user profile or app directory: {source_dir}")
+        source_path = Path(norm_str)
         if not source_path.is_dir():
             raise BrowserExtensionError(f"Extension folder was not found: {source_path}")
         if not (source_path / "manifest.json").is_file():
@@ -314,6 +326,11 @@ class BrowserExtensionManager:
         staging_dir = self.extensions_folder / f".{folder_name}.{time.time_ns()}.tmp"
         self._assert_path_inside(target_dir, self.extensions_folder)
         self._assert_path_inside(staging_dir, self.extensions_folder)
+        norm_ext_root = os.path.abspath(os.path.realpath(str(self.extensions_folder)))
+        norm_target = os.path.abspath(os.path.realpath(str(target_dir)))
+        norm_staging = os.path.abspath(os.path.realpath(str(staging_dir)))
+        if not norm_target.startswith(norm_ext_root + os.sep) or not norm_staging.startswith(norm_ext_root + os.sep):
+            raise BrowserExtensionError("Refusing to access path outside managed extensions folder")
 
         try:
             if staging_dir.exists():
@@ -634,9 +651,13 @@ class BrowserExtensionManager:
 
     @staticmethod
     def _assert_path_inside(path: Path, root: Path) -> None:
-        resolved_path = path.resolve()
-        resolved_root = root.resolve()
+        resolved_path = os.path.abspath(os.path.realpath(str(path)))
+        resolved_root = os.path.abspath(os.path.realpath(str(root)))
+        if not resolved_path.startswith(resolved_root + os.sep) and resolved_path != resolved_root:
+            raise BrowserExtensionError(f"Refusing to access path outside managed extensions: {path}")
+        if os.path.commonpath([resolved_root, resolved_path]) != resolved_root:
+            raise BrowserExtensionError(f"Refusing to access path outside managed extensions: {path}")
         try:
-            resolved_path.relative_to(resolved_root)
+            Path(resolved_path).relative_to(Path(resolved_root))
         except ValueError as exc:
             raise BrowserExtensionError(f"Refusing to access path outside managed extensions: {path}") from exc

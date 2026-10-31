@@ -1602,10 +1602,12 @@ ConvertTo-Json -Compress @{
         return matches
 
     def _remove_path(self, target_path: str) -> bool:
-        if not target_path or not os.path.exists(target_path):
+        if not target_path or not isinstance(target_path, str):
             return False
-        real_target = os.path.realpath(target_path)
+        real_target = os.path.abspath(os.path.realpath(target_path))
         if real_target in ("/", "\\", "C:\\", "C:", "c:\\", "c:"):
+            return False
+        if not os.path.exists(real_target):
             return False
         try:
             if os.path.isdir(real_target):

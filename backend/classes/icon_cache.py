@@ -83,13 +83,16 @@ class IconCacheManager:
     def _safe_icon_file_path(self, filename: str) -> Optional[str]:
         if not filename or not isinstance(filename, str):
             return None
-        safe_name = os.path.basename(filename.strip())
-        safe_name = "".join(c for c in safe_name if c.isalnum() or c in (".", "_", "-"))
-        if not safe_name:
+        clean = filename.strip()
+        if "/" in clean or "\\" in clean or ".." in clean:
             return None
-        full_path = os.path.realpath(os.path.join(self.icons_folder, safe_name))
-        icons_dir = os.path.realpath(self.icons_folder)
-        if os.path.commonpath([icons_dir, full_path]) != icons_dir:
+        safe_name = os.path.basename(clean)
+        safe_name = "".join(c for c in safe_name if c.isalnum() or c in (".", "_", "-"))
+        if not safe_name or not safe_name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            return None
+        icons_dir = os.path.abspath(os.path.realpath(self.icons_folder))
+        full_path = os.path.abspath(os.path.realpath(os.path.join(icons_dir, safe_name)))
+        if not full_path.startswith(icons_dir + os.sep):
             return None
         return full_path
 
@@ -99,13 +102,18 @@ class IconCacheManager:
         file_path = self._safe_icon_file_path(filename)
         if not file_path:
             return None
+        icons_dir = os.path.abspath(os.path.realpath(self.icons_folder))
+        if not file_path.startswith(icons_dir + os.sep):
+            return None
         safe_filename = os.path.basename(file_path)
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             return f"http://127.0.0.1:5050/api/roblox/icon-file/{safe_filename}"
         try:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200 and resp.content:
-                temp_file = file_path + ".tmp"
+                temp_file = os.path.abspath(os.path.realpath(file_path + ".tmp"))
+                if not temp_file.startswith(icons_dir + os.sep):
+                    return None
                 with open(temp_file, "wb") as f:
                     f.write(resp.content)
                 os.replace(temp_file, file_path)
@@ -136,7 +144,8 @@ class IconCacheManager:
         key = str(place_id).strip()
         filename = self.get_place_icon_file_path(key)
         local_file_path = self._safe_icon_file_path(filename)
-        if local_file_path and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+        icons_dir = os.path.abspath(os.path.realpath(self.icons_folder))
+        if local_file_path and local_file_path.startswith(icons_dir + os.sep) and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
             return f"http://127.0.0.1:5050/api/roblox/icon-file/{os.path.basename(local_file_path)}"
         with self._lock:
             entry = self._memory_cache["place_icons"].get(key)
@@ -170,7 +179,8 @@ class IconCacheManager:
         key = str(user_id).strip()
         filename = self.get_avatar_icon_file_path(key)
         local_file_path = self._safe_icon_file_path(filename)
-        if local_file_path and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+        icons_dir = os.path.abspath(os.path.realpath(self.icons_folder))
+        if local_file_path and local_file_path.startswith(icons_dir + os.sep) and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
             return f"http://127.0.0.1:5050/api/roblox/icon-file/{os.path.basename(local_file_path)}"
         with self._lock:
             entry = self._memory_cache["avatar_icons"].get(key)
@@ -210,7 +220,8 @@ class IconCacheManager:
                 if data and isinstance(data, dict):
                     filename = self.get_place_icon_file_path(key)
                     local_file_path = self._safe_icon_file_path(filename)
-                    if local_file_path and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+                    icons_dir = os.path.abspath(os.path.realpath(self.icons_folder))
+                    if local_file_path and local_file_path.startswith(icons_dir + os.sep) and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
                         data["icon_url"] = f"http://127.0.0.1:5050/api/roblox/icon-file/{os.path.basename(local_file_path)}"
                     has_icon = bool(data.get("icon_url"))
                     ttl = self.DEFAULT_VALID_TTL if has_icon else self.DEFAULT_EMPTY_TTL

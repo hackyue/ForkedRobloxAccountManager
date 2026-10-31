@@ -514,10 +514,19 @@ class RobloxInstallerManager:
         if not version.startswith("version-"):
             version = "version-" + version
 
+        clean_version = "".join(c for c in version if c.isalnum() or c in ("-", "_"))
+        if not clean_version:
+            return {"success": False, "error": "Invalid version specified."}
+        version = clean_version
+
+        versions_root = os.path.abspath(os.path.realpath(selected_client["versions_path"]))
         if platform.system() == "Darwin" and selected_client["id"] == "roblox_applications":
-            target_dir = os.path.join(selected_client["versions_path"], "Roblox.app")
+            target_dir = os.path.abspath(os.path.realpath(os.path.join(versions_root, "Roblox.app")))
         else:
-            target_dir = os.path.join(selected_client["versions_path"], version)
+            target_dir = os.path.abspath(os.path.realpath(os.path.join(versions_root, version)))
+
+        if not target_dir.startswith(versions_root + os.sep) and target_dir != versions_root:
+            return {"success": False, "error": "Target directory is outside versions directory."}
 
         if os.path.exists(target_dir) and not overwrite:
             return {

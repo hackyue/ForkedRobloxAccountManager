@@ -88,12 +88,9 @@ class RobloxAccountManager:
                 stored_hash = self.encryption_config.get_password_hash()
                 if stored_hash:
                     salt = self.encryption_config.get_salt()
-                    if salt:
-                        temp_enc = PasswordEncryption(password, salt)
-                        entered_hash = hashlib.sha256(temp_enc.key).hexdigest()
-                    else:
-                        entered_hash = hashlib.sha256(password.encode()).hexdigest()
-                    if not hmac.compare_digest(entered_hash, stored_hash):
+                    temp_enc = PasswordEncryption(password, salt) if salt else None
+                    derived_key = temp_enc.key if temp_enc else None
+                    if not PasswordEncryption.verify_password_verifier(password, salt, stored_hash, derived_key):
                         raise ValueError("Invalid password")
                 
                 salt = self.encryption_config.get_salt()
@@ -2751,6 +2748,29 @@ class RobloxAccountManager:
 
         return {"matched": matched, "changed": changed, "missing": missing}
 
+    @staticmethod
+    def _safe_import_file_path(base_dir: str, filename: str) -> Optional[str]:
+        """Safely resolve an import file inside an allowed directory with strict basename and containment checks."""
+        allowed_files = {
+            'saved_accounts.json',
+            'ui_settings.json',
+            'settings.json',
+            'saved_users.json',
+            'webhook_config.json',
+            'custom_themes.json',
+            'encryption_config.json',
+        }
+        clean_name = os.path.basename(filename)
+        if clean_name not in allowed_files:
+            return None
+        real_dir = os.path.realpath(os.path.abspath(base_dir))
+        if not os.path.isdir(real_dir):
+            return None
+        full_path = os.path.realpath(os.path.abspath(os.path.join(real_dir, clean_name)))
+        if not full_path.startswith(real_dir + os.sep) and full_path != real_dir:
+            return None
+        return full_path
+
     def _decrypt_raw_accounts(self, raw_acc, target_dir: str, password: str = ''):
         """Decrypt raw_accounts JSON structure with multiple key strategies"""
         if not isinstance(raw_acc, dict) or not raw_acc.get('encrypted'):
@@ -2823,8 +2843,8 @@ class RobloxAccountManager:
 
         salt_b64 = None
         for cfg_filename in ['encryption_config.json', 'ui_settings.json', 'settings.json']:
-            cfg_p = os.path.join(target_dir, cfg_filename)
-            if os.path.exists(cfg_p):
+            cfg_p = self._safe_import_file_path(target_dir, cfg_filename)
+            if cfg_p and os.path.exists(cfg_p):
                 try:
                     with open(cfg_p, 'r', encoding='utf-8') as cf:
                         cd = json.load(cf)
@@ -2856,30 +2876,33 @@ class RobloxAccountManager:
 
     def preview_framdata_folder(self, folder_path: str, password: str = '') -> dict:
         """Preview contents of a FRAMdata or AccountManagerData directory"""
-        if not folder_path or not os.path.exists(folder_path):
+        if not folder_path or not isinstance(folder_path, str):
             return {'valid': False, 'error': 'Directory path does not exist'}
 
-        target_dir = folder_path
-        sub_dir = os.path.join(folder_path, 'AccountManagerData')
-        fram_dir = os.path.join(folder_path, 'FRAMdata')
-        if os.path.isdir(sub_dir):
-            target_dir = sub_dir
-        elif os.path.isdir(fram_dir):
-            target_dir = fram_dir
+        norm_root = os.path.abspath(os.path.realpath(folder_path.strip()))
+        if not os.path.isdir(norm_root):
+            return {'valid': False, 'error': 'Directory path does not exist'}
 
-        acc_file = os.path.join(target_dir, 'saved_accounts.json')
-        ui_file = os.path.join(target_dir, 'ui_settings.json')
-        if not os.path.exists(ui_file):
-            ui_file = os.path.join(target_dir, 'settings.json')
+        target_dir = norm_root
+        for sub_candidate in ('AccountManagerData', 'FRAMdata'):
+            cand_p = os.path.abspath(os.path.realpath(os.path.join(norm_root, sub_candidate)))
+            if cand_p.startswith(norm_root + os.sep) and os.path.isdir(cand_p):
+                target_dir = cand_p
+                break
 
-        if not os.path.exists(acc_file) and not os.path.exists(ui_file):
+        acc_file = self._safe_import_file_path(target_dir, 'saved_accounts.json')
+        ui_file = self._safe_import_file_path(target_dir, 'ui_settings.json')
+        if not (ui_file and os.path.exists(ui_file)):
+            ui_file = self._safe_import_file_path(target_dir, 'settings.json')
+
+        if not (acc_file and os.path.exists(acc_file)) and not (ui_file and os.path.exists(ui_file)):
             return {'valid': False, 'error': 'No saved_accounts.json or ui_settings.json found in folder'}
 
         accounts_count = 0
         is_encrypted = False
         requires_password = False
 
-        if os.path.exists(acc_file):
+        if acc_file and os.path.exists(acc_file):
             try:
                 with open(acc_file, 'r', encoding='utf-8') as f:
                     raw = json.load(f)
@@ -2901,7 +2924,7 @@ class RobloxAccountManager:
         users_count = 0
         has_settings = False
         has_webhooks = False
-        if os.path.exists(ui_file):
+        if ui_file and os.path.exists(ui_file):
             has_settings = True
             try:
                 with open(ui_file, 'r', encoding='utf-8') as f:
@@ -2920,8 +2943,8 @@ class RobloxAccountManager:
             except Exception:
                 games_count = 0
 
-        saved_users_path = os.path.join(target_dir, 'saved_users.json')
-        if os.path.exists(saved_users_path):
+        saved_users_path = self._safe_import_file_path(target_dir, 'saved_users.json')
+        if saved_users_path and os.path.exists(saved_users_path):
             try:
                 with open(saved_users_path, 'r', encoding='utf-8') as uf:
                     u_data = json.load(uf)
@@ -2930,11 +2953,12 @@ class RobloxAccountManager:
             except Exception:
                 pass
 
-        webhook_file = os.path.join(target_dir, 'webhook_config.json')
-        if os.path.exists(webhook_file):
+        webhook_file = self._safe_import_file_path(target_dir, 'webhook_config.json')
+        if webhook_file and os.path.exists(webhook_file):
             has_webhooks = True
 
-        has_themes = os.path.exists(os.path.join(target_dir, 'custom_themes.json'))
+        themes_file = self._safe_import_file_path(target_dir, 'custom_themes.json')
+        has_themes = bool(themes_file and os.path.exists(themes_file))
 
         return {
             'valid': True,
@@ -2968,8 +2992,8 @@ class RobloxAccountManager:
         imported_users_count = 0
         settings_imported = False
 
-        acc_file = os.path.join(target_dir, 'saved_accounts.json')
-        if os.path.exists(acc_file):
+        acc_file = self._safe_import_file_path(target_dir, 'saved_accounts.json')
+        if acc_file and os.path.exists(acc_file):
             try:
                 with open(acc_file, 'r', encoding='utf-8') as f:
                     raw_acc = json.load(f)
@@ -3019,9 +3043,9 @@ class RobloxAccountManager:
             except Exception as e:
                 print(f"Error importing accounts from FRAMdata: {e}")
 
-        ui_file = os.path.join(target_dir, 'ui_settings.json')
-        if not os.path.exists(ui_file):
-            ui_file = os.path.join(target_dir, 'settings.json')
+        ui_file = self._safe_import_file_path(target_dir, 'ui_settings.json')
+        if not (ui_file and os.path.exists(ui_file)):
+            ui_file = self._safe_import_file_path(target_dir, 'settings.json')
 
         imported_settings = {}
         imported_games = []
@@ -3029,7 +3053,7 @@ class RobloxAccountManager:
         imported_webhook_config = None
         imported_custom_themes = None
 
-        if os.path.exists(ui_file):
+        if ui_file and os.path.exists(ui_file):
             try:
                 with open(ui_file, 'r', encoding='utf-8') as f:
                     raw_ui = json.load(f)
@@ -3279,8 +3303,8 @@ class RobloxAccountManager:
             except Exception as e:
                 print(f"Error importing ui_settings from FRAMdata: {e}")
 
-        saved_users_file = os.path.join(target_dir, 'saved_users.json')
-        if os.path.exists(saved_users_file):
+        saved_users_file = self._safe_import_file_path(target_dir, 'saved_users.json')
+        if saved_users_file and os.path.exists(saved_users_file):
             try:
                 with open(saved_users_file, 'r', encoding='utf-8') as suf:
                     file_users = json.load(suf)
@@ -3302,8 +3326,8 @@ class RobloxAccountManager:
             except Exception as e:
                 print(f"Error importing saved_users.json: {e}")
 
-        webhook_file = os.path.join(target_dir, 'webhook_config.json')
-        if os.path.exists(webhook_file):
+        webhook_file = self._safe_import_file_path(target_dir, 'webhook_config.json')
+        if webhook_file and os.path.exists(webhook_file):
             try:
                 with open(webhook_file, 'r', encoding='utf-8') as wf:
                     wh_cfg = json.load(wf)
@@ -3314,8 +3338,8 @@ class RobloxAccountManager:
             except Exception as e:
                 print(f"Error importing webhook_config.json: {e}")
 
-        themes_file = os.path.join(target_dir, 'custom_themes.json')
-        if os.path.exists(themes_file):
+        themes_file = self._safe_import_file_path(target_dir, 'custom_themes.json')
+        if themes_file and os.path.exists(themes_file):
             try:
                 with open(themes_file, 'r', encoding='utf-8') as tf:
                     t_payload = json.load(tf)

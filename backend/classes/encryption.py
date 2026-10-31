@@ -7,8 +7,10 @@ import os
 import json
 import base64
 import hashlib
+import hmac
 import platform
 import subprocess
+from typing import Any, Optional
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import PBKDF2
@@ -243,6 +245,37 @@ class PasswordEncryption:
     def get_salt_b64(self):
         """Get base64-encoded salt"""
         return base64.b64encode(self.salt).decode('utf-8')
+
+    @staticmethod
+    def compute_verifier(password: str, salt: Any) -> str:
+        """Derive a secure password verifier using PBKDF2 (100,000 iterations)."""
+        salt_bytes = base64.b64decode(salt) if isinstance(salt, str) else (salt or b"fram_default_salt")
+        pwd_bytes = password.encode('utf-8') if isinstance(password, str) else password
+        return hashlib.pbkdf2_hmac('sha256', pwd_bytes, salt_bytes, 100000).hex()
+
+    @staticmethod
+    def verify_password_verifier(entered_password: str, salt: Any, stored_hash: str, derived_key: Any = None) -> bool:
+        """Verify entered password against stored verifier (supports modern PBKDF2 verifier and legacy hash)."""
+        if not stored_hash or not entered_password:
+            return False
+        salt_bytes = base64.b64decode(salt) if isinstance(salt, str) else (salt or b"")
+        computed = hashlib.pbkdf2_hmac('sha256', entered_password.encode('utf-8'), salt_bytes or b"fram_default_salt", 100000).hex()
+        if hmac.compare_digest(computed, stored_hash):
+            return True
+        if derived_key:
+            import hashlib as _hl
+            try:
+                if hmac.compare_digest(_hl.sha256(derived_key).hexdigest(), stored_hash):
+                    return True
+            except Exception:
+                pass
+        try:
+            import hashlib as _hl
+            if hmac.compare_digest(_hl.sha256(entered_password.encode('utf-8')).hexdigest(), stored_hash):
+                return True
+        except Exception:
+            pass
+        return False
     
     def encrypt_data(self, data):
         """Encrypt data using password-based key"""
