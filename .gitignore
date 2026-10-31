@@ -10,6 +10,7 @@ pnpm-debug.log*
 src-tauri/target/
 src-tauri/backend.exe
 src-tauri/resources/backend.exe
+src-tauri/resources/backend
 backend/dist/
 backend/build/
 

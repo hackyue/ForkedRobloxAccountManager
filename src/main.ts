@@ -14641,7 +14641,7 @@ function renderAboutView(): void {
       <div class="about-specs-grid">
         <div class="about-spec-card" id="btn-about-card-release" style="cursor:pointer;" title="View Release Changelogs">
           <div class="about-spec-info">
-            <span class="about-spec-val">Version 3.0.0.2 (Pre-release 2)</span>
+            <span class="about-spec-val">Version 3.0.0.2 (Pre-release 3)</span>
             <span style="font-size:12px; color:var(--muted); margin-top:2px;">Click to view What's New changelogs &rarr;</span>
           </div>
         </div>
@@ -15350,7 +15350,7 @@ function showUpdateModal(initialCheck?: UpdateCheckResult): void {
       <div class="modal-body">
         <div class="updater-version-info">
           <div class="updater-badges">
-            <span class="updater-badge current" id="updater-curr-badge">Current: v3.0.0.2 (Pre-release 2)</span>
+            <span class="updater-badge current" id="updater-curr-badge">Current: v3.0.0.2 (Pre-release 3)</span>
             <span class="updater-arrow">→</span>
             <span class="updater-badge latest" id="updater-latest-badge">Checking...</span>
           </div>
@@ -18165,7 +18165,7 @@ function initApp(): void {
             <div class="about-title-wrap">
               <div style="display:flex; align-items:center; gap:8px;">
                 <h2 style="font-size:17px; font-weight:700; color:var(--text-bright); margin:0;">About Forked Roblox Account Manager</h2>
-                <span class="badge" style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:12px; background:var(--primary-dim); color:var(--primary); border:1px solid var(--primary);">v3.0.0.2 Pre-release 2</span>
+                <span class="badge" style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:12px; background:var(--primary-dim); color:var(--primary); border:1px solid var(--primary);">v3.0.0.2 Pre-release 3</span>
               </div>
               <span style="font-size:12px; color:var(--text-muted);">Account Manager, Instance Manager, VIP Server Manager · Developed by <b style="color:var(--fg);">hackyue</b></span>
             </div>
@@ -21245,3 +21245,5 @@ if (document.readyState === 'loading') {
   initApp();
   loadFromBackend(); // Load data from Python backend
 }
+
+

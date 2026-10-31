@@ -22,6 +22,10 @@ RESOURCES_DIR = ROOT_DIR / "src-tauri" / "resources"
 IS_WINDOWS = sys.platform == "win32"
 BACKEND_BIN_NAME = "backend.exe" if IS_WINDOWS else "backend"
 
+cargo_bin = Path.home() / ".cargo" / "bin"
+if cargo_bin.is_dir():
+    os.environ["PATH"] = f"{cargo_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+
 
 def run_step(cmd: list[str], cwd: Path = ROOT_DIR, shell: bool = False) -> None:
     print(f"\n==> Running: {' '.join(cmd)}", flush=True)

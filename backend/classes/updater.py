@@ -36,19 +36,29 @@ class AppUpdaterManager:
 
     def _parse_version_tuple(self, version_str: Any) -> tuple:
         if not version_str:
-            return (0,)
-        clean = str(version_str).strip()
-        if clean.lower().startswith("v"):
-            clean = clean[1:]
-        clean = clean.split("-")[0]
-        parts = []
-        for segment in clean.split("."):
-            nums = re.findall(r"\d+", segment)
-            if nums:
-                parts.append(int(nums[0]))
-            else:
+            return (0, 0, 0, 0, 0)
+        raw = str(version_str).strip()
+        lower = raw.lower()
+        if lower.startswith("v"):
+            raw = raw[1:]
+            lower = raw.lower()
+
+        pre_match = re.search(r"(?:pre(?:[-_\s]?release)?|pr|beta|alpha|rc)[-_\s.]*(\d+)?", lower)
+        if pre_match:
+            base_part = raw[:pre_match.start()].strip(" -_().")
+            pre_num = int(pre_match.group(1)) if pre_match.group(1) else 1
+            parts = [int(re.findall(r"\d+", s)[0]) if re.findall(r"\d+", s) else 0 for s in base_part.split(".")]
+            while len(parts) < 3:
                 parts.append(0)
-        return tuple(parts) if parts else (0,)
+            return (parts[0], parts[1], parts[2], 0, pre_num)
+
+        base_part = raw.split("-")[0].strip()
+        parts = [int(re.findall(r"\d+", s)[0]) if re.findall(r"\d+", s) else 0 for s in base_part.split(".")]
+        if len(parts) >= 4:
+            return (parts[0], parts[1], parts[2], 0, parts[3] + 1)
+        while len(parts) < 3:
+            parts.append(0)
+        return (parts[0], parts[1], parts[2], 1, 0)
 
     def check_for_updates(
         self,
