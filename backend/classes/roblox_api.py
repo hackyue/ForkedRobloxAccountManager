@@ -2372,20 +2372,52 @@ class RobloxAPI:
         browser_tracker_id = random.randint(55393295400, 55393295500)
         launch_time = int(time.time() * 1000)
 
+        clean_game_id = ""
+        clean_server_job_id = ""
+
         if normalized_launch_mode == "join_user":
             user_target = str(game_id).strip()
             if user_target and not user_target.isdigit():
                 resolved_uid = RobloxAPI.get_user_id_from_username(user_target)
                 if resolved_uid:
                     user_target = resolved_uid
+            if not user_target or not user_target.isdigit():
+                err = f"Invalid user target for join_user: '{game_id}'. User target must resolve to a numeric user ID."
+                print(f"[ERROR] {err}")
+                if return_details:
+                    return False, err
+                return False
+            clean_game_id = user_target
+            game_id = clean_game_id
             place_launch_request = "RequestFollowUser"
-            place_launch_extra = "&userId=" + str(user_target)
+            place_launch_extra = "&userId=" + clean_game_id
             place_launch_base = (
                 "https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=" + place_launch_request +
                 "&browserTrackerId=" + str(browser_tracker_id) +
                 place_launch_extra
             )
         else:
+            clean_game_id = str(game_id or "").strip()
+            if not clean_game_id.isdigit():
+                err = f"Invalid game place ID: '{game_id}'. Place ID must contain digits only."
+                print(f"[ERROR] {err}")
+                if return_details:
+                    return False, err
+                return False
+
+            if server_job_id:
+                raw_job = str(server_job_id).strip()
+                if not re.fullmatch(r"^[A-Fa-f0-9-]+$", raw_job):
+                    err = f"Invalid server job ID: '{server_job_id}'. Job ID must contain UUID-like characters only."
+                    print(f"[ERROR] {err}")
+                    if return_details:
+                        return False, err
+                    return False
+                clean_server_job_id = raw_job
+
+            game_id = clean_game_id
+            server_job_id = clean_server_job_id
+
             place_launch_request = "RequestGame"
             place_launch_extra = ""
             if private_server_id:
@@ -2397,13 +2429,13 @@ class RobloxAPI:
                     place_launch_extra += "&joinAttemptId=" + str(uuid.uuid4())
                 else:
                     place_launch_extra = "&linkCode=" + resolved_private_server_link_code
-            elif server_job_id:
+            elif clean_server_job_id:
                 place_launch_request = "RequestGameJob"
-                place_launch_extra = "&gameId=" + str(server_job_id)
+                place_launch_extra = "&gameId=" + clean_server_job_id
             place_launch_base = (
                 "https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=" + place_launch_request +
                 "&browserTrackerId=" + str(browser_tracker_id) +
-                "&placeId=" + str(game_id) +
+                "&placeId=" + clean_game_id +
                 "&isPlayTogetherGame=false" +
                 place_launch_extra
             )
@@ -2582,12 +2614,25 @@ class RobloxAPI:
             return False
 
     @staticmethod
+    def _is_valid_roblox_protocol_url(url: str) -> bool:
+        if not url or not isinstance(url, str):
+            return False
+        cleaned = url.strip()
+        pattern = r"^roblox-player:[A-Za-z0-9+:\/._?&=%-]+$"
+        return bool(re.fullmatch(pattern, cleaned, re.IGNORECASE))
+
+    @staticmethod
     def _launch_protocol_url(url):
         """Launch the Roblox protocol URL in a cross-platform-safe way."""
+        if not RobloxAPI._is_valid_roblox_protocol_url(url):
+            print("[ERROR] Rejected invalid or unsafe Roblox protocol URL.")
+            return False
+
+        clean_url = str(url).strip()
         system = platform.system()
         if system == "Windows":
             try:
-                os.startfile(url)
+                os.startfile(clean_url)
                 return True
             except OSError as exc:
                 winerror = getattr(exc, "winerror", None)
@@ -2602,12 +2647,15 @@ class RobloxAPI:
                     "powershell",
                     "-NoProfile",
                     "-Command",
-                    f"Start-Process -FilePath '{url}'"
+                    "Start-Process",
+                    "-FilePath",
+                    "--%",
+                    clean_url
                 ]
         elif system == "Darwin":
-            command = ["open", url]
+            command = ["open", clean_url]
         else:
-            command = ["xdg-open", url]
+            command = ["xdg-open", clean_url]
 
         try:
             if system == "Windows":
