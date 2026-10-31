@@ -1568,29 +1568,30 @@ def uninstall_roblox_version():
         requested_token = str(target_path or version_name or '').strip().lower()
         real_target = installed_map.get(requested_token)
         if not real_target:
-            # Fallback check against allowed exact paths
             cand_norm = os.path.abspath(os.path.realpath(str(target_path).strip()))
-            if cand_norm in allowed_exact_paths:
-                real_target = cand_norm
+            for exact in allowed_exact_paths:
+                if cand_norm.lower() == exact.lower():
+                    real_target = exact
+                    break
 
         if not real_target:
             return jsonify({'success': False, 'error': 'Version folder not found or not an installed version'}), 404
 
-        valid_deletion = False
+        target_to_delete = None
         if real_target in allowed_exact_paths:
-            valid_deletion = True
+            target_to_delete = real_target
         else:
             for root in allowed_roots:
                 real_root = os.path.abspath(os.path.realpath(root))
                 if real_target.startswith(real_root + os.sep) and real_target != real_root:
-                    valid_deletion = True
+                    target_to_delete = real_target
                     break
 
-        if not valid_deletion:
+        if not target_to_delete:
             return jsonify({'success': False, 'error': 'Forbidden deletion path'}), 403
 
-        shutil.rmtree(real_target)
-        return jsonify({'success': True, 'message': f'Successfully uninstalled {version_name or os.path.basename(real_target)}'})
+        shutil.rmtree(target_to_delete)
+        return jsonify({'success': True, 'message': f'Successfully uninstalled {version_name or os.path.basename(target_to_delete)}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -2231,6 +2232,13 @@ def add_browser_extension():
         path_or_id = str(data.get('path_or_id') or '').strip()
         if not source or not path_or_id:
             return jsonify({'success': False, 'error': 'Source and target path or ID are required'}), 400
+
+        if source in ('unpacked', 'crx', 'xpi'):
+            user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
+            norm_target_path = os.path.abspath(os.path.realpath(os.path.expanduser(path_or_id)))
+            if not norm_target_path.startswith(user_home + os.sep):
+                return jsonify({'success': False, 'error': 'Extension file/folder must reside within user home directory'}), 400
+            path_or_id = norm_target_path
 
         if source in ('web_store', 'chrome'):
             ext = extension_manager.add_from_extension_id(path_or_id)
@@ -3932,6 +3940,8 @@ def complete_setup():
     save_data(data)
     return jsonify({'success': True, 'settings': data['settings']})
 
+ALLOWED_FRAMDATA_FOLDERS: set[str] = set()
+
 @app.route('/api/setup/select-folder', methods=['POST', 'GET', 'OPTIONS'])
 def select_folder_dialog():
     if request.method == 'OPTIONS':
@@ -3939,6 +3949,7 @@ def select_folder_dialog():
     try:
         folder_selected = _choose_folder_native("Select FRAMdata or AccountManagerData Folder")
         if folder_selected:
+            ALLOWED_FRAMDATA_FOLDERS.add(os.path.abspath(os.path.realpath(folder_selected)))
             return jsonify({'success': True, 'path': folder_selected})
         return jsonify({'success': False, 'cancelled': True})
     except Exception as e:
@@ -3955,7 +3966,13 @@ def preview_framdata():
         manager = get_account_manager()
         if not manager:
             return jsonify({'success': False, 'valid': False, 'error': 'Account manager not initialized'}), 500
-        res = manager.preview_framdata_folder(folder_path, password=password)
+
+        norm_folder = os.path.abspath(os.path.realpath(str(folder_path).strip()))
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
+        if not norm_folder.startswith(user_home + os.sep) and norm_folder not in ALLOWED_FRAMDATA_FOLDERS:
+            return jsonify({'success': False, 'valid': False, 'error': 'Folder must be located inside your user directory or selected via folder dialog'}), 400
+
+        res = manager.preview_framdata_folder(norm_folder, password=password)
         return jsonify(res)
     except Exception as e:
         return jsonify({'success': False, 'valid': False, 'error': str(e)}), 500
@@ -3971,7 +3988,13 @@ def import_framdata():
         manager = get_account_manager()
         if not manager:
             return jsonify({'success': False, 'error': 'Account manager not initialized'}), 500
-        res = manager.import_framdata_folder(folder_path, password=password)
+
+        norm_folder = os.path.abspath(os.path.realpath(str(folder_path).strip()))
+        user_home = os.path.abspath(os.path.realpath(os.path.expanduser('~')))
+        if not norm_folder.startswith(user_home + os.sep) and norm_folder not in ALLOWED_FRAMDATA_FOLDERS:
+            return jsonify({'success': False, 'error': 'Folder must be located inside your user directory or selected via folder dialog'}), 400
+
+        res = manager.import_framdata_folder(norm_folder, password=password)
 
         if res.get('success'):
             data = load_data()

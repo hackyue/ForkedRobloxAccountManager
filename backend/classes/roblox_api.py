@@ -2206,10 +2206,12 @@ class RobloxAPI:
             """Launch via the resolved launcher executable with shared logging."""
             if not launcher_exe or not os.path.isfile(launcher_exe):
                 return
-            command = [launcher_exe]
+            if not RobloxAPI._is_strict_roblox_launch_url(target_url):
+                return
+            command = [str(launcher_exe)]
             if launcher_requires_player_flag:
                 command.append("-player")
-            command.append(target_url)
+            command.append(str(target_url))
             subprocess.Popen(
                 command,
                 stdout=subprocess.DEVNULL,
@@ -2363,8 +2365,9 @@ class RobloxAPI:
                 place_launch_extra
             )
         else:
-            clean_game_id = str(game_id or "").strip()
-            if not clean_game_id.isdigit():
+            try:
+                clean_game_id = str(int(str(game_id or "").strip()))
+            except Exception:
                 err = f"Invalid game place ID: '{game_id}'. Place ID must contain digits only."
                 print(f"[ERROR] {err}")
                 if return_details:
@@ -2372,14 +2375,14 @@ class RobloxAPI:
                 return False
 
             if server_job_id:
-                raw_job = str(server_job_id).strip()
-                if not re.fullmatch(r"^[A-Fa-f0-9-]+$", raw_job):
+                try:
+                    clean_server_job_id = str(uuid.UUID(str(server_job_id).strip()))
+                except Exception:
                     err = f"Invalid server job ID: '{server_job_id}'. Job ID must contain UUID-like characters only."
                     print(f"[ERROR] {err}")
                     if return_details:
                         return False, err
                     return False
-                clean_server_job_id = raw_job
 
             game_id = clean_game_id
             server_job_id = clean_server_job_id
@@ -2620,10 +2623,12 @@ class RobloxAPI:
                     os.path.realpath(os.path.expanduser("~")).lower(),
                 ])
 
-            if not any(
-                resolved_lower == root or resolved_lower.startswith(root + os.sep)
-                for root in trusted_roots
-            ):
+            is_trusted = False
+            for root in trusted_roots:
+                if resolved.startswith(root + os.sep) or resolved == root or resolved_lower.startswith(root + os.sep) or resolved_lower == root:
+                    is_trusted = True
+                    break
+            if not is_trusted:
                 return False
 
             if not os.path.exists(resolved):

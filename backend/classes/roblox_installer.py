@@ -525,8 +525,9 @@ class RobloxInstallerManager:
         else:
             target_dir = os.path.abspath(os.path.realpath(os.path.join(versions_root, version)))
 
-        if not target_dir.startswith(versions_root + os.sep) and target_dir != versions_root:
-            return {"success": False, "error": "Target directory is outside versions directory."}
+        if not target_dir.startswith(versions_root + os.sep):
+            if target_dir != versions_root:
+                return {"success": False, "error": "Target directory is outside versions directory."}
 
         if os.path.exists(target_dir) and not overwrite:
             return {
