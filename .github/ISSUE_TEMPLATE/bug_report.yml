@@ -26,6 +26,7 @@ body:
       options:
         - "Installer (.exe NSIS)"
         - "Installer (.msi)"
+        - "Installer (.dmg / macOS .app)"
         - "Built from source / Developer mode"
         - "Other"
     validations:
@@ -38,6 +39,7 @@ body:
       options:
         - "Windows 11"
         - "Windows 10"
+        - "macOS"
         - "Other"
     validations:
       required: true

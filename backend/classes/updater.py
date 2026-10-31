@@ -52,6 +52,11 @@ class AppUpdaterManager:
                 parts.append(0)
             return (parts[0], parts[1], parts[2], 0, pre_num)
 
+        num_pre_match = re.match(r"^(\d+\.\d+\.\d+)-(\d+)$", raw)
+        if num_pre_match:
+            parts = [int(x) for x in num_pre_match.group(1).split(".")]
+            return (parts[0], parts[1], parts[2], 0, int(num_pre_match.group(2)) + 1)
+
         base_part = raw.split("-")[0].strip()
         parts = [int(re.findall(r"\d+", s)[0]) if re.findall(r"\d+", s) else 0 for s in base_part.split(".")]
         if len(parts) >= 4:
