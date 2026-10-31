@@ -735,7 +735,7 @@ function extractPrivateServerCode(input: string): { code: string; placeId?: stri
     return { code: vipMatch[1], placeId: extractedPlaceId, isUrl: true };
   }
 
-  const isFullUrl = trimmed.includes('://') || trimmed.toLowerCase().includes('roblox.com');
+  const isFullUrl = trimmed.includes('://') || /(?:^|https?:\/\/)(?:[a-zA-Z0-9-]+\.)*roblox\.com(?:[\/?#:]|$)/i.test(trimmed);
   return { code: trimmed, placeId: extractedPlaceId, isUrl: isFullUrl };
 }
 
@@ -827,7 +827,7 @@ function showImportBanner(message: string = 'Importing accounts...'): void {
     banner.className = `import-progress-banner pos-${pos}`;
     banner.innerHTML = `
       <div class="import-spinner"></div>
-      <div class="import-text" id="import-progress-text">${message}</div>
+      <div class="import-text" id="import-progress-text">${escapeHtml(message)}</div>
     `;
     if (toastWrap) {
       toastWrap.appendChild(banner);
@@ -9968,13 +9968,13 @@ function renderSetup(): void {
                   <div class="setup-import-box" id="setup-import-box" style="display: ${setupData.importMode === 'import' ? 'flex' : 'none'};">
                     <label class="setup-import-label">FRAMdata / AccountManagerData Folder Location</label>
                     <div class="setup-import-input-row">
-                      <input type="text" id="setup-import-path-input" class="setup-input" placeholder="Select or paste folder path..." value="${setupData.importPath || ''}" />
+                      <input type="text" id="setup-import-path-input" class="setup-input" placeholder="Select or paste folder path..." value="${escapeHtml(setupData.importPath || '')}" />
                       <button type="button" class="btn btn-secondary" id="setup-browse-folder-btn">Browse...</button>
                       <button type="button" class="btn btn-primary" id="setup-verify-path-btn">Verify Path</button>
                     </div>
 
                     <div class="setup-import-input-row" id="setup-import-pwd-row" style="display:none; margin-top:6px;">
-                      <input type="password" id="setup-import-pwd-input" class="setup-input" placeholder="Enter master password for encrypted account file..." value="${setupData.importPassword || ''}" />
+                      <input type="password" id="setup-import-pwd-input" class="setup-input" placeholder="Enter master password for encrypted account file..." value="${escapeHtml(setupData.importPassword || '')}" />
                       <button type="button" class="btn btn-secondary" id="setup-import-pwd-apply-btn">Decrypt</button>
                     </div>
 
@@ -10148,8 +10148,8 @@ function renderSetup(): void {
                   ` : `
                     <div class="setup-pwd-wrap" id="setup-password-box" style="display: ${setupData.encryptionMethod === 'password' ? 'flex' : 'none'};">
                       <div style="display:flex; gap:8px;">
-                        <input type="password" id="setup-password-input" class="setup-input" placeholder="Create Master Password (min 8 chars)" value="${setupData.encryptionPassword || ''}" autocomplete="new-password" />
-                        <input type="password" id="setup-confirm-input" class="setup-input" placeholder="Confirm Password" value="${setupData.confirmPassword || ''}" autocomplete="new-password" />
+                        <input type="password" id="setup-password-input" class="setup-input" placeholder="Create Master Password (min 8 chars)" value="${escapeHtml(setupData.encryptionPassword || '')}" autocomplete="new-password" />
+                        <input type="password" id="setup-confirm-input" class="setup-input" placeholder="Confirm Password" value="${escapeHtml(setupData.confirmPassword || '')}" autocomplete="new-password" />
                       </div>
                       <div id="pwd-match-badge" style="font-size:11px; color:var(--muted); min-height:16px;"></div>
                     </div>
@@ -12591,10 +12591,10 @@ function renderClientSettingsContent(contentArea: HTMLElement | null): void {
 
     <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; gap:16px; flex-wrap:wrap;">
       <div>
-        <h2 style="margin:0;">${headerTitle}</h2>
-        <p style="margin:4px 0 0 0; color:var(--muted); font-size:12.5px;">${headerSubtitle}</p>
+        <h2 style="margin:0;">${escapeHtml(headerTitle)}</h2>
+        <p style="margin:4px 0 0 0; color:var(--muted); font-size:12.5px;">${escapeHtml(headerSubtitle)}</p>
         <div style="font-size:11px; color:var(--fg-3); margin-top:4px; font-family:monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:600px;">
-          ${data.file_path || ''}
+          ${escapeHtml(data.file_path || '')}
         </div>
       </div>
 
@@ -12607,7 +12607,7 @@ function renderClientSettingsContent(contentArea: HTMLElement | null): void {
     <div class="settings-card" id="clientsettings-card-wrap">
       ${visibleSpecs.length === 0 ? `
         <div style="padding:32px; text-align:center; color:var(--muted); font-size:13px;">
-          No settings found matching "${query}".
+          No settings found matching "${escapeHtml(query)}".
         </div>
       ` : ''}
     </div>
@@ -13579,7 +13579,7 @@ function renderFastFlagsActiveTab(contentArea: HTMLElement): void {
     <div style="display:flex; gap:10px; align-items:center; margin-bottom:16px; flex-wrap:wrap;">
       <div class="search-wrap" style="flex:1; min-width:220px;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <input type="search" id="fastflags-search-input" placeholder="Search flags by name or value..." value="${fastFlagsSearchQuery}" autocomplete="off" />
+        <input type="search" id="fastflags-search-input" placeholder="Search flags by name or value..." value="${escapeHtml(fastFlagsSearchQuery)}" autocomplete="off" />
       </div>
 
       <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
@@ -13816,7 +13816,7 @@ function renderFastFlagsPresetsTab(contentArea: HTMLElement): void {
       <div class="fastflags-preset-filter-bar" style="margin-bottom:14px;">
         <div class="search-wrap" style="flex:1; min-width:200px;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-          <input type="search" id="presets-search-input" placeholder="Search presets..." value="${fastFlagsPresetsSearchQuery}" autocomplete="off" />
+          <input type="search" id="presets-search-input" placeholder="Search presets..." value="${escapeHtml(fastFlagsPresetsSearchQuery)}" autocomplete="off" />
         </div>
         <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
           ${categories.map(cat => `
@@ -19970,11 +19970,18 @@ function loadBloxgenStoredData(): void {
   }
 }
 
+function sanitizeBloxgenItemForStorage(item: any): any {
+  if (!item || typeof item !== 'object') return null;
+  const { password, cookie, ...safe } = item;
+  return safe;
+}
+
 function saveBloxgenStoredData(): void {
   try {
-    localStorage.setItem('fram_bloxgen_history', JSON.stringify(bloxgenHistory.slice(0, 100)));
+    const sanitizedHistory = bloxgenHistory.slice(0, 100).map(sanitizeBloxgenItemForStorage).filter(Boolean);
+    localStorage.setItem('fram_bloxgen_history', JSON.stringify(sanitizedHistory));
     if (bloxgenLastGeneratedAccount) {
-      localStorage.setItem('fram_bloxgen_last_account', JSON.stringify(bloxgenLastGeneratedAccount));
+      localStorage.setItem('fram_bloxgen_last_account', JSON.stringify(sanitizeBloxgenItemForStorage(bloxgenLastGeneratedAccount)));
     } else {
       localStorage.removeItem('fram_bloxgen_last_account');
     }

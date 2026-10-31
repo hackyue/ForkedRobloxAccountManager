@@ -80,12 +80,28 @@ class IconCacheManager:
         except Exception as e:
             log_detailed_error("Failed to save icon cache to disk", exc=e, extra_info={"cache_file_path": self.cache_file_path}, source="icon_cache")
 
+    def _safe_icon_file_path(self, filename: str) -> Optional[str]:
+        if not filename or not isinstance(filename, str):
+            return None
+        safe_name = os.path.basename(filename.strip())
+        safe_name = "".join(c for c in safe_name if c.isalnum() or c in (".", "_", "-"))
+        if not safe_name:
+            return None
+        full_path = os.path.realpath(os.path.join(self.icons_folder, safe_name))
+        icons_dir = os.path.realpath(self.icons_folder)
+        if os.path.commonpath([icons_dir, full_path]) != icons_dir:
+            return None
+        return full_path
+
     def download_and_save_image(self, url: str, filename: str) -> Optional[str]:
         if not url or not url.startswith(("http://", "https://")):
             return None
-        file_path = os.path.join(self.icons_folder, filename)
+        file_path = self._safe_icon_file_path(filename)
+        if not file_path:
+            return None
+        safe_filename = os.path.basename(file_path)
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
-            return f"http://127.0.0.1:5050/api/roblox/icon-file/{filename}"
+            return f"http://127.0.0.1:5050/api/roblox/icon-file/{safe_filename}"
         try:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200 and resp.content:
@@ -93,16 +109,16 @@ class IconCacheManager:
                 with open(temp_file, "wb") as f:
                     f.write(resp.content)
                 os.replace(temp_file, file_path)
-                return f"http://127.0.0.1:5050/api/roblox/icon-file/{filename}"
+                return f"http://127.0.0.1:5050/api/roblox/icon-file/{safe_filename}"
             else:
                 log_detailed_error(
                     "Icon download failed with non-200 status code",
-                    extra_info={"url": url, "filename": filename, "status_code": resp.status_code},
+                    extra_info={"url": url, "filename": safe_filename, "status_code": resp.status_code},
                     level="WARNING",
                     source="icon_cache"
                 )
         except Exception as e:
-            log_detailed_error("Exception while downloading icon image", exc=e, extra_info={"url": url, "filename": filename}, source="icon_cache")
+            log_detailed_error("Exception while downloading icon image", exc=e, extra_info={"url": url, "filename": safe_filename}, source="icon_cache")
         return None
 
 
@@ -119,9 +135,9 @@ class IconCacheManager:
             return None
         key = str(place_id).strip()
         filename = self.get_place_icon_file_path(key)
-        local_file_path = os.path.join(self.icons_folder, filename)
-        if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
-            return f"http://127.0.0.1:5050/api/roblox/icon-file/{filename}"
+        local_file_path = self._safe_icon_file_path(filename)
+        if local_file_path and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+            return f"http://127.0.0.1:5050/api/roblox/icon-file/{os.path.basename(local_file_path)}"
         with self._lock:
             entry = self._memory_cache["place_icons"].get(key)
             if entry and isinstance(entry, dict):
@@ -153,9 +169,9 @@ class IconCacheManager:
             return None
         key = str(user_id).strip()
         filename = self.get_avatar_icon_file_path(key)
-        local_file_path = os.path.join(self.icons_folder, filename)
-        if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
-            return f"http://127.0.0.1:5050/api/roblox/icon-file/{filename}"
+        local_file_path = self._safe_icon_file_path(filename)
+        if local_file_path and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+            return f"http://127.0.0.1:5050/api/roblox/icon-file/{os.path.basename(local_file_path)}"
         with self._lock:
             entry = self._memory_cache["avatar_icons"].get(key)
             if entry and isinstance(entry, dict):
@@ -193,9 +209,9 @@ class IconCacheManager:
                 data = entry.get("data")
                 if data and isinstance(data, dict):
                     filename = self.get_place_icon_file_path(key)
-                    local_file_path = os.path.join(self.icons_folder, filename)
-                    if os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
-                        data["icon_url"] = f"http://127.0.0.1:5050/api/roblox/icon-file/{filename}"
+                    local_file_path = self._safe_icon_file_path(filename)
+                    if local_file_path and os.path.exists(local_file_path) and os.path.getsize(local_file_path) > 0:
+                        data["icon_url"] = f"http://127.0.0.1:5050/api/roblox/icon-file/{os.path.basename(local_file_path)}"
                     has_icon = bool(data.get("icon_url"))
                     ttl = self.DEFAULT_VALID_TTL if has_icon else self.DEFAULT_EMPTY_TTL
                     if time.time() - timestamp < ttl:

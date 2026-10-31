@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from urllib.parse import quote, parse_qs, urlparse
+from urllib.parse import quote, parse_qs, urlparse, urlsplit
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from classes.icon_cache import icon_cache
@@ -593,7 +593,7 @@ class RobloxAPI:
         try:
             candidate = text
             lowered = candidate.lower()
-            if "://" not in candidate and ("roblox.com" in lowered or lowered.startswith("roblox://")):
+            if "://" not in candidate and (lowered.startswith("roblox.com") or lowered.startswith("www.roblox.com") or lowered.startswith("roblox://")):
                 candidate = f"https://{candidate}"
 
             if "://" in candidate:
@@ -613,7 +613,7 @@ class RobloxAPI:
                     if result:
                         return result
 
-                if host.endswith("roblox.com") and path in ("share", "share-links") and share_type == "server":
+                if (host == "roblox.com" or host.endswith(".roblox.com")) and path in ("share", "share-links") and share_type == "server":
                     result = build_result(share_code)
                     if result:
                         return result
@@ -631,11 +631,15 @@ class RobloxAPI:
             pass
 
         match = re.search(
-            r"(?i)(?:roblox://navigation/share_links|https?://(?:www\.)?roblox\.com/(?:share|share-links))[^\s]*\bcode=([A-Za-z0-9_-]+)[^\s]*\b(?:type|pid)=Server\b",
+            r"(?i)(?:roblox://navigation/share_links|https?://(?:www\.)?roblox\.com/(?:share|share-links))[^\s]*",
             text,
         )
         if match:
-            return build_result(match.group(1))
+            found_url = match.group(0)
+            code_match = re.search(r"[?&]code=([A-Za-z0-9_-]+)", found_url)
+            type_match = re.search(r"[?&](?:type|pid)=Server\b", found_url, re.IGNORECASE)
+            if code_match and type_match:
+                return build_result(code_match.group(1))
         return None
 
     @staticmethod
@@ -765,7 +769,7 @@ class RobloxAPI:
 
         parsed_code = ""
         lowered = text.lower()
-        if "://" in text or "roblox.com" in lowered:
+        if "://" in text or lowered.startswith("roblox.com") or lowered.startswith("www.roblox.com"):
             try:
                 parsed = urlparse(text if "://" in text else f"https://{text}")
                 query_values = parse_qs(parsed.query or "")
@@ -2140,6 +2144,14 @@ class RobloxAPI:
         except Exception:
             roblox_path_expanded = str(roblox_path) if roblox_path else ""
 
+        if roblox_path_expanded:
+            if not RobloxAPI._is_safe_roblox_path(roblox_path_expanded):
+                _log_debug(
+                    f"User supplied roblox_path '{roblox_path_expanded}' failed security validation; "
+                    "ignoring and falling back to default installation discovery."
+                )
+                roblox_path_expanded = ""
+
         is_mac = platform.system() == "Darwin"
         mac_app_bundle = None
 
@@ -2440,6 +2452,13 @@ class RobloxAPI:
                 place_launch_extra
             )
 
+        if not RobloxAPI._is_valid_placelauncher_url(place_launch_base):
+            err = f"Invalid PlaceLauncher URL generated: '{place_launch_base}'"
+            print(f"[ERROR] {err}")
+            if return_details:
+                return False, err
+            return False
+
         url = (
             "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket_encoded +
             "+launchtime:" + str(launch_time) +
@@ -2499,6 +2518,12 @@ class RobloxAPI:
                     except Exception as exc:
                         _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to -t flow: {exc}")
                     place_launch_url = place_launch_base
+                    if not RobloxAPI._is_valid_placelauncher_url(place_launch_url):
+                        err = f"Invalid PlaceLauncher URL: '{place_launch_url}'"
+                        print(f"[ERROR] {err}")
+                        if return_details:
+                            return False, err
+                        return False
                     launch_args = [
                         roblox_exe,
                         "-a", "https://www.roblox.com/Login/Negotiate.ashx",
@@ -2614,17 +2639,128 @@ class RobloxAPI:
             return False
 
     @staticmethod
-    def _is_valid_roblox_protocol_url(url: str) -> bool:
+    def _is_safe_roblox_path(candidate_path: str) -> bool:
+        """Validate that a user-supplied roblox_path points to an expected Roblox binary or folder within trusted install roots."""
+        if not candidate_path or not isinstance(candidate_path, str):
+            return False
+        try:
+            resolved = os.path.realpath(os.path.abspath(candidate_path))
+            if not os.path.exists(resolved):
+                return False
+
+            if os.path.isfile(resolved):
+                base_name = os.path.basename(resolved).lower()
+                allowed_exes = {
+                    "robloxplayerbeta.exe",
+                    "robloxplayerlauncher.exe",
+                    "robloxplayerinstaller.exe",
+                    "robloxplayer",
+                }
+                if base_name not in allowed_exes:
+                    return False
+
+            system = platform.system()
+            trusted_roots = []
+            if system == "Windows":
+                for env_var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "APPDATA"]:
+                    val = os.environ.get(env_var)
+                    if val:
+                        trusted_roots.append(os.path.realpath(os.path.abspath(val)).lower())
+            elif system == "Darwin":
+                trusted_roots.extend([
+                    "/applications",
+                    os.path.realpath(os.path.expanduser("~/applications")).lower(),
+                    os.path.realpath(os.path.expanduser("~/library/application support")).lower(),
+                ])
+            else:
+                trusted_roots.extend([
+                    "/usr",
+                    "/opt",
+                    os.path.realpath(os.path.expanduser("~")).lower(),
+                ])
+
+            resolved_lower = resolved.lower()
+            return any(
+                resolved_lower == root or resolved_lower.startswith(root + os.sep)
+                for root in trusted_roots
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_valid_placelauncher_url(url: str) -> bool:
+        """Enforce that place_launch_url is https, exactly assetgame.roblox.com/game/PlaceLauncher.ashx,
+        contains only expected query keys, and required keys are present."""
+        if not url or not isinstance(url, str):
+            return False
+        try:
+            parsed = urlsplit(url)
+            if (parsed.scheme or "").lower() != "https":
+                return False
+            if (parsed.hostname or "").lower() != "assetgame.roblox.com":
+                return False
+            if parsed.path != "/game/PlaceLauncher.ashx":
+                return False
+            if not parsed.query:
+                return False
+
+            allowed_keys = {
+                "request",
+                "browsertrackerid",
+                "placeid",
+                "isplaytogethergame",
+                "accesscode",
+                "linkcode",
+                "joinattemptid",
+                "gameid",
+                "userid",
+            }
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            for key in params:
+                if key.lower() not in allowed_keys:
+                    return False
+
+            lower_keys = {k.lower() for k in params.keys()}
+            if "request" not in lower_keys or "browsertrackerid" not in lower_keys:
+                return False
+            if "placeid" not in lower_keys and "userid" not in lower_keys:
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_strict_roblox_launch_url(url: str) -> bool:
+        """Strictly validate Roblox protocol URL structure and parameter values."""
         if not url or not isinstance(url, str):
             return False
         cleaned = url.strip()
-        pattern = r"^roblox-player:[A-Za-z0-9+:\/._?&=%-]+$"
-        return bool(re.fullmatch(pattern, cleaned, re.IGNORECASE))
+        pattern = r"^roblox-player:1\+[A-Za-z0-9+:\/._?&=%-]+$"
+        if not re.fullmatch(pattern, cleaned, re.IGNORECASE):
+            return False
+
+        if "+launchmode:app" not in cleaned and "+launchmode:play" not in cleaned:
+            return False
+
+        if "+placelauncherurl:" in cleaned:
+            parts = cleaned.split("+placelauncherurl:", 1)
+            target = parts[1].split("+")[0]
+            if not (
+                target.startswith("https://assetgame.roblox.com/game/PlaceLauncher.ashx")
+                or target.startswith("https%3A%2F%2Fassetgame.roblox.com%2Fgame%2FPlaceLauncher.ashx")
+            ):
+                return False
+
+        return True
+
+    @staticmethod
+    def _is_valid_roblox_protocol_url(url: str) -> bool:
+        return RobloxAPI._is_strict_roblox_launch_url(url)
 
     @staticmethod
     def _launch_protocol_url(url):
         """Launch the Roblox protocol URL in a cross-platform-safe way."""
-        if not RobloxAPI._is_valid_roblox_protocol_url(url):
+        if not RobloxAPI._is_strict_roblox_launch_url(url):
             print("[ERROR] Rejected invalid or unsafe Roblox protocol URL.")
             return False
 
@@ -2640,36 +2776,16 @@ class RobloxAPI:
                     if not RobloxAPI._protocol_handler_missing_warned:
                         print("[WARNING] Roblox protocol handler is not registered; skipping protocol launch.")
                         RobloxAPI._protocol_handler_missing_warned = True
-                    return False
-
-                print(f"[WARNING] os.startfile failed: {exc}. Falling back to PowerShell.")
-                command = [
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    "Start-Process",
-                    "-FilePath",
-                    "--%",
-                    clean_url
-                ]
+                else:
+                    print(f"[ERROR] os.startfile failed to launch Roblox protocol: {exc}")
+                return False
         elif system == "Darwin":
             command = ["open", clean_url]
         else:
             command = ["xdg-open", clean_url]
 
         try:
-            if system == "Windows":
-                subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    **RobloxAPI._subprocess_no_window_kwargs(),
-                )
-            else:
-                subprocess.run(command, check=True)
+            subprocess.run(command, check=True)
             return True
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             print(f"[ERROR] Failed to trigger Roblox protocol handler: {exc}")

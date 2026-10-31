@@ -2987,7 +2987,7 @@ class RobloxAccountManager:
                 for username, acc in accounts_dict.items():
                     if isinstance(acc, dict) and username:
                         norm_acc = {
-                            'id': acc.get('id') or (int(hashlib.md5(username.encode('utf-8')).hexdigest()[:7], 16)),
+                            'id': acc.get('id') or (int(hashlib.sha256(username.encode('utf-8')).hexdigest()[:7], 16)),
                             'username': username,
                             'display_name': acc.get('display_name', username),
                             'avatar_url': acc.get('avatar_url', ''),

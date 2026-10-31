@@ -1604,12 +1604,15 @@ ConvertTo-Json -Compress @{
     def _remove_path(self, target_path: str) -> bool:
         if not target_path or not os.path.exists(target_path):
             return False
+        real_target = os.path.realpath(target_path)
+        if real_target in ("/", "\\", "C:\\", "C:", "c:\\", "c:"):
+            return False
         try:
-            if os.path.isdir(target_path):
+            if os.path.isdir(real_target):
                 import shutil
-                shutil.rmtree(target_path, ignore_errors=True)
+                shutil.rmtree(real_target, ignore_errors=True)
             else:
-                os.remove(target_path)
+                os.remove(real_target)
             return True
         except Exception:
             return False
@@ -1623,6 +1626,13 @@ ConvertTo-Json -Compress @{
         purge_auth: bool = True,
         weblauncher_dir: Optional[str] = None
     ) -> Dict[str, Any]:
+        if weblauncher_dir:
+            try:
+                from classes.roblox_api import RobloxAPI
+                if not RobloxAPI._is_safe_roblox_path(str(weblauncher_dir)):
+                    weblauncher_dir = None
+            except Exception:
+                weblauncher_dir = None
         logs = []
         def set_progress(pct: int, msg: str):
             self.clean_status = {

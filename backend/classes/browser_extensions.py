@@ -281,12 +281,12 @@ class BrowserExtensionManager:
 
     @classmethod
     def _extract_firefox_addon_id_from_url(cls, value: str) -> str:
-        parsed_value = value
-        if "://" not in parsed_value and parsed_value.lower().startswith("addons.mozilla.org/"):
+        parsed_value = value.strip()
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", parsed_value):
             parsed_value = f"https://{parsed_value}"
 
         parsed_url = urlparse(parsed_value)
-        host = parsed_url.netloc.lower()
+        host = (parsed_url.hostname or "").lower()
         if host.startswith("www."):
             host = host[4:]
         if host != "addons.mozilla.org":
