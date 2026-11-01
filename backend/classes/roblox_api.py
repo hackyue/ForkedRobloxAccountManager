@@ -16,7 +16,7 @@ import re
 import requests
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from urllib.parse import quote, parse_qs, urlparse, urlsplit
 from requests.adapters import HTTPAdapter
