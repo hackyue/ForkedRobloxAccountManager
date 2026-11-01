@@ -9,6 +9,7 @@ import urllib.parse
 import threading
 import secrets
 import tempfile
+from typing import Optional, Dict, Any, List
 from utils.error_detector import log_detailed_error
 
 class WebhookManager:
