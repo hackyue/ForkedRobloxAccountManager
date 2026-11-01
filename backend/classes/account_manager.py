@@ -2600,6 +2600,9 @@ class RobloxAccountManager:
             
         cookie = self.accounts[username].get('cookie', '')
         if not cookie:
+            if self.accounts[username].get('status') != 'expired':
+                self.accounts[username]['status'] = 'expired'
+                self.save_accounts()
             if return_details:
                 return False, "Account has no login cookie configured"
             return False
@@ -2620,6 +2623,16 @@ class RobloxAccountManager:
             return_details=return_details,
         )
         launched = launch_res[0] if return_details else launch_res
+
+        if not launched:
+            err_msg = str(launch_res[1] if return_details and isinstance(launch_res, tuple) and len(launch_res) > 1 else "")
+            err_lower = err_msg.lower()
+            auth_terms = ("expired", "logged out", "cookie is invalid", "session is invalid", "cookie expired", "no login cookie", "invalid cookie", "401", "403")
+            if any(term in err_lower for term in auth_terms) or "banned" in err_lower:
+                new_status = "banned" if "banned" in err_lower else "expired"
+                if self.accounts[username].get("status") != new_status:
+                    self.accounts[username]["status"] = new_status
+                    self.save_accounts()
 
         should_track_session = (
             launched and (
@@ -2646,7 +2659,22 @@ class RobloxAccountManager:
                 preserve_rejoin_attempts=preserve_rejoin_attempts,
             )
         return launch_res
-    
+
+    def set_account_status(self, username, status):
+        if username not in self.accounts:
+            return False
+        normalized_status = str(status or "expired").strip().lower()
+        if normalized_status not in ("valid", "expired", "banned"):
+            normalized_status = "expired"
+        self.accounts[username]["status"] = normalized_status
+        self.save_accounts()
+        return True
+
+    def get_account_status(self, username):
+        if username in self.accounts and isinstance(self.accounts[username], dict):
+            return self.accounts[username].get("status", "expired")
+        return "expired"
+
     def set_account_note(self, username, note):
         """Set or update note for an account"""
         if username not in self.accounts:

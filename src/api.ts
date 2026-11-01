@@ -594,12 +594,12 @@ class ApiService {
     return this.request<{ success: boolean; changed: number }>('/accounts/bulk-vip', 'POST', { mapping });
   }
 
-  async launchAccount(params: { username: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string; serverPerAccount?: boolean; randomServer?: boolean; preferredRegion?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
-    return this.request<{ success: boolean; message?: string; error?: string }>('/accounts/launch', 'POST', params);
+  async launchAccount(params: { username: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string; serverPerAccount?: boolean; randomServer?: boolean; preferredRegion?: string }): Promise<{ success: boolean; message?: string; error?: string; status?: string; username?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string; status?: string; username?: string }>('/accounts/launch', 'POST', params);
   }
 
-  async launchHome(params: { username: string; preferredBrowser?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
-    return this.request<{ success: boolean; message?: string; error?: string }>('/accounts/launch-home', 'POST', params);
+  async launchHome(params: { username: string; preferredBrowser?: string }): Promise<{ success: boolean; message?: string; error?: string; status?: string; username?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string; status?: string; username?: string }>('/accounts/launch-home', 'POST', params);
   }
 
   async getRobloxVersions(): Promise<{ success: boolean; versions: RobloxVersion[]; error?: string }> {
@@ -920,8 +920,8 @@ class ApiService {
     return this.request<{ success: boolean; message?: string; error?: string; username?: string; auto_rejoin_disabled?: boolean }>('/instances/kill', 'POST', { pid, username });
   }
 
-  async relaunchInstance(params: { pid?: number; username?: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string; serverPerAccount?: boolean; randomServer?: boolean; preferredRegion?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
-    return this.request<{ success: boolean; message?: string; error?: string }>('/instances/relaunch', 'POST', params);
+  async relaunchInstance(params: { pid?: number; username?: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string; serverPerAccount?: boolean; randomServer?: boolean; preferredRegion?: string }): Promise<{ success: boolean; message?: string; error?: string; status?: string; username?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string; status?: string; username?: string }>('/instances/relaunch', 'POST', params);
   }
 
   async focusInstance(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {

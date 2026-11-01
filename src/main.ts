@@ -1,5 +1,5 @@
 import './style.css';
-import { apiService, Account, Game, SavedUser, Settings, RobloxVersion, InstallerVersionEntry, WeaoExploitItem, BrowserExtension, UpdateCheckResult, UpdateDownloadStatus, ChromiumStatus } from './api';
+import { apiService, Account, AccountStatus, Game, SavedUser, Settings, RobloxVersion, InstallerVersionEntry, WeaoExploitItem, BrowserExtension, UpdateCheckResult, UpdateDownloadStatus, ChromiumStatus } from './api';
 import { invoke } from '@tauri-apps/api/tauri';
 import { appWindow } from '@tauri-apps/api/window';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/api/dialog';
@@ -712,6 +712,25 @@ function statusMeta(s: string): StatusMeta {
   }
 }
 
+function markAccountStatus(username: string, newStatus: AccountStatus = 'expired'): boolean {
+  const normUser = String(username || '').trim().toLowerCase();
+  if (!normUser) return false;
+  let changed = false;
+  for (const account of state.accounts) {
+    if (String(account.username || '').trim().toLowerCase() === normUser) {
+      if (account.status !== newStatus) {
+        account.status = newStatus;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    renderTable();
+    renderStats();
+  }
+  return changed;
+}
+
 function getAccount(id: number): Account | null {
   for (const account of state.accounts) {
     if (account.id === id) return account;
@@ -1190,11 +1209,21 @@ async function handleLaunchSelectedAccounts(): Promise<void> {
         const err = res.error || "Roblox isn't installed";
         lastError = err;
         addLog(`${prefix}Failed to launch @${a.username}: ${err}`, 'error');
+        const errLower = err.toLowerCase();
+        if (res.status === 'expired' || res.status === 'banned' || /expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+          const derivedStatus: AccountStatus = (res.status === 'banned' || errLower.includes('banned')) ? 'banned' : 'expired';
+          markAccountStatus(a.username, derivedStatus);
+        }
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       lastError = errMsg;
       addLog(`${prefix}Launch error for @${a.username}: ${errMsg}`, 'error');
+      const errLower = errMsg.toLowerCase();
+      if (/expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+        const derivedStatus: AccountStatus = errLower.includes('banned') ? 'banned' : 'expired';
+        markAccountStatus(a.username, derivedStatus);
+      }
     }
 
     if (i < accountsToLaunch.length - 1) {
@@ -1261,11 +1290,21 @@ async function handleLaunchSelectedBrowsers(): Promise<void> {
         const err = res.error || 'Failed to open browser';
         lastError = err;
         addLog(`${prefix}Failed to open browser for @${a.username}: ${err}`, 'error');
+        const errLower = err.toLowerCase();
+        if (res.status === 'expired' || res.status === 'banned' || /expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+          const derivedStatus: AccountStatus = (res.status === 'banned' || errLower.includes('banned')) ? 'banned' : 'expired';
+          markAccountStatus(a.username, derivedStatus);
+        }
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       lastError = errMsg;
       addLog(`${prefix}Browser launch error for @${a.username}: ${errMsg}`, 'error');
+      const errLower = errMsg.toLowerCase();
+      if (/expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+        const derivedStatus: AccountStatus = errLower.includes('banned') ? 'banned' : 'expired';
+        markAccountStatus(a.username, derivedStatus);
+      }
     }
 
     if (i < accountsToLaunch.length - 1) {
@@ -11722,9 +11761,26 @@ function renderVipView(): void {
         serverId: serverCodeToUse,
         serverMode: 'vip'
       }).then(res => {
-        if (res.success) toast(`Launched VIP server for @${a.username}`, 'success');
-        else toast(`Failed to launch VIP: ${res.error || "Roblox isn't installed"}`, 'error');
-      }).catch(err => toast(`Error launching VIP: ${err}`, 'error'));
+        if (res.success) {
+          toast(`Launched VIP server for @${a.username}`, 'success');
+        } else {
+          const err = res.error || "Roblox isn't installed";
+          toast(`Failed to launch VIP: ${err}`, 'error');
+          const errLower = err.toLowerCase();
+          if (res.status === 'expired' || res.status === 'banned' || /expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+            const derivedStatus: AccountStatus = (res.status === 'banned' || errLower.includes('banned')) ? 'banned' : 'expired';
+            markAccountStatus(a.username, derivedStatus);
+          }
+        }
+      }).catch(err => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        toast(`Error launching VIP: ${errMsg}`, 'error');
+        const errLower = errMsg.toLowerCase();
+        if (/expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+          const derivedStatus: AccountStatus = errLower.includes('banned') ? 'banned' : 'expired';
+          markAccountStatus(a.username, derivedStatus);
+        }
+      });
     });
 
     const copyBtn = document.createElement('button');
@@ -12318,9 +12374,20 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
               }, 1500);
             } else {
               toast(res.error || 'Failed to relaunch instance', 'error');
+              const errLower = (res.error || '').toLowerCase();
+              if (res.status === 'expired' || res.status === 'banned' || /expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+                const derivedStatus: AccountStatus = (res.status === 'banned' || errLower.includes('banned')) ? 'banned' : 'expired';
+                markAccountStatus(username, derivedStatus);
+              }
             }
           } catch (err: any) {
-            toast(`Relaunch error: ${err.message || err}`, 'error');
+            const errMsg = err?.message || String(err);
+            toast(`Relaunch error: ${errMsg}`, 'error');
+            const errLower = errMsg.toLowerCase();
+            if (/expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+              const derivedStatus: AccountStatus = errLower.includes('banned') ? 'banned' : 'expired';
+              markAccountStatus(username, derivedStatus);
+            }
           } finally {
             target.style.pointerEvents = '';
             target.style.opacity = '';
@@ -18792,9 +18859,20 @@ function initApp(): void {
             }, 1500);
           } else {
             toast(res.error || 'Failed to relaunch instance', 'error');
+            const errLower = (res.error || '').toLowerCase();
+            if (res.status === 'expired' || res.status === 'banned' || /expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+              const derivedStatus: AccountStatus = (res.status === 'banned' || errLower.includes('banned')) ? 'banned' : 'expired';
+              markAccountStatus(username, derivedStatus);
+            }
           }
         } catch (err: any) {
-          toast(`Relaunch error: ${err.message || err}`, 'error');
+          const errMsg = err?.message || String(err);
+          toast(`Relaunch error: ${errMsg}`, 'error');
+          const errLower = errMsg.toLowerCase();
+          if (/expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+            const derivedStatus: AccountStatus = errLower.includes('banned') ? 'banned' : 'expired';
+            markAccountStatus(username, derivedStatus);
+          }
         }
       }
 
@@ -19120,10 +19198,22 @@ function initApp(): void {
           if (res.success) {
             toast(`Launched @${a.username}`, 'success');
           } else {
-            toast(`Failed to launch @${a.username}: ${res.error || "Roblox isn't installed"}`, 'error');
+            const err = res.error || "Roblox isn't installed";
+            toast(`Failed to launch @${a.username}: ${err}`, 'error');
+            const errLower = err.toLowerCase();
+            if (res.status === 'expired' || res.status === 'banned' || /expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+              const derivedStatus: AccountStatus = (res.status === 'banned' || errLower.includes('banned')) ? 'banned' : 'expired';
+              markAccountStatus(a.username, derivedStatus);
+            }
           }
         } catch (err) {
-          toast(`Failed to launch @${a.username}: ${err}`, 'error');
+          const errMsg = err instanceof Error ? err.message : String(err);
+          toast(`Failed to launch @${a.username}: ${errMsg}`, 'error');
+          const errLower = errMsg.toLowerCase();
+          if (/expired|logged out|cookie.*invalid|session.*invalid|no login cookie/i.test(errLower) || errLower.includes('banned')) {
+            const derivedStatus: AccountStatus = errLower.includes('banned') ? 'banned' : 'expired';
+            markAccountStatus(a.username, derivedStatus);
+          }
         }
         if (i < withVip.length - 1) {
           await new Promise(r => setTimeout(r, state.settings.multiLaunchDelay || 1000));

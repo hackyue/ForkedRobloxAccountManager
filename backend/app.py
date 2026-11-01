@@ -429,14 +429,23 @@ def _rejoin_launch_callback(session, attempt_number):
     j_server = session.server_job_id
     version = session.version_path
     mode = session.launch_mode
-    launched = mgr.launch_roblox(
+    launch_res = mgr.launch_roblox(
         username=uname,
         game_id=place_id,
         private_server_id=p_server,
         server_job_id=j_server,
         version=version,
-        launch_mode=mode
+        launch_mode=mode,
+        return_details=True
     )
+    launched = launch_res[0] if isinstance(launch_res, tuple) else launch_res
+    launch_err = launch_res[1] if isinstance(launch_res, tuple) and len(launch_res) > 1 else ""
+    if not launched and launch_err:
+        err_lower = str(launch_err).lower()
+        auth_terms = ("expired", "logged out", "cookie is invalid", "session is invalid", "cookie expired", "no login cookie", "invalid cookie", "401", "403")
+        if any(term in err_lower for term in auth_terms) or "banned" in err_lower:
+            new_status = "banned" if "banned" in err_lower else "expired"
+            update_account_status(uname, new_status)
     if launched:
         acc_meta = mgr.accounts.get(uname, {}) if mgr and hasattr(mgr, 'accounts') else {}
         p_name = get_place_name(place_id)
@@ -955,6 +964,42 @@ def sync_startup_registry(enable: bool):
     except Exception as e:
         print(f"Error syncing startup registry: {e}")
 
+def update_account_status(username: str, new_status: str) -> bool:
+    if not username:
+        return False
+    norm_status = str(new_status or "expired").strip().lower()
+    if norm_status not in ("valid", "expired", "banned"):
+        norm_status = "expired"
+
+    updated_any = False
+    manager = get_account_manager()
+    if manager and hasattr(manager, "accounts") and isinstance(manager.accounts, dict):
+        for acc_key in list(manager.accounts.keys()):
+            if acc_key.lower() == username.lower():
+                manager.accounts[acc_key]["status"] = norm_status
+                try:
+                    manager.save_accounts()
+                except Exception as save_err:
+                    print(f"Error saving account status to manager: {save_err}")
+                updated_any = True
+                break
+
+    try:
+        with data_transaction() as txn:
+            data = txn.data or {}
+            for acc in data.get("accounts", []):
+                if isinstance(acc, dict) and str(acc.get("username", "")).strip().lower() == username.strip().lower():
+                    acc["status"] = norm_status
+                    updated_any = True
+                    break
+            if updated_any:
+                txn.save()
+    except Exception as txn_err:
+        print(f"Error saving account status via transaction: {txn_err}")
+
+    invalidate_data_cache()
+    return updated_any
+
 @app.route('/api/accounts', methods=['GET'])
 def get_accounts():
     data = load_data()
@@ -1461,6 +1506,17 @@ def launch_account():
                 'timestamp': time.time()
             }
             return jsonify({'success': True, 'message': f"Launched Roblox for @{username}"})
+        err_lower = str(launch_error or "").lower()
+        auth_terms = ("expired", "logged out", "cookie is invalid", "session is invalid", "cookie expired", "no login cookie", "invalid cookie", "401", "403")
+        if any(term in err_lower for term in auth_terms) or "banned" in err_lower:
+            new_status = "banned" if "banned" in err_lower else "expired"
+            update_account_status(username, new_status)
+            return jsonify({
+                'success': False,
+                'error': launch_error or f"Roblox login session for @{username} has expired",
+                'status': new_status,
+                'username': username
+            }), 400
         return jsonify({'success': False, 'error': launch_error or "Roblox isn't installed"}), 400
     except Exception as e:
         print(f"[ERROR] Launch account failed: {e}")
@@ -1713,6 +1769,17 @@ def launch_home_browser():
         launched, launch_error = manager.launch_home(username, preferred_browser=preferred_browser, return_details=True)
         if launched:
             return jsonify({'success': True, 'message': f"Opened browser for @{username}"})
+        err_lower = str(launch_error or "").lower()
+        auth_terms = ("expired", "logged out", "cookie is invalid", "session is invalid", "cookie expired", "no login cookie", "invalid cookie", "401", "403")
+        if any(term in err_lower for term in auth_terms) or "banned" in err_lower:
+            new_status = "banned" if "banned" in err_lower else "expired"
+            update_account_status(username, new_status)
+            return jsonify({
+                'success': False,
+                'error': launch_error or f"Roblox login session for @{username} has expired",
+                'status': new_status,
+                'username': username
+            }), 400
         return jsonify({'success': False, 'error': launch_error or "Failed to open browser"}), 400
     except Exception as e:
         log_detailed_error("Failed to open browser", exc=e)
@@ -2610,14 +2677,23 @@ def background_auto_rejoin_worker():
                 j_server = server_id if server_mode == "jobid" else ""
 
                 try:
-                    launched = manager.launch_roblox(
+                    launch_res = manager.launch_roblox(
                         username=uname,
                         game_id=place_id,
                         private_server_id=p_server,
                         server_job_id=j_server,
                         version=version,
-                        launch_mode=launch_mode
+                        launch_mode=launch_mode,
+                        return_details=True
                     )
+                    launched = launch_res[0] if isinstance(launch_res, tuple) else launch_res
+                    launch_err = launch_res[1] if isinstance(launch_res, tuple) and len(launch_res) > 1 else ""
+                    if not launched and launch_err:
+                        err_lower = str(launch_err).lower()
+                        auth_terms = ("expired", "logged out", "cookie is invalid", "session is invalid", "cookie expired", "no login cookie", "invalid cookie", "401", "403")
+                        if any(term in err_lower for term in auth_terms) or "banned" in err_lower:
+                            new_status = "banned" if "banned" in err_lower else "expired"
+                            update_account_status(uname, new_status)
                     if launched:
                         info['timestamp'] = time.time()
                         last_launch_times[uname_lower] = time.time()
@@ -2706,14 +2782,23 @@ def run_group_auto_relaunch():
             version = launch_info.get('version') or acc.get('roblox_version') or 'auto'
 
             try:
-                launched = manager.launch_roblox(
+                launch_res = manager.launch_roblox(
                     username=uname,
                     game_id=place_id,
                     private_server_id=p_server,
                     server_job_id=job_id,
                     version=version,
-                    launch_mode='game' if place_id else 'app'
+                    launch_mode='game' if place_id else 'app',
+                    return_details=True
                 )
+                launched = launch_res[0] if isinstance(launch_res, tuple) else launch_res
+                launch_err = launch_res[1] if isinstance(launch_res, tuple) and len(launch_res) > 1 else ""
+                if not launched and launch_err:
+                    err_lower = str(launch_err).lower()
+                    auth_terms = ("expired", "logged out", "cookie is invalid", "session is invalid", "cookie expired", "no login cookie", "invalid cookie", "401", "403")
+                    if any(term in err_lower for term in auth_terms) or "banned" in err_lower:
+                        new_status = "banned" if "banned" in err_lower else "expired"
+                        update_account_status(uname, new_status)
                 if launched:
                     success_count += 1
                     last_launch_times[uname_lower] = time.time()
@@ -3842,6 +3927,17 @@ def relaunch_specific_instance():
             add_backend_log(f"Relaunched instance for @{username} (Place ID: {place_id or 'None'})", level='info', category='roblox')
             invalidate_instances_cache()
             return jsonify({'success': True, 'message': f"Relaunched Roblox for @{username}"})
+        err_lower = str(launch_error or "").lower()
+        auth_terms = ("expired", "logged out", "cookie is invalid", "session is invalid", "cookie expired", "no login cookie", "invalid cookie", "401", "403")
+        if any(term in err_lower for term in auth_terms) or "banned" in err_lower:
+            new_status = "banned" if "banned" in err_lower else "expired"
+            update_account_status(username, new_status)
+            return jsonify({
+                'success': False,
+                'error': launch_error or f"Roblox login session for @{username} has expired",
+                'status': new_status,
+                'username': username
+            }), 400
         return jsonify({'success': False, 'error': launch_error or "Roblox isn't installed"}), 400
     except Exception as e:
         print(f"[ERROR] Relaunch instance failed: {e}")
