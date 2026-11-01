@@ -22,11 +22,33 @@ class RobloxSwapManager:
             "step": "",
             "logs": []
         }
+        self.REAL_HARDWARE_OUIS = [
+            (0x3C, 0x7C, 0x3F),
+            (0xA4, 0xBB, 0x6D),
+            (0x00, 0x1B, 0x21),
+            (0x68, 0x05, 0xCA),
+            (0xFC, 0x34, 0x97),
+            (0x2C, 0xFD, 0xA1),
+            (0xD8, 0xBB, 0xC1),
+            (0x00, 0xE0, 0x4C),
+            (0x52, 0x54, 0x00),
+            (0x70, 0x85, 0xC2),
+            (0x48, 0x21, 0x0B),
+            (0x00, 0x10, 0x18),
+            (0x00, 0x1A, 0x7D),
+            (0x9C, 0x6B, 0x00),
+            (0x14, 0xEB, 0xB6),
+            (0x50, 0xC7, 0xBF),
+            (0x9C, 0xB6, 0x54),
+        ]
+
         self.identifiers = {
             "machineGuid": {
                 "hive": "HKLM",
                 "key": "SOFTWARE\\Microsoft\\Cryptography",
                 "value": "MachineGuid",
+                "type": "REG_SZ",
+                "generator": "guid",
                 "braces": False,
                 "upper": False
             },
@@ -34,6 +56,8 @@ class RobloxSwapManager:
                 "hive": "HKLM",
                 "key": "SYSTEM\\CurrentControlSet\\Control\\IDConfigDB\\Hardware Profiles\\0001",
                 "value": "HwProfileGuid",
+                "type": "REG_SZ",
+                "generator": "guid",
                 "braces": True,
                 "upper": True
             },
@@ -41,8 +65,135 @@ class RobloxSwapManager:
                 "hive": "HKLM",
                 "key": "SOFTWARE\\Microsoft\\SQMClient",
                 "value": "MachineId",
+                "type": "REG_SZ",
+                "generator": "guid",
                 "braces": True,
                 "upper": True
+            },
+            "buildGuid": {
+                "hive": "HKLM",
+                "key": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                "value": "BuildGUID",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": False,
+                "upper": True
+            },
+            "productId": {
+                "hive": "HKLM",
+                "key": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                "value": "ProductId",
+                "type": "REG_SZ",
+                "generator": "product_id"
+            },
+            "installDate": {
+                "hive": "HKLM",
+                "key": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                "value": "InstallDate",
+                "type": "REG_DWORD",
+                "generator": "install_date"
+            },
+            "computerHardwareId": {
+                "hive": "HKLM",
+                "key": "SYSTEM\\CurrentControlSet\\Control\\SystemInformation",
+                "value": "ComputerHardwareId",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": True,
+                "upper": True
+            },
+            "machineIdentifier": {
+                "hive": "HKLM",
+                "key": "SOFTWARE\\Microsoft\\Wbem\\CIMOM",
+                "value": "MachineIdentifier",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": True,
+                "upper": True
+            },
+            "susClientId": {
+                "hive": "HKLM",
+                "key": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate",
+                "value": "SusClientId",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": False,
+                "upper": False
+            },
+            "accountDomainSid": {
+                "hive": "HKLM",
+                "key": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate",
+                "value": "AccountDomainSid",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": False,
+                "upper": False
+            },
+            "userModeDriverGuid": {
+                "hive": "HKLM",
+                "key": "SYSTEM\\CurrentControlSet\\Control\\Class\\{4D36E968-E325-11CE-BFC1-08002BE10318}\\0000",
+                "value": "UserModeDriverGUID",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": True,
+                "upper": True
+            },
+            "videoID": {
+                "hive": "HKLM",
+                "key": "SYSTEM\\CurrentControlSet\\Control\\Class\\{4D36E968-E325-11CE-BFC1-08002BE10318}\\0000",
+                "value": "VideoID",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": True,
+                "upper": True
+            },
+            "monitorID": {
+                "hive": "HKLM",
+                "key": "SYSTEM\\CurrentControlSet\\Control\\Class\\{4D36E96E-E325-11CE-BFC1-08002BE10318}\\0000",
+                "value": "MonitorID",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": True,
+                "upper": True
+            },
+            "efiVariableId": {
+                "hive": "HKLM",
+                "key": "SYSTEM\\CurrentControlSet\\Control\\Nsi\\{eb004a03-9b1a-11d4-9123-0050047759bc}\\26",
+                "value": "VariableId",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": True,
+                "upper": True
+            },
+            "systemBiosUuid": {
+                "hive": "HKLM",
+                "key": "HARDWARE\\DESCRIPTION\\System\\BIOS",
+                "value": "SystemUUID",
+                "type": "REG_SZ",
+                "generator": "guid",
+                "braces": True,
+                "upper": True
+            },
+            "systemSerialNumber": {
+                "hive": "HKLM",
+                "key": "HARDWARE\\DESCRIPTION\\System\\BIOS",
+                "value": "SystemSerialNumber",
+                "type": "REG_SZ",
+                "generator": "serial_15"
+            },
+            "baseBoardSerialNumber": {
+                "hive": "HKLM",
+                "key": "HARDWARE\\DESCRIPTION\\System\\BIOS",
+                "value": "BaseBoardSerialNumber",
+                "type": "REG_SZ",
+                "generator": "serial_12"
+            },
+            "chassisSerialNumber": {
+                "hive": "HKLM",
+                "key": "HARDWARE\\DESCRIPTION\\System\\BIOS",
+                "value": "ChassisSerialNumber",
+                "type": "REG_SZ",
+                "generator": "serial_12"
             }
         }
         self.anticheats = [
@@ -92,6 +243,50 @@ class RobloxSwapManager:
                 "steps": [
                     "Exit the ESEA client from the system tray",
                     "Or run Command Prompt as Admin: sc stop ESEAClient"
+                ]
+            },
+            {
+                "name": "Ricochet Anti-Cheat",
+                "services": ["randgrid"],
+                "processes": ["bootstrapper.exe", "cod.exe"],
+                "steps": [
+                    "Open Command Prompt as Administrator and run: sc stop randgrid",
+                    "Close any running Call of Duty titles"
+                ]
+            },
+            {
+                "name": "Tencent Anti-Cheat Expert (ACE)",
+                "services": ["anti-cheat-expert", "sguard", "sguard64", "sguardupdate"],
+                "processes": ["sguard.exe", "sguard64.exe"],
+                "steps": [
+                    "Open Command Prompt as Administrator and run: sc stop Anti-Cheat-Expert",
+                    "Close protected game clients"
+                ]
+            },
+            {
+                "name": "nProtect GameGuard",
+                "services": ["npggsvc"],
+                "processes": ["gamemon.des", "gamemon64.des", "nprotect.exe"],
+                "steps": [
+                    "Exit game client and stop npggsvc via Command Prompt if active"
+                ]
+            },
+            {
+                "name": "XIGNCODE3",
+                "services": ["xhunter1", "xigncode"],
+                "processes": ["xigncode.exe"],
+                "steps": [
+                    "Run Command Prompt as Administrator: sc stop xhunter1",
+                    "Close any running XIGNCODE3 protected games"
+                ]
+            },
+            {
+                "name": "HoYoverse / Genshin Anti-Cheat",
+                "services": ["mhyprot2", "hopprot"],
+                "processes": [],
+                "steps": [
+                    "Open Command Prompt as Administrator and run: sc stop mhyprot2",
+                    "Reboot system if kernel driver remains resident"
                 ]
             }
         ]
@@ -288,9 +483,9 @@ try {{
         except Exception:
             return None
 
-    def _reg_write(self, hive: str, key: str, value: str, data: str) -> bool:
+    def _reg_write(self, hive: str, key: str, value: str, data: str, reg_type: str = "REG_SZ") -> bool:
         res = subprocess.run(
-            ["reg", "add", f"{hive}\\{key}", "/v", value, "/t", "REG_SZ", "/d", data, "/f"],
+            ["reg", "add", f"{hive}\\{key}", "/v", value, "/t", reg_type, "/d", str(data), "/f"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -303,7 +498,7 @@ try {{
             return False
 
         script = f"""
-reg add "{hive}\\{key}" /v "{value}" /t REG_SZ /d "{data}" /f | Out-Null
+reg add "{hive}\\{key}" /v "{value}" /t {reg_type} /d "{data}" /f | Out-Null
 if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ throw 'Failed reg add' }}
 """
         ok, out = self._run_elevated_ps(script)
@@ -337,6 +532,26 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
             g = g.upper()
         return f"{{{g}}}" if braces else g
 
+    def generate_product_id(self) -> str:
+        import random
+        return f"{random.randint(10000, 99999):05d}-{random.randint(10000, 99999):05d}-{random.randint(10000, 99999):05d}-{random.randint(10000, 99999):05d}"
+
+    def generate_install_date(self) -> tuple:
+        import random
+        now_sec = int(time.time())
+        offset = random.randint(30 * 86400, 365 * 86400)
+        install_date = now_sec - offset
+        install_time = (install_date + 11644473600) * 10000000
+        return str(install_date), str(install_time)
+
+    def generate_serial(self, length: int = 12, alphanumeric: bool = True) -> str:
+        import random
+        if alphanumeric:
+            charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        else:
+            charset = "0123456789ABCDEF"
+        return "".join(random.choice(charset) for _ in range(length))
+
     def is_valid_guid(self, val: Any) -> bool:
         if not isinstance(val, str):
             return False
@@ -347,6 +562,17 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
         if (stripped.startswith("{") and not stripped.endswith("}")) or (stripped.endswith("}") and not stripped.startswith("{")):
             return False
         return True
+
+    def is_valid_identifier_value(self, name: str, val: Any) -> bool:
+        if val is None or val == "":
+            return False
+        spec = self.identifiers.get(name, {})
+        gen_type = spec.get("generator", "guid")
+        if gen_type == "guid":
+            return self.is_valid_guid(str(val))
+        if gen_type == "install_date":
+            return str(val).isdigit()
+        return isinstance(val, (str, int)) and len(str(val).strip()) > 0
 
     def backup_exists(self) -> bool:
         return os.path.exists(self.backup_path)
@@ -380,7 +606,7 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
             "exists": True,
             "saved_at": b.get("saved_at"),
             "has": {
-                "guids": any(self.is_valid_guid(v) for v in identifiers.values()),
+                "guids": any(self.is_valid_identifier_value(k, v) for k, v in identifiers.items()),
                 "mac": len(adapters) > 0,
                 "volume": bool(vol and vol.get("sector"))
             },
@@ -432,8 +658,46 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
                 })
         return detected
 
+    def detect_hypervisors(self) -> List[str]:
+        detected = []
+        if sys.platform != "win32":
+            return detected
+        vm_indicators = [
+            ("VMware", ["vmtoolsd.exe", "vmwaretray.exe", "vmwareuser.exe"]),
+            ("VirtualBox", ["vboxservice.exe", "vboxtray.exe"]),
+            ("Hyper-V", ["vmicvss.exe", "vmictimesync.exe", "vmicrdv.exe"]),
+            ("QEMU / KVM", ["qemu-ga.exe"])
+        ]
+        try:
+            res = subprocess.run(["tasklist"], capture_output=True, text=True, **self._no_window_kwargs())
+            tasklist_out = (res.stdout or "").lower()
+            for name, procs in vm_indicators:
+                if any(p in tasklist_out for p in procs):
+                    detected.append(name)
+        except Exception:
+            pass
+        return detected
+
     def get_system_drive(self) -> str:
         return os.environ.get("SystemDrive", "C:").rstrip("\\/")
+
+    def get_all_fixed_drives(self) -> List[str]:
+        drives = []
+        if sys.platform == "win32":
+            try:
+                bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+                for letter in range(26):
+                    if bitmask & (1 << letter):
+                        drv = f"{chr(65 + letter)}:"
+                        if ctypes.windll.kernel32.GetDriveTypeW(f"{drv}\\") == 3:
+                            drives.append(drv)
+            except Exception:
+                pass
+        if not drives:
+            sys_drv = self.get_system_drive()
+            if sys_drv:
+                drives.append(sys_drv)
+        return drives
 
     def read_volume_serial(self, drive: Optional[str] = None) -> Optional[str]:
         drv = drive or self.get_system_drive()
@@ -457,6 +721,11 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
         except Exception:
             pass
         return None
+
+    def _vsn_length(self, sector_bytes: bytes) -> int:
+        if len(sector_bytes) >= 512 and sector_bytes[3:7] == b"NTFS":
+            return 8
+        return 4
 
     def _vsn_offset(self, sector_bytes: bytes) -> Optional[int]:
         if len(sector_bytes) < 512:
@@ -518,6 +787,8 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
             $fs.Write($bytes, 0, 512)
             $fs.Flush()
             Write-Output 'OK'
+        }} catch {{
+            Write-Output "ERR:$($_.Exception.Message)"
         }} finally {{
             if ($fs -ne $null) {{ $fs.Dispose() }}
         }}
@@ -562,10 +833,6 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
 
     def spoof_volume_serial(self, drive: Optional[str] = None) -> Dict[str, Any]:
         drv = drive or self.get_system_drive()
-        raw_hex = os.urandom(4).hex().upper()
-        formatted_serial = f"{raw_hex[0:4]}-{raw_hex[4:8]}"
-        int_val = int(raw_hex, 16)
-        patch_bytes = list(int_val.to_bytes(4, byteorder="little"))
 
         if self.is_elevated():
             buf = self._read_sector(drv)
@@ -575,14 +842,27 @@ if ($LASTEXITCODE -eq 0) {{ 'OK' }} else {{ 'NOT_FOUND' }}
             if offset is None:
                 return {"drive": drv, "ok": False, "error": "Unknown volume filesystem"}
 
+            vsn_len = self._vsn_length(buf)
+            raw_bytes = os.urandom(vsn_len)
+            patch_bytes = list(raw_bytes)
+            low_dword = int.from_bytes(raw_bytes[:4], byteorder="little")
+            raw_hex = f"{low_dword:08X}"
+            formatted_serial = f"{raw_hex[0:4]}-{raw_hex[4:8]}"
+
             orig_b64 = base64.b64encode(buf).decode("ascii")
             mutable = bytearray(buf)
-            mutable[offset:offset+4] = bytes(patch_bytes)
+            mutable[offset:offset+len(patch_bytes)] = bytes(patch_bytes)
             ok = self._write_sector(bytes(mutable), drv)
             if ok:
                 self._update_backup_volume_sector(drv, orig_b64, offset)
                 return {"drive": drv, "ok": True, "serial": formatted_serial, "reboot": True}
             return {"drive": drv, "ok": False, "error": "Failed to write raw boot sector"}
+
+        raw_bytes = os.urandom(8)
+        patch_bytes = list(raw_bytes)
+        low_dword = int.from_bytes(raw_bytes[:4], byteorder="little")
+        raw_hex = f"{low_dword:08X}"
+        formatted_serial = f"{raw_hex[0:4]}-{raw_hex[4:8]}"
 
         patch_str = ",".join(str(b) for b in patch_bytes)
         script = f"""
@@ -603,18 +883,22 @@ try {{
     }}
     $origB64 = [Convert]::ToBase64String($buf)
     $offset = -1
+    $vsnLen = 4
     if ($buf[3] -eq 78 -and $buf[4] -eq 84 -and $buf[5] -eq 70 -and $buf[6] -eq 83) {{
         $offset = 72
+        $vsnLen = 8
     }} elseif ($buf[82] -eq 70 -and $buf[83] -eq 65 -and $buf[84] -eq 84 -and $buf[85] -eq 51 -and $buf[86] -eq 50) {{
         $offset = 67
+        $vsnLen = 4
     }} elseif ($buf[54] -eq 70 -and $buf[55] -eq 65 -and $buf[56] -eq 84) {{
         $offset = 39
+        $vsnLen = 4
     }}
     if ($offset -lt 0) {{
         throw 'Unknown filesystem'
     }}
     $patch = [byte[]]@({patch_str})
-    for ($i = 0; $i -lt 4; $i++) {{
+    for ($i = 0; $i -lt $vsnLen; $i++) {{
         $buf[$offset + $i] = $patch[$i]
     }}
     $fs.Seek(0, [IO.SeekOrigin]::Begin) | Out-Null
@@ -778,22 +1062,32 @@ try {{
         return "SUCCESS" in out
 
     def refresh_dhcp(self) -> bool:
+        if sys.platform != "win32":
+            return False
         try:
+            subprocess.run(["ipconfig", "/flushdns"], capture_output=True, check=False, **self._no_window_kwargs())
+            subprocess.run(["arp", "-d", "*"], capture_output=True, check=False, **self._no_window_kwargs())
+            subprocess.run(["nbtstat", "-R"], capture_output=True, check=False, **self._no_window_kwargs())
             subprocess.run(["ipconfig", "/release"], capture_output=True, check=False, **self._no_window_kwargs())
             subprocess.run(["ipconfig", "/renew"], capture_output=True, check=False, **self._no_window_kwargs())
             return True
         except Exception:
             return False
 
-    def generate_mac(self, base_mac: Optional[str] = None, mirror_oui: bool = False) -> str:
+    def generate_mac(self, base_mac: Optional[str] = None, mirror_oui: bool = False, vendor_oui: bool = True) -> str:
         if mirror_oui and base_mac:
             clean = re.sub(r"[-:]", "", base_mac).upper()
             if len(clean) >= 6 and re.match(r"^[0-9A-F]{6,12}$", clean):
-                first_byte_int = (int(clean[0:2], 16) | 0x02) & 0xFE
-                oui_byte0 = f"{first_byte_int:02X}"
-                oui = [oui_byte0, clean[2:4], clean[4:6]]
+                oui = [clean[0:2], clean[2:4], clean[4:6]]
                 tail = [f"{b:02X}" for b in os.urandom(3)]
                 return "-".join(oui + tail)
+
+        if vendor_oui and self.REAL_HARDWARE_OUIS:
+            import random
+            oui_bytes = random.choice(self.REAL_HARDWARE_OUIS)
+            oui = [f"{b:02X}" for b in oui_bytes]
+            tail = [f"{b:02X}" for b in os.urandom(3)]
+            return "-".join(oui + tail)
 
         b0 = (os.urandom(1)[0] | 0x02) & 0xFE
         tail = [f"{b:02X}" for b in os.urandom(5)]
@@ -872,8 +1166,21 @@ try {{
             results = []
             if guids:
                 for name, spec in self.identifiers.items():
-                    val = self.generate_guid(braces=spec["braces"], upper=spec["upper"])
-                    ok = self._reg_write(spec["hive"], spec["key"], spec["value"], val)
+                    gen_type = spec.get("generator", "guid")
+                    if gen_type == "guid":
+                        val = self.generate_guid(braces=spec.get("braces", False), upper=spec.get("upper", False))
+                    elif gen_type == "product_id":
+                        val = self.generate_product_id()
+                    elif gen_type == "install_date":
+                        val, _ = self.generate_install_date()
+                    elif gen_type == "serial_15":
+                        val = self.generate_serial(15)
+                    elif gen_type == "serial_12":
+                        val = self.generate_serial(12)
+                    else:
+                        val = self.generate_guid(braces=spec.get("braces", False), upper=spec.get("upper", False))
+
+                    ok = self._reg_write(spec["hive"], spec["key"], spec["value"], val, reg_type=spec.get("type", "REG_SZ"))
                     results.append({"name": name, "value": val, "ok": ok})
 
             if volume:
@@ -890,21 +1197,36 @@ try {{
         guid_items = []
         if guids:
             for name, spec in self.identifiers.items():
-                val = self.generate_guid(braces=spec["braces"], upper=spec["upper"])
+                gen_type = spec.get("generator", "guid")
+                if gen_type == "guid":
+                    val = self.generate_guid(braces=spec.get("braces", False), upper=spec.get("upper", False))
+                elif gen_type == "product_id":
+                    val = self.generate_product_id()
+                elif gen_type == "install_date":
+                    val, _ = self.generate_install_date()
+                elif gen_type == "serial_15":
+                    val = self.generate_serial(15)
+                elif gen_type == "serial_12":
+                    val = self.generate_serial(12)
+                else:
+                    val = self.generate_guid(braces=spec.get("braces", False), upper=spec.get("upper", False))
+
                 guid_items.append({
                     "name": name,
                     "hive": spec["hive"],
                     "key": spec["key"],
                     "val_name": spec["value"],
-                    "data": val
+                    "data": val,
+                    "type": spec.get("type", "REG_SZ")
                 })
 
         vol_data = None
         if volume:
-            raw_hex = os.urandom(4).hex().upper()
+            raw_bytes = os.urandom(8)
+            patch_bytes = list(raw_bytes)
+            low_dword = int.from_bytes(raw_bytes[:4], byteorder="little")
+            raw_hex = f"{low_dword:08X}"
             formatted_serial = f"{raw_hex[0:4]}-{raw_hex[4:8]}"
-            int_val = int(raw_hex, 16)
-            patch_bytes = list(int_val.to_bytes(4, byteorder="little"))
             vol_data = {
                 "drive": self.get_system_drive(),
                 "serial": formatted_serial,
@@ -917,7 +1239,7 @@ try {{
         ]
         for g in guid_items:
             ps_lines.append(f"""
-reg add "{g['hive']}\\{g['key']}" /v "{g['val_name']}" /t REG_SZ /d "{g['data']}" /f | Out-Null
+reg add "{g['hive']}\\{g['key']}" /v "{g['val_name']}" /t {g.get('type', 'REG_SZ')} /d "{g['data']}" /f | Out-Null
 $guidOut += [PSCustomObject]@{{ name = '{g['name']}'; value = '{g['data']}'; ok = ($LASTEXITCODE -eq 0) }}
 """)
         if vol_data:
@@ -940,18 +1262,22 @@ try {{
     }}
     $origB64 = [Convert]::ToBase64String($buf)
     $offset = -1
+    $vsnLen = 4
     if ($buf[3] -eq 78 -and $buf[4] -eq 84 -and $buf[5] -eq 70 -and $buf[6] -eq 83) {{
         $offset = 72
+        $vsnLen = 8
     }} elseif ($buf[82] -eq 70 -and $buf[83] -eq 65 -and $buf[84] -eq 84 -and $buf[85] -eq 51 -and $buf[86] -eq 50) {{
         $offset = 67
+        $vsnLen = 4
     }} elseif ($buf[54] -eq 70 -and $buf[55] -eq 65 -and $buf[56] -eq 84) {{
         $offset = 39
+        $vsnLen = 4
     }}
     if ($offset -lt 0) {{
         throw 'Unknown filesystem'
     }}
     $patch = [byte[]]@({patch_str})
-    for ($i = 0; $i -lt 4; $i++) {{
+    for ($i = 0; $i -lt $vsnLen; $i++) {{
         $buf[$offset + $i] = $patch[$i]
     }}
     $fs.Seek(0, [IO.SeekOrigin]::Begin) | Out-Null
@@ -1014,10 +1340,12 @@ ConvertTo-Json -Compress @{
             if guids:
                 for name, spec in self.identifiers.items():
                     orig = backup.get("identifiers", {}).get(name)
-                    if not orig or not self.is_valid_guid(orig):
+                    if orig is None:
+                        continue
+                    if not self.is_valid_identifier_value(name, orig):
                         results["identifiers"].append({"name": name, "restored": False, "reason": "invalid-or-missing"})
                         continue
-                    ok = self._reg_write(spec["hive"], spec["key"], spec["value"], orig)
+                    ok = self._reg_write(spec["hive"], spec["key"], spec["value"], str(orig), reg_type=spec.get("type", "REG_SZ"))
                     results["identifiers"].append({"name": name, "restored": ok})
                     if not ok:
                         results["errors"].append(f"{name}: failed to write original value")
@@ -1069,9 +1397,12 @@ ConvertTo-Json -Compress @{
         if guids:
             for name, spec in self.identifiers.items():
                 orig = backup.get("identifiers", {}).get(name)
-                if orig and self.is_valid_guid(orig):
+                if orig is None:
+                    continue
+                reg_type = spec.get("type", "REG_SZ")
+                if self.is_valid_identifier_value(name, orig):
                     ps_lines.append(f"""
-reg add "{spec['hive']}\\{spec['key']}" /v "{spec['value']}" /t REG_SZ /d "{orig}" /f | Out-Null
+reg add "{spec['hive']}\\{spec['key']}" /v "{spec['value']}" /t {reg_type} /d "{orig}" /f | Out-Null
 $guidOut += [PSCustomObject]@{{ name = '{name}'; restored = ($LASTEXITCODE -eq 0) }}
 """)
                 else:
@@ -1245,21 +1576,36 @@ ConvertTo-Json -Compress @{
         guid_items = []
         if guids:
             for name, spec in self.identifiers.items():
-                val = self.generate_guid(braces=spec["braces"], upper=spec["upper"])
+                gen_type = spec.get("generator", "guid")
+                if gen_type == "guid":
+                    val = self.generate_guid(braces=spec.get("braces", False), upper=spec.get("upper", False))
+                elif gen_type == "product_id":
+                    val = self.generate_product_id()
+                elif gen_type == "install_date":
+                    val, _ = self.generate_install_date()
+                elif gen_type == "serial_15":
+                    val = self.generate_serial(15)
+                elif gen_type == "serial_12":
+                    val = self.generate_serial(12)
+                else:
+                    val = self.generate_guid(braces=spec.get("braces", False), upper=spec.get("upper", False))
+
                 guid_items.append({
                     "name": name,
                     "hive": spec["hive"],
                     "key": spec["key"],
                     "val_name": spec["value"],
-                    "data": val
+                    "data": val,
+                    "type": spec.get("type", "REG_SZ")
                 })
 
         vol_data = None
         if volume:
-            raw_hex = os.urandom(4).hex().upper()
+            raw_bytes = os.urandom(8)
+            patch_bytes = list(raw_bytes)
+            low_dword = int.from_bytes(raw_bytes[:4], byteorder="little")
+            raw_hex = f"{low_dword:08X}"
             formatted_serial = f"{raw_hex[0:4]}-{raw_hex[4:8]}"
-            int_val = int(raw_hex, 16)
-            patch_bytes = list(int_val.to_bytes(4, byteorder="little"))
             vol_data = {
                 "drive": self.get_system_drive(),
                 "serial": formatted_serial,
@@ -1306,7 +1652,7 @@ try {{
 
         for g in guid_items:
             ps_lines.append(f"""
-reg add "{g['hive']}\\{g['key']}" /v "{g['val_name']}" /t REG_SZ /d "{g['data']}" /f | Out-Null
+reg add "{g['hive']}\\{g['key']}" /v "{g['val_name']}" /t {g.get('type', 'REG_SZ')} /d "{g['data']}" /f | Out-Null
 $guidOut += [PSCustomObject]@{{ name = '{g['name']}'; value = '{g['data']}'; ok = ($LASTEXITCODE -eq 0) }}
 """)
 
@@ -1330,18 +1676,22 @@ try {{
     }}
     $origB64 = [Convert]::ToBase64String($buf)
     $offset = -1
+    $vsnLen = 4
     if ($buf[3] -eq 78 -and $buf[4] -eq 84 -and $buf[5] -eq 70 -and $buf[6] -eq 83) {{
         $offset = 72
+        $vsnLen = 8
     }} elseif ($buf[82] -eq 70 -and $buf[83] -eq 65 -and $buf[84] -eq 84 -and $buf[85] -eq 51 -and $buf[86] -eq 50) {{
         $offset = 67
+        $vsnLen = 4
     }} elseif ($buf[54] -eq 70 -and $buf[55] -eq 65 -and $buf[56] -eq 84) {{
         $offset = 39
+        $vsnLen = 4
     }}
     if ($offset -lt 0) {{
         throw 'Unknown filesystem'
     }}
     $patch = [byte[]]@({patch_str})
-    for ($i = 0; $i -lt 4; $i++) {{
+    for ($i = 0; $i -lt $vsnLen; $i++) {{
         $buf[$offset + $i] = $patch[$i]
     }}
     $fs.Seek(0, [IO.SeekOrigin]::Begin) | Out-Null
@@ -1936,13 +2286,25 @@ ConvertTo-Json -Compress @{
                 if self._reg_delete_key("HKCU", b_reg):
                     logs.append({"level": "success", "msg": f"Removed HKCU\\{b_reg}"})
 
+            if local_app_data:
+                wer_dumps = os.path.join(local_app_data, "CrashDumps")
+                if os.path.exists(wer_dumps):
+                    try:
+                        for item in os.listdir(wer_dumps):
+                            low_item = item.lower()
+                            if any(pfx in low_item for pfx in ("roblox", "bloxstrap", "fishstrap", "voidstrap", "froststrap")):
+                                if self._remove_path(os.path.join(wer_dumps, item)):
+                                    logs.append({"level": "success", "msg": f"Removed crash dump artifact: {item}"})
+                    except Exception:
+                        pass
+
             set_progress(82, "Clearing temporary files and LocalStorage session data...")
             if temp_dir and os.path.exists(temp_dir):
                 self._remove_path(os.path.join(temp_dir, "Roblox"))
                 self._remove_path(os.path.join(temp_dir, "RobloxLogs"))
                 try:
                     for fn in os.listdir(temp_dir):
-                        if fn.startswith("Roblox"):
+                        if fn.startswith("Roblox") or fn.lower().startswith("bloxstrap") or fn.lower().startswith("fishstrap"):
                             self._remove_path(os.path.join(temp_dir, fn))
                 except Exception:
                     pass
@@ -1960,6 +2322,19 @@ ConvertTo-Json -Compress @{
                     lg = os.path.join(r_local, "logs")
                     if self._remove_path(lg):
                         logs.append({"level": "success", "msg": "Purged telemetry logs"})
+
+                if sys.platform == "win32":
+                    try:
+                        ck_res = subprocess.run(["cmdkey", "/list"], capture_output=True, text=True, **self._no_window_kwargs())
+                        if ck_res.stdout:
+                            for ck_line in ck_res.stdout.splitlines():
+                                if "target=" in ck_line.lower() and "roblox" in ck_line.lower():
+                                    target_cred = ck_line.split("=", 1)[1].strip()
+                                    del_res = subprocess.run(["cmdkey", f"/delete:{target_cred}"], capture_output=True, **self._no_window_kwargs())
+                                    if del_res.returncode == 0:
+                                        logs.append({"level": "success", "msg": f"Purged Windows credential token: {target_cred}"})
+                    except Exception:
+                        pass
 
             if weblauncher_dir and os.path.isdir(weblauncher_dir):
                 norm_w = os.path.normpath(weblauncher_dir).lower()
