@@ -11960,39 +11960,100 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
                 placeHtml = `
                   <div style="display:inline-flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.2;">
                     <span style="font-weight:600; color:var(--text-bright); font-size:12px; max-width:145px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${matchedGame.name}">${matchedGame.name}</span>
-                    <code class="pid-badge" style="background:rgba(99,102,241,0.12); color:#6366f1; border-color:rgba(99,102,241,0.25); font-size:10.5px; padding:1px 5px; margin-top:2px;" title="Place ID: ${inst.place_id}">${inst.place_id}</code>
+                    <code class="pid-badge" style="background:rgba(99,102,241,0.12); color:rgb(99,102,241); border-color:rgba(99,102,241,0.25); font-size:10.5px; padding:1px 5px; margin-top:2px;" title="Place ID: ${inst.place_id}">${inst.place_id}</code>
                   </div>
                 `;
               } else {
                 placeHtml = `
-                  <code class="pid-badge" style="background:rgba(99,102,241,0.12); color:#6366f1; border-color:rgba(99,102,241,0.25); font-size:11px; padding:2px 6px;" title="Place ID: ${inst.place_id}">${inst.place_id}</code>
+                  <code class="pid-badge" style="background:rgba(99,102,241,0.12); color:rgb(99,102,241); border-color:rgba(99,102,241,0.25); font-size:11px; padding:2px 6px;" title="Place ID: ${inst.place_id}">${inst.place_id}</code>
                 `;
               }
             }
+
+            let uptimeHtml = `<span style="font-size:11.5px; color:var(--text-muted);">-</span>`;
+            if (typeof inst.uptime_sec === 'number' && inst.uptime_sec >= 0) {
+              const up = inst.uptime_sec;
+              const m = Math.floor(up / 60);
+              const s = up % 60;
+              const h = Math.floor(m / 60);
+              const mRemainder = m % 60;
+              const formatted = h > 0 ? `${h}h ${mRemainder}m` : (m > 0 ? `${m}m ${s}s` : `${s}s`);
+              uptimeHtml = `
+                <span class="pid-badge" style="background:rgba(255,255,255,0.04); color:var(--text); font-size:11px; padding:2px 6px;" title="Process Uptime: ${formatted}">
+                  ${formatted}
+                </span>
+              `;
+            }
+
+            const cpuVal = inst.cpu_percent ?? 0;
+            const cpuColor = cpuVal > 40 ? 'var(--red)' : (cpuVal > 15 ? 'var(--yellow)' : 'var(--green)');
+            const cpuBg = cpuVal > 40 ? 'rgba(239,68,68,0.12)' : (cpuVal > 15 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.12)');
+
+            const memVal = inst.memory_mb || 0;
+            const memColor = memVal > 1000 ? 'var(--red)' : (memVal > 500 ? 'var(--yellow)' : 'var(--text-bright)');
+            const memBg = memVal > 1000 ? 'rgba(239,68,68,0.12)' : (memVal > 500 ? 'rgba(245,158,11,0.12)' : 'rgba(255,255,255,0.04)');
+
+            const isMuted = Boolean(inst.is_muted);
 
             return `
               <tr>
                 <td style="text-align:center;"><code class="pid-badge">${inst.pid}</code></td>
                 <td style="text-align:center;">${accountHtml}</td>
                 <td style="text-align:center;">${placeHtml}</td>
-                <td style="text-align:center; font-weight:600; color:var(--text-bright);">${inst.name}</td>
+                <td style="text-align:center;">${uptimeHtml}</td>
                 <td style="text-align:center;">
-                  ${inst.is_hidden
-                    ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:#94a3b8; border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:#94a3b8;"></span>Hidden</span>`
-                    : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
-                  }
+                  <div style="display:inline-flex; flex-direction:column; align-items:center; gap:3px;">
+                    ${inst.is_hidden
+                      ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:rgb(148,163,184); border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:rgb(148,163,184);"></span>Hidden</span>`
+                      : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
+                    }
+                    ${isMuted
+                      ? `<span class="status-badge" style="background:rgba(239,68,68,0.12); color:rgb(239,68,68); border:1px solid rgba(239,68,68,0.25);" title="Client audio is muted">Muted</span>`
+                      : ''
+                    }
+                  </div>
                 </td>
-                <td style="text-align:center;"><span style="font-weight:600; color:${(inst.cpu_percent || 0) > 25 ? 'var(--red)' : (inst.cpu_percent || 0) > 12 ? 'var(--yellow)' : 'var(--text-bright)'};">${(inst.cpu_percent ?? 0).toFixed(1)}%</span></td>
-                <td style="text-align:center;">${inst.memory_mb.toFixed(1)} MB</td>
+                <td style="text-align:center;">
+                  <span class="status-badge" style="background:${cpuBg}; color:${cpuColor}; border:1px solid transparent; font-size:11px; padding:2px 6px; font-weight:700;">
+                    ${cpuVal.toFixed(1)}%
+                  </span>
+                </td>
+                <td style="text-align:center;">
+                  <span class="status-badge" style="background:${memBg}; color:${memColor}; border:1px solid transparent; font-size:11px; padding:2px 6px; font-weight:600;">
+                    ${memVal.toFixed(1)} MB
+                  </span>
+                </td>
                 <td style="text-align:center; white-space:nowrap;">
-                  <div style="display:inline-flex; align-items:center; justify-content:center; gap:6px;">
-                    <button class="btn btn-secondary btn-sm btn-instance-actions" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" style="padding:4px 9px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px;" title="Instance Actions (Hide, Unhide, Focus, Trim, Relaunch)">
-                      Actions
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:10px;height:10px;"><path d="m6 9 6 6 6-6"/></svg>
+                  <div style="display:inline-flex; align-items:center; justify-content:center; gap:4px;">
+                    <button class="btn btn-secondary btn-sm btn-quick-focus" data-pid="${inst.pid}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="Bring window to front">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
                     </button>
-                    <button class="btn btn-secondary btn-sm btn-kill-pid" data-pid="${inst.pid}" data-username="${inst.username || ''}" style="color:var(--red); padding:4px 9px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px; border-color:rgba(239,68,68,0.3);" title="Terminate this process PID">
+                    <button class="btn btn-secondary btn-sm btn-quick-toggle-hide" data-pid="${inst.pid}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="${inst.is_hidden ? 'Unhide window' : 'Hide window'}">
+                      ${inst.is_hidden
+                        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`
+                        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
+                      }
+                    </button>
+                    <button class="btn btn-secondary btn-sm btn-quick-toggle-mute" data-pid="${inst.pid}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; ${isMuted ? 'color:var(--red); border-color:rgba(239,68,68,0.3);' : ''}" title="${isMuted ? 'Unmute Client Audio' : 'Mute Client Audio'}">
+                      ${isMuted
+                        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`
+                        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
+                      }
+                    </button>
+                    ${isMacOS() ? '' : `
+                      <button class="btn btn-secondary btn-sm btn-quick-trim" data-pid="${inst.pid}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="Trim RAM working set">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+                      </button>
+                    `}
+                    <button class="btn btn-secondary btn-sm btn-quick-preview" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; color:rgb(139,92,246);" title="Send Discord Window Preview">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                    </button>
+                    <button class="btn btn-secondary btn-sm btn-instance-actions" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 8px; font-size:11.5px; display:inline-flex; align-items:center; gap:3px;" title="Instance Actions Menu">
+                      More
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:9px;height:9px;"><path d="m6 9 6 6 6-6"/></svg>
+                    </button>
+                    <button class="btn btn-secondary btn-sm btn-kill-pid" data-pid="${inst.pid}" data-username="${inst.username || ''}" style="color:var(--red); padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border-color:rgba(239,68,68,0.3);" title="Terminate process">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-                      Kill
                     </button>
                   </div>
                 </td>
@@ -12004,14 +12065,14 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
             <table class="instances-table">
               <thead>
                 <tr>
-                  <th style="width:80px; text-align:center;">PID</th>
-                  <th style="width:180px; text-align:center;">Account Tied</th>
-                  <th style="width:150px; text-align:center;">Place ID Tied</th>
-                  <th style="text-align:center;">Process Name</th>
-                  <th style="width:100px; text-align:center;">Status</th>
-                  <th style="width:90px; text-align:center;">CPU</th>
-                  <th style="width:100px; text-align:center;">Memory</th>
-                  <th style="width:160px; text-align:center;">Actions</th>
+                  <th style="width:75px; text-align:center;">PID</th>
+                  <th style="width:170px; text-align:center;">Account Tied</th>
+                  <th style="width:140px; text-align:center;">Place Tied</th>
+                  <th style="width:85px; text-align:center;">Uptime</th>
+                  <th style="width:95px; text-align:center;">Status</th>
+                  <th style="width:85px; text-align:center;">CPU</th>
+                  <th style="width:95px; text-align:center;">Memory</th>
+                  <th style="width:230px; text-align:center;">Quick Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -12073,6 +12134,142 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
 
       container.innerHTML = mainContentHtml;
 
+      container.querySelectorAll('.btn-quick-focus').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          if (!pidAttr) return;
+          const pid = parseInt(pidAttr, 10);
+          try {
+            toast(`Focusing window for PID ${pid}...`, 'info');
+            const res = await apiService.focusInstance(pid);
+            if (res.success) {
+              toast(res.message || `Focused instance PID ${pid}`, 'success');
+              renderInstancesView(true);
+            } else {
+              toast(res.error || 'Failed to focus instance', 'error');
+            }
+          } catch (err: any) {
+            toast(`Focus error: ${err.message || err}`, 'error');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-quick-toggle-hide').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          const isHidden = target.getAttribute('data-hidden') === 'true';
+          if (!pidAttr) return;
+          const pid = parseInt(pidAttr, 10);
+          try {
+            if (isHidden) {
+              toast(`Restoring client PID ${pid}...`, 'info');
+              const res = await apiService.unhideInstance(pid);
+              if (res.success) {
+                toast(res.message || `Restored PID ${pid}`, 'success');
+                renderInstancesView(true);
+              } else {
+                toast(res.error || 'Failed to unhide instance', 'error');
+              }
+            } else {
+              toast(`Hiding client PID ${pid}...`, 'info');
+              const res = await apiService.hideInstance(pid);
+              if (res.success) {
+                toast(res.message || `Hidden PID ${pid}`, 'success');
+                renderInstancesView(true);
+              } else {
+                toast(res.error || 'Failed to hide instance', 'error');
+              }
+            }
+          } catch (err: any) {
+            toast(`Toggle hide error: ${err.message || err}`, 'error');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-quick-toggle-mute').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          const isMuted = target.getAttribute('data-muted') === 'true';
+          if (!pidAttr) return;
+          const pid = parseInt(pidAttr, 10);
+          try {
+            if (isMuted) {
+              toast(`Unmuting audio for PID ${pid}...`, 'info');
+              const res = await apiService.unmuteInstance(pid);
+              if (res.success) {
+                toast(res.message || `Unmuted audio for PID ${pid}`, 'success');
+                renderInstancesView(true);
+              } else {
+                toast(res.error || 'Failed to unmute audio', 'error');
+              }
+            } else {
+              toast(`Muting audio for PID ${pid}...`, 'info');
+              const res = await apiService.muteInstance(pid);
+              if (res.success) {
+                toast(res.message || `Muted audio for PID ${pid}`, 'success');
+                renderInstancesView(true);
+              } else {
+                toast(res.error || 'Failed to mute audio', 'error');
+              }
+            }
+          } catch (err: any) {
+            toast(`Toggle mute error: ${err.message || err}`, 'error');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-quick-trim').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          if (!pidAttr) return;
+          const pid = parseInt(pidAttr, 10);
+          try {
+            toast(`Trimming RAM for PID ${pid}...`, 'info');
+            const res = await apiService.trimInstanceMemory(pid);
+            if (res.success) {
+              toast(`Trimmed PID ${pid}: reclaimed ${res.savedMb ?? 0} MB RAM`, 'success');
+              addLog(`Trimmed RAM for PID ${pid}: ${res.savedMb ?? 0} MB reclaimed`, 'info');
+              renderInstancesView(true);
+            } else {
+              toast(res.error || 'Failed to trim memory', 'error');
+            }
+          } catch (err: any) {
+            toast(`RAM trim error: ${err.message || err}`, 'error');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-quick-preview').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          const username = target.getAttribute('data-username') || undefined;
+          const placeId = target.getAttribute('data-placeid') || undefined;
+          if (!pidAttr) return;
+          const pid = parseInt(pidAttr, 10);
+          try {
+            toast(`Capturing and sending Discord preview for PID ${pid}...`, 'info');
+            const res = await apiService.sendWindowPreview({ pid, username, placeId });
+            if (res.success) {
+              toast(res.message || `Discord window preview sent for PID ${pid}!`, 'success');
+            } else {
+              toast(res.error || 'Failed to send window preview', 'error');
+            }
+          } catch (err: any) {
+            toast(`Preview error: ${err.message || err}`, 'error');
+          }
+        });
+      });
+
       container.querySelectorAll('.btn-instance-actions').forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -12083,6 +12280,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
           const username = target.getAttribute('data-username') || '';
           const placeId = target.getAttribute('data-placeid') || '';
           const isHidden = target.getAttribute('data-hidden') === 'true';
+          const isMuted = target.getAttribute('data-muted') === 'true';
 
           const pop = document.getElementById('instance-actions-popover');
           if (pop?.classList.contains('show') && currentInstanceActionData?.pid === pid) {
@@ -12090,7 +12288,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
             return;
           }
 
-          openInstanceActionsMenu(target, { pid, username, placeId, isHidden });
+          openInstanceActionsMenu(target, { pid, username, placeId, isHidden, isMuted });
         });
       });
 
@@ -12184,9 +12382,9 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
   }
 }
 
-let currentInstanceActionData: { pid: number; username: string; placeId: string; isHidden: boolean } | null = null;
+let currentInstanceActionData: { pid: number; username: string; placeId: string; isHidden: boolean; isMuted?: boolean } | null = null;
 
-function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; username: string; placeId: string; isHidden: boolean }): void {
+function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; username: string; placeId: string; isHidden: boolean; isMuted?: boolean }): void {
   const pop = document.getElementById('instance-actions-popover');
   if (!pop) return;
 
@@ -12197,18 +12395,26 @@ function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; usern
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
       Focus Window
     </button>
-    <button data-action="unhide">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-      Unhide Client
+    <button data-action="${data.isHidden ? 'unhide' : 'hide'}">
+      ${data.isHidden
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Unhide Client`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg> Hide Client`
+      }
     </button>
-    <button data-action="hide">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>
-      Hide Client
+    <button data-action="${data.isMuted ? 'unmute' : 'mute'}">
+      ${data.isMuted
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg> Unmute Audio`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg> Mute Audio`
+      }
     </button>
     ${isMacOS() ? '' : `<button data-action="trim">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
       Trim Memory
     </button>`}
+    <button data-action="preview" style="color:rgb(139,92,246);">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:rgb(139,92,246);"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+      Send Discord Preview
+    </button>
     <button data-action="relaunch">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
       Relaunch
@@ -17813,6 +18019,10 @@ function initApp(): void {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
                 Trim Memory
               </button>
+              <button class="btn btn-secondary" id="btn-toggle-mute-all-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Toggle Mute/Unmute for all running Roblox client instances">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                <span id="label-mute-all-instances">Mute Audio</span>
+              </button>
               <button class="btn btn-secondary" id="btn-arrange-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Auto-arrange active Roblox client windows across your monitors">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
                 Arrange Clients
@@ -18087,8 +18297,17 @@ function initApp(): void {
                     <input type="checkbox" id="webhook-screenshot-all-monitors">
                   </label>
 
-                  <div style="padding-top:4px;">
+                  <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
+                    <div>
+                      <b style="font-size:13px; display:block; color:var(--text-bright);">Window Preview Only</b>
+                      <span style="font-size:11px; color:var(--muted);">Capture only active Roblox client window (privacy friendly)</span>
+                    </div>
+                    <input type="checkbox" id="webhook-screenshot-window-only">
+                  </label>
+
+                  <div style="padding-top:4px; display:flex; gap:8px; flex-wrap:wrap;">
                     <button class="btn btn-secondary btn-sm" id="btn-send-instant-screenshot">Capture & Send Screenshot Now</button>
+                    <button class="btn btn-secondary btn-sm" id="btn-send-instant-window-preview" style="color:rgb(139,92,246); border-color:rgba(139,92,246,0.3);">Send Window Preview Now</button>
                   </div>
                 </div>
               </div>
@@ -18510,6 +18729,50 @@ function initApp(): void {
           }
         } catch (err: any) {
           toast(`RAM trim error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'mute') {
+        try {
+          toast(`Muting audio for PID ${pid}...`, 'info');
+          const res = await apiService.muteInstance(pid);
+          if (res.success) {
+            toast(res.message || `Muted audio for PID ${pid}`, 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to mute audio', 'error');
+          }
+        } catch (err: any) {
+          toast(`Mute error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'unmute') {
+        try {
+          toast(`Unmuting audio for PID ${pid}...`, 'info');
+          const res = await apiService.unmuteInstance(pid);
+          if (res.success) {
+            toast(res.message || `Unmuted audio for PID ${pid}`, 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to unmute audio', 'error');
+          }
+        } catch (err: any) {
+          toast(`Unmute error: ${err.message || err}`, 'error');
+        }
+      }
+
+      if (action === 'preview') {
+        try {
+          toast(`Capturing and sending Discord preview for PID ${pid}...`, 'info');
+          const res = await apiService.sendWindowPreview({ pid, username, placeId });
+          if (res.success) {
+            toast(res.message || `Discord window preview sent for PID ${pid}!`, 'success');
+          } else {
+            toast(res.error || 'Failed to send window preview', 'error');
+          }
+        } catch (err: any) {
+          toast(`Preview error: ${err.message || err}`, 'error');
         }
       }
 
@@ -19045,6 +19308,11 @@ function initApp(): void {
     btnSendInstantScreenshot.addEventListener('click', () => testWebhookScreenshot());
   }
 
+  const btnSendInstantWindowPreview = document.getElementById('btn-send-instant-window-preview');
+  if (btnSendInstantWindowPreview) {
+    btnSendInstantWindowPreview.addEventListener('click', () => testWebhookWindowPreview());
+  }
+
   const btnSendInstantInstances = document.getElementById('btn-send-instant-instances');
   if (btnSendInstantInstances) {
     btnSendInstantInstances.addEventListener('click', () => testWebhookInstances());
@@ -19188,6 +19456,41 @@ function initApp(): void {
   const btnTrimMemoryInstances = document.getElementById('btn-trim-memory-instances');
   if (btnTrimMemoryInstances) {
     btnTrimMemoryInstances.addEventListener('click', () => handleTrimMemoryAction(btnTrimMemoryInstances));
+  }
+
+  let allInstancesMuted = false;
+  const btnToggleMuteAllInstances = document.getElementById('btn-toggle-mute-all-instances');
+  const labelMuteAllInstances = document.getElementById('label-mute-all-instances');
+  if (btnToggleMuteAllInstances) {
+    btnToggleMuteAllInstances.addEventListener('click', async () => {
+      try {
+        if (!allInstancesMuted) {
+          toast('Muting audio for all running instances...', 'info');
+          const res = await apiService.muteAllInstances();
+          if (res.success) {
+            allInstancesMuted = true;
+            if (labelMuteAllInstances) labelMuteAllInstances.textContent = 'Unmute Audio';
+            toast(res.message || 'Muted audio for all instances', 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to mute instances', 'error');
+          }
+        } else {
+          toast('Unmuting audio for all running instances...', 'info');
+          const res = await apiService.unmuteAllInstances();
+          if (res.success) {
+            allInstancesMuted = false;
+            if (labelMuteAllInstances) labelMuteAllInstances.textContent = 'Mute Audio';
+            toast(res.message || 'Unmuted audio for all instances', 'success');
+            renderInstancesView(true);
+          } else {
+            toast(res.error || 'Failed to unmute instances', 'error');
+          }
+        }
+      } catch (err: any) {
+        toast(`Mute all error: ${err.message || err}`, 'error');
+      }
+    });
   }
 
   const btnArrangeInstances = document.getElementById('btn-arrange-instances');
@@ -19675,6 +19978,7 @@ async function fetchWebhookConfig() {
       const screenshotEnableToggle = document.getElementById('webhook-screenshot-enable-toggle') as HTMLInputElement | null;
       const screenshotIntervalInput = document.getElementById('webhook-screenshot-interval') as HTMLInputElement | null;
       const screenshotAllMonitorsToggle = document.getElementById('webhook-screenshot-all-monitors') as HTMLInputElement | null;
+      const screenshotWindowOnlyToggle = document.getElementById('webhook-screenshot-window-only') as HTMLInputElement | null;
       const screenshotStatusLabel = document.getElementById('webhook-screenshot-status-label');
       const instanceSummaryToggle = document.getElementById('webhook-instance-summary-toggle') as HTMLInputElement | null;
       const instanceSummaryIntervalInput = document.getElementById('webhook-instance-summary-interval') as HTMLInputElement | null;
@@ -19691,6 +19995,7 @@ async function fetchWebhookConfig() {
       if (screenshotEnableToggle) screenshotEnableToggle.checked = Boolean(cfg.screenshot_enabled);
       if (screenshotIntervalInput) screenshotIntervalInput.value = String(cfg.screenshot_interval_minutes || 15);
       if (screenshotAllMonitorsToggle) screenshotAllMonitorsToggle.checked = Boolean(cfg.screenshot_all_monitors);
+      if (screenshotWindowOnlyToggle) screenshotWindowOnlyToggle.checked = Boolean(cfg.screenshot_window_only);
       if (screenshotStatusLabel) {
         screenshotStatusLabel.textContent = cfg.screenshot_enabled ? 'Enabled' : 'Disabled';
         screenshotStatusLabel.style.color = cfg.screenshot_enabled ? 'var(--green)' : 'var(--muted)';
@@ -19746,6 +20051,7 @@ async function saveWebhookConfig() {
   const screenshotEnableToggle = document.getElementById('webhook-screenshot-enable-toggle') as HTMLInputElement | null;
   const screenshotIntervalInput = document.getElementById('webhook-screenshot-interval') as HTMLInputElement | null;
   const screenshotAllMonitorsToggle = document.getElementById('webhook-screenshot-all-monitors') as HTMLInputElement | null;
+  const screenshotWindowOnlyToggle = document.getElementById('webhook-screenshot-window-only') as HTMLInputElement | null;
   const instanceSummaryToggle = document.getElementById('webhook-instance-summary-toggle') as HTMLInputElement | null;
   const instanceSummaryIntervalInput = document.getElementById('webhook-instance-summary-interval') as HTMLInputElement | null;
 
@@ -19760,6 +20066,7 @@ async function saveWebhookConfig() {
     screenshot_enabled: screenshotEnableToggle?.checked || false,
     screenshot_interval_minutes: parseInt(screenshotIntervalInput?.value || '15', 10) || 15,
     screenshot_all_monitors: screenshotAllMonitorsToggle?.checked || false,
+    screenshot_window_only: screenshotWindowOnlyToggle?.checked || false,
     instance_summary_enabled: instanceSummaryToggle?.checked || false,
     instance_summary_interval_minutes: parseInt(instanceSummaryIntervalInput?.value || '15', 10) || 15
   };
@@ -19818,6 +20125,27 @@ async function testWebhookScreenshot() {
     }
   } catch (err) {
     toast('Failed to send monitor screenshot.', 'error');
+  }
+}
+
+async function testWebhookWindowPreview() {
+  const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
+  const url = urlInput?.value.trim();
+  if (!url) {
+    toast('Please enter a Discord Webhook URL first.', 'info');
+    return;
+  }
+  toast('Capturing and sending Roblox client window preview...', 'info');
+  try {
+    const data = await apiService.sendWindowPreview();
+    if (data.success) {
+      toast('Window preview delivered successfully to Discord!', 'success');
+      fetchWebhookConfig();
+    } else {
+      toast(data.error || 'Window preview delivery failed.', 'error');
+    }
+  } catch (err) {
+    toast('Failed to send window preview.', 'error');
   }
 }
 

@@ -407,6 +407,18 @@ account_manager = None
 active_master_password = None
 last_account_decryption_error = None
 
+def get_place_name(place_id) -> Optional[str]:
+    if not place_id:
+        return None
+    try:
+        data = load_data()
+        for g in data.get('games', []):
+            if str(g.get('placeId') or '').strip() == str(place_id).strip():
+                return g.get('name')
+    except Exception:
+        pass
+    return None
+
 def _rejoin_launch_callback(session, attempt_number):
     mgr = get_account_manager()
     if not mgr:
@@ -426,7 +438,17 @@ def _rejoin_launch_callback(session, attempt_number):
         launch_mode=mode
     )
     if launched:
-        webhook_manager.notify_rejoin(uname, place_id or "Home", reason=f"Auto-rejoin monitor trigger (attempt {attempt_number})")
+        acc_meta = mgr.accounts.get(uname, {}) if mgr and hasattr(mgr, 'accounts') else {}
+        p_name = get_place_name(place_id)
+        webhook_manager.notify_rejoin(
+            uname,
+            place_id or "Home",
+            reason=f"Auto-rejoin monitor trigger (attempt {attempt_number})",
+            display_name=acc_meta.get('display_name'),
+            user_id=acc_meta.get('user_id'),
+            avatar_url=acc_meta.get('avatar_url'),
+            place_name=p_name
+        )
     return bool(launched)
 
 def _rejoin_presence_lookup(cookie, user_ids, session=None):
@@ -1415,7 +1437,17 @@ def launch_account():
 
         if launched:
             record_launch_event(username)
-            webhook_manager.notify_launch(username, place_id=place_id, job_id=server_id)
+            acc_meta = manager.accounts.get(username, {}) if manager and hasattr(manager, 'accounts') else {}
+            p_name = get_place_name(place_id)
+            webhook_manager.notify_launch(
+                username,
+                place_id=place_id,
+                job_id=server_id,
+                display_name=acc_meta.get('display_name'),
+                user_id=acc_meta.get('user_id'),
+                avatar_url=acc_meta.get('avatar_url'),
+                place_name=p_name
+            )
             if auto_arranger.is_enabled():
                 auto_arranger.trigger_delayed_arrange(2.5)
             if headless_manager.is_enabled():
@@ -2589,7 +2621,17 @@ def background_auto_rejoin_worker():
                     if launched:
                         info['timestamp'] = time.time()
                         last_launch_times[uname_lower] = time.time()
-                        webhook_manager.notify_rejoin(uname, place_id or "Home", reason="Client process disconnected")
+                        acc_meta = manager.accounts.get(uname, {}) if manager and hasattr(manager, 'accounts') else {}
+                        p_name = get_place_name(place_id)
+                        webhook_manager.notify_rejoin(
+                            uname,
+                            place_id or "Home",
+                            reason="Client process disconnected",
+                            display_name=acc_meta.get('display_name'),
+                            user_id=acc_meta.get('user_id'),
+                            avatar_url=acc_meta.get('avatar_url'),
+                            place_name=p_name
+                        )
                     time.sleep(delay)
                 except Exception as e:
                     print(f"[ERROR] Auto-rejoin launch failed for {uname}: {e}")
@@ -2946,6 +2988,116 @@ def resolve_pid_account(pid, creation_time_sec=None, accounts_by_user=None, acco
 
     return resolved_result
 
+_MUTED_PIDS = set()
+_MUTED_PIDS_LOCK = threading.Lock()
+
+def set_process_audio_mute(pid: int, mute: bool) -> Tuple[bool, str]:
+    pid = int(pid)
+    with _MUTED_PIDS_LOCK:
+        if mute:
+            _MUTED_PIDS.add(pid)
+        else:
+            _MUTED_PIDS.discard(pid)
+
+    if platform.system() == "Windows":
+        try:
+            ps_script = f"""
+$code = @'
+using System;
+using System.Runtime.InteropServices;
+namespace FRAMAudio {{
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDevice {{
+        int Activate(ref Guid id, int clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object interfacePointer);
+    }}
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IMMDeviceEnumerator {{
+        int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice endpoint);
+    }}
+    [Guid("77AA99A0-1BD6-484F-BC0A-F16E11C6052F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionManager2 {{
+        int dummy1();
+        int dummy2();
+        int GetSessionEnumerator(out IAudioSessionEnumerator SessionEnum);
+    }}
+    [Guid("E2F5EE11-2070-4E59-AAEE-16729403DA9E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionEnumerator {{
+        int GetCount(out int SessionCount);
+        int GetSession(int SessionIndex, out IAudioSessionControl Session);
+    }}
+    [Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionControl {{
+        int dummy1(); int dummy2(); int dummy3(); int dummy4(); int dummy5(); int dummy6(); int dummy7(); int dummy8();
+    }}
+    [Guid("bfb79d95-7984-4546-98b9-4d69be44f104"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionControl2 {{
+        int dummy1(); int dummy2(); int dummy3(); int dummy4(); int dummy5(); int dummy6(); int dummy7(); int dummy8();
+        int dummy9(); int dummy10(); int dummy11(); int dummy12(); int dummy13();
+        int GetProcessId(out int RetVal);
+    }}
+    [Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface ISimpleAudioVolume {{
+        int SetMasterVolume(float fLevel, ref Guid EventContext);
+        int GetMasterVolume(out float pfLevel);
+        int SetMute(bool bMute, ref Guid EventContext);
+        int GetMute(out bool pbMute);
+    }}
+    [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291433E")]
+    class MMDeviceEnumeratorComObject {{ }}
+    public class Muter {{
+        public static bool SetMute(int targetPid, bool mute) {{
+            try {{
+                var enumerator = new MMDeviceEnumeratorComObject() as IMMDeviceEnumerator;
+                IMMDevice dev;
+                enumerator.GetDefaultAudioEndpoint(0, 1, out dev);
+                var IID_IAudioSessionManager2 = new Guid("77AA99A0-1BD6-484F-BC0A-F16E11C6052F");
+                object obj;
+                dev.Activate(ref IID_IAudioSessionManager2, 23, IntPtr.Zero, out obj);
+                var mgr = obj as IAudioSessionManager2;
+                IAudioSessionEnumerator sessionEnum;
+                mgr.GetSessionEnumerator(out sessionEnum);
+                int count;
+                sessionEnum.GetCount(out count);
+                for (int i = 0; i < count; i++) {{
+                    IAudioSessionControl ctl;
+                    sessionEnum.GetSession(i, out ctl);
+                    var ctl2 = ctl as IAudioSessionControl2;
+                    if (ctl2 != null) {{
+                        int sPid;
+                        ctl2.GetProcessId(out sPid);
+                        if (sPid == targetPid) {{
+                            var vol = ctl as ISimpleAudioVolume;
+                            if (vol != null) {{
+                                Guid empty = Guid.Empty;
+                                vol.SetMute(mute, ref empty);
+                                return true;
+                            }}
+                        }}
+                    }}
+                }}
+            }} catch {{ }}
+            return false;
+        }}
+    }}
+}}
+'@
+if (-not ([System.Management.Automation.PSTypeName]'FRAMAudio.Muter').Type) {{
+    Add-Type -TypeDefinition $code
+}}
+[FRAMAudio.Muter]::SetMute({pid}, ${'true' if mute else 'false'})
+"""
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=5
+            )
+        except Exception:
+            pass
+    state_str = "Muted" if mute else "Unmuted"
+    return True, f"{state_str} audio for PID {pid}"
+
 _INSTANCES_CACHE: Optional[Dict[str, Any]] = None
 _INSTANCES_CACHE_TIME: float = 0.0
 _INSTANCES_CACHE_TTL: float = 1.5
@@ -3047,12 +3199,21 @@ def get_running_instances():
                 creation_time_sec = item.get('CreationTimeSec')
                 memory_mb = round(working_set / (1024 * 1024), 1)
 
+                uptime_sec = 0
+                if creation_time_sec and creation_time_sec > 0:
+                    uptime_sec = max(0, int(now - creation_time_sec))
+
+                with _MUTED_PIDS_LOCK:
+                    is_muted = pid in _MUTED_PIDS
+
                 inst_obj = {
                     "pid": pid,
                     "name": pname,
                     "status": "Running",
                     "memory_mb": memory_mb,
-                    "created_at": str(creation_time_sec or "")
+                    "created_at": str(creation_time_sec or ""),
+                    "uptime_sec": uptime_sec,
+                    "is_muted": is_muted
                 }
 
                 cpu_percent = 0.0
@@ -3112,6 +3273,10 @@ def get_running_instances():
                     other_instances.append(inst_obj)
 
         active_pids = {inst["pid"] for inst in game_instances + crash_handlers + other_instances}
+        with _MUTED_PIDS_LOCK:
+            dead_muted = [p for p in _MUTED_PIDS if p not in active_pids]
+            for p in dead_muted:
+                _MUTED_PIDS.discard(p)
         with pid_cpu_trackers_lock:
             for tracked_pid in list(pid_cpu_trackers.keys()):
                 if tracked_pid not in active_pids:
@@ -3651,7 +3816,17 @@ def relaunch_specific_instance():
 
         if launched:
             record_launch_event(username)
-            webhook_manager.notify_launch(username, place_id=place_id, job_id=server_id)
+            acc_meta = manager.accounts.get(username, {}) if manager and hasattr(manager, 'accounts') else {}
+            p_name = get_place_name(place_id)
+            webhook_manager.notify_launch(
+                username,
+                place_id=place_id,
+                job_id=server_id,
+                display_name=acc_meta.get('display_name'),
+                user_id=acc_meta.get('user_id'),
+                avatar_url=acc_meta.get('avatar_url'),
+                place_name=p_name
+            )
             if auto_arranger.is_enabled():
                 auto_arranger.trigger_delayed_arrange(2.5)
             if headless_manager.is_enabled():
@@ -3935,6 +4110,130 @@ def trim_instance_endpoint():
     except Exception as e:
         log_detailed_error("Failed to trim instance working set", exc=e)
         return jsonify({'success': False, 'error': 'Failed to trim instance working set'}), 500
+
+@app.route('/api/instances/mute', methods=['POST', 'OPTIONS'])
+def mute_instance_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        req_data = request.json or {}
+        pid = req_data.get('pid')
+        if not pid:
+            return jsonify({'success': False, 'error': 'PID is required'}), 400
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid PID'}), 400
+
+        if not _is_roblox_pid(pid):
+            return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
+
+        ok, msg = set_process_audio_mute(pid, True)
+        if ok:
+            invalidate_instances_cache()
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        log_detailed_error("Failed to mute instance", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to mute instance'}), 500
+
+@app.route('/api/instances/unmute', methods=['POST', 'OPTIONS'])
+def unmute_instance_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        req_data = request.json or {}
+        pid = req_data.get('pid')
+        if not pid:
+            return jsonify({'success': False, 'error': 'PID is required'}), 400
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'Invalid PID'}), 400
+
+        if not _is_roblox_pid(pid):
+            return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
+
+        ok, msg = set_process_audio_mute(pid, False)
+        if ok:
+            invalidate_instances_cache()
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        log_detailed_error("Failed to unmute instance", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to unmute instance'}), 500
+
+@app.route('/api/instances/mute-all', methods=['POST', 'OPTIONS'])
+def mute_all_instances_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = get_running_instances()
+        if hasattr(data, 'get_json'):
+            data = data.get_json()
+        instances = data.get('instances', []) if isinstance(data, dict) else []
+        count = 0
+        for inst in instances:
+            p = inst.get('pid')
+            if p:
+                set_process_audio_mute(p, True)
+                count += 1
+        invalidate_instances_cache()
+        return jsonify({'success': True, 'count': count, 'message': f'Muted audio for {count} instance(s)'})
+    except Exception as e:
+        log_detailed_error("Failed to mute all instances", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to mute all instances'}), 500
+
+@app.route('/api/instances/unmute-all', methods=['POST', 'OPTIONS'])
+def unmute_all_instances_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = get_running_instances()
+        if hasattr(data, 'get_json'):
+            data = data.get_json()
+        instances = data.get('instances', []) if isinstance(data, dict) else []
+        count = 0
+        for inst in instances:
+            p = inst.get('pid')
+            if p:
+                set_process_audio_mute(p, False)
+                count += 1
+        invalidate_instances_cache()
+        return jsonify({'success': True, 'count': count, 'message': f'Unmuted audio for {count} instance(s)'})
+    except Exception as e:
+        log_detailed_error("Failed to unmute all instances", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to unmute all instances'}), 500
+
+@app.route('/api/instances/trim-all', methods=['POST', 'OPTIONS'])
+def trim_all_instances_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = get_running_instances()
+        if hasattr(data, 'get_json'):
+            data = data.get_json()
+        instances = data.get('instances', []) if isinstance(data, dict) else []
+        total_saved_mb = 0.0
+        success_count = 0
+        for inst in instances:
+            p = inst.get('pid')
+            if p:
+                ok, saved_mb, _ = trim_instance(p)
+                if ok:
+                    total_saved_mb += saved_mb
+                    success_count += 1
+        invalidate_instances_cache()
+        total_saved_mb = round(total_saved_mb, 1)
+        return jsonify({
+            'success': True,
+            'count': success_count,
+            'savedMb': total_saved_mb,
+            'message': f'Trimmed {success_count} instance(s), reclaimed {total_saved_mb} MB RAM'
+        })
+    except Exception as e:
+        log_detailed_error("Failed to trim all instances", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to trim all instances'}), 500
 
 @app.route('/api/setup/complete', methods=['POST', 'OPTIONS'])
 def complete_setup():
@@ -5829,6 +6128,53 @@ def test_webhook_instances():
     except Exception as e:
         log_detailed_error("Failed to send screenshot webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to send screenshot webhook'}), 500
+
+@app.route('/api/webhook/preview-window', methods=['POST', 'OPTIONS'])
+def send_webhook_window_preview():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = request.get_json() or {}
+        pid = data.get('pid')
+        username = data.get('username')
+        place_id = data.get('place_id')
+        place_name = data.get('place_name') or (get_place_name(place_id) if place_id else None)
+        
+        memory_mb = None
+        cpu_percent = None
+        uptime_str = None
+        
+        if pid:
+            try:
+                pid = int(pid)
+                p = psutil.Process(pid)
+                mem = p.memory_info().rss
+                memory_mb = round(mem / (1024 * 1024), 1)
+                cpu_percent = round(p.cpu_percent(interval=None) / max(1, psutil.cpu_count()), 1)
+                create_t = p.create_time()
+                if create_t > 0:
+                    up_s = max(0, int(time.time() - create_t))
+                    m, s = divmod(up_s, 60)
+                    h, m = divmod(m, 60)
+                    uptime_str = f"{h}h {m}m {s}s" if h > 0 else (f"{m}m {s}s" if m > 0 else f"{s}s")
+            except Exception:
+                pass
+
+        ok, msg = webhook_manager.post_window_preview(
+            pid=pid,
+            username=username,
+            place_id=place_id,
+            place_name=place_name,
+            memory_mb=memory_mb,
+            cpu_percent=cpu_percent,
+            uptime_str=uptime_str
+        )
+        if ok:
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        log_detailed_error("Failed to send window preview webhook", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to send window preview webhook'}), 500
 
 @app.route('/api/rblxswap/status', methods=['GET', 'OPTIONS'])
 def get_rblxswap_status():

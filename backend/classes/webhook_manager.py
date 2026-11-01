@@ -38,6 +38,7 @@ class WebhookManager:
             "screenshot_enabled": False,
             "screenshot_interval_minutes": 15,
             "screenshot_all_monitors": False,
+            "screenshot_window_only": False,
             "instance_summary_enabled": False,
             "instance_summary_interval_minutes": 15
         }
@@ -107,7 +108,7 @@ class WebhookManager:
         text = re.sub(cookie_pattern, "[COOKIE_REDACTED]", text)
         return text
 
-    def post_embed(self, title, description, fields=None, color=0x6366F1, url=None):
+    def post_embed(self, title, description, fields=None, color=0x6366F1, url=None, thumbnail_url=None, author=None, image_url=None, footer_text=None, footer_icon=None, timestamp=None):
         target_url = (url or self.config.get("webhook_url", "")).strip()
         canonical_url = self.canonicalize_webhook_url(target_url)
         if not canonical_url:
@@ -119,9 +120,19 @@ class WebhookManager:
             "description": redacted_desc,
             "color": color,
             "footer": {
-                "text": "Roblox Account Manager"
-            }
+                "text": footer_text or "Roblox Account Manager"
+            },
+            "timestamp": timestamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }
+        if footer_icon:
+            embed["footer"]["icon_url"] = footer_icon
+        if thumbnail_url:
+            embed["thumbnail"] = {"url": thumbnail_url}
+        if author and isinstance(author, dict):
+            embed["author"] = author
+        if image_url:
+            embed["image"] = {"url": image_url}
+
         if fields and isinstance(fields, list):
             clean_fields = []
             for field in fields:
@@ -172,8 +183,85 @@ class WebhookManager:
             self._add_history(title, err)
             return False, err
 
+    def capture_window_screenshot(self, pid: Optional[int] = None):
+        temp_path = os.path.join(tempfile.gettempdir(), f"fram_win_{int(time.time())}_{secrets.token_hex(4)}.png")
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                hwnd_target = 0
+                if pid:
+                    def enum_windows_callback(hwnd, extra):
+                        nonlocal hwnd_target
+                        if user32.IsWindowVisible(hwnd):
+                            lpdw_process_id = ctypes.c_ulong()
+                            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(lpdw_process_id))
+                            if lpdw_process_id.value == pid:
+                                length = user32.GetWindowTextLengthW(hwnd)
+                                if length > 0:
+                                    buff = ctypes.create_unicode_buffer(length + 1)
+                                    user32.GetWindowTextW(hwnd, buff, length + 1)
+                                    title = buff.value
+                                    if "Roblox" in title:
+                                        hwnd_target = hwnd
+                                        return False
+                                    elif hwnd_target == 0:
+                                        hwnd_target = hwnd
+                        return True
+                    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+                    user32.EnumWindows(WNDENUMPROC(enum_windows_callback), 0)
+                else:
+                    def find_any_roblox_callback(hwnd, extra):
+                        nonlocal hwnd_target
+                        if user32.IsWindowVisible(hwnd):
+                            length = user32.GetWindowTextLengthW(hwnd)
+                            if length > 0:
+                                buff = ctypes.create_unicode_buffer(length + 1)
+                                user32.GetWindowTextW(hwnd, buff, length + 1)
+                                title = buff.value
+                                if "Roblox" in title:
+                                    hwnd_target = hwnd
+                                    return False
+                        return True
+                    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+                    user32.EnumWindows(WNDENUMPROC(find_any_roblox_callback), 0)
+
+                if hwnd_target != 0:
+                    class RECT(ctypes.Structure):
+                        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                    rect = RECT()
+                    if user32.GetWindowRect(hwnd_target, ctypes.byref(rect)):
+                        w = rect.right - rect.left
+                        h = rect.bottom - rect.top
+                        if w > 100 and h > 100:
+                            from PIL import ImageGrab
+                            bbox = (rect.left, rect.top, rect.right, rect.bottom)
+                            img = ImageGrab.grab(bbox=bbox, all_screens=True)
+                            img.save(temp_path, "PNG")
+                            if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+                                return temp_path
+            except Exception:
+                pass
+
+        if sys.platform == "darwin":
+            try:
+                import subprocess
+                cmd = ["/usr/sbin/screencapture", "-x", "-m", temp_path]
+                subprocess.run(cmd, check=True, timeout=10)
+                if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+                    return temp_path
+            except Exception:
+                pass
+
+        return self.capture_screenshot(all_monitors=False)
+
     def capture_screenshot(self, all_monitors=False):
-        temp_path = os.path.join(tempfile.gettempdir(), f"fram_screen_{int(time.time())}.png")
+        if self.config.get("screenshot_window_only"):
+            win_img = self.capture_window_screenshot()
+            if win_img and os.path.isfile(win_img) and os.path.getsize(win_img) > 0:
+                return win_img
+
+        temp_path = os.path.join(tempfile.gettempdir(), f"fram_screen_{int(time.time())}_{secrets.token_hex(4)}.png")
         try:
             from PIL import ImageGrab
             if all_monitors:
@@ -234,10 +322,11 @@ class WebhookManager:
             payload = {
                 "content": "",
                 "embeds": [{
-                    "title": "📸 Monitor Display Capture",
-                    "description": f"Display capture ({'All Monitors' if all_monitors else 'Primary Display'}) from **Roblox Account Manager**.",
+                    "title": "📸 Display Capture",
+                    "description": f"Display capture ({'Window Only' if self.config.get('screenshot_window_only') else ('All Monitors' if all_monitors else 'Primary Display')}) from **Roblox Account Manager**.",
                     "color": 0x6366F1,
-                    "footer": {"text": "Roblox Account Manager"}
+                    "footer": {"text": "Roblox Account Manager • Monitor Capture"},
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 }]
             }
 
@@ -276,6 +365,109 @@ class WebhookManager:
             print(f"[ERROR] Screenshot webhook delivery failed: {e}")
             err = "Failed to send screenshot webhook"
             self._add_history("Monitor Screenshot", err)
+            return False, err
+        finally:
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
+    def post_window_preview(self, pid: Optional[int] = None, username: Optional[str] = None, place_id: Optional[str] = None, place_name: Optional[str] = None, memory_mb: Optional[float] = None, cpu_percent: Optional[float] = None, uptime_str: Optional[str] = None, url: Optional[str] = None):
+        target_url = (url or self.config.get("webhook_url", "")).strip()
+        canonical_url = self.canonicalize_webhook_url(target_url)
+        if not canonical_url:
+            return False, "Invalid Discord webhook URL."
+
+        file_path = self.capture_window_screenshot(pid=pid)
+        if not file_path or not os.path.exists(file_path):
+            return False, "Failed to capture window preview screenshot."
+
+        try:
+            boundary = f"----WebKitFormBoundary{secrets.token_hex(16)}"
+            body = bytearray()
+
+            desc_lines = []
+            if username:
+                desc_lines.append(f"Live window preview for account **@{username}**.")
+            elif pid:
+                desc_lines.append(f"Live window preview for Roblox PID `{pid}`.")
+            else:
+                desc_lines.append("Live window preview for active Roblox client.")
+
+            embed_fields = []
+            if username:
+                embed_fields.append({"name": "Account", "value": f"@{username}", "inline": True})
+            if pid:
+                embed_fields.append({"name": "Process PID", "value": f"`{pid}`", "inline": True})
+            if place_id:
+                val = f"[{place_name or place_id}](https://www.roblox.com/games/{place_id})" if place_name else f"`{place_id}`"
+                embed_fields.append({"name": "Place", "value": val, "inline": True})
+            if uptime_str:
+                embed_fields.append({"name": "Uptime", "value": uptime_str, "inline": True})
+            if memory_mb is not None:
+                embed_fields.append({"name": "Memory", "value": f"{memory_mb} MB", "inline": True})
+            if cpu_percent is not None:
+                embed_fields.append({"name": "CPU Usage", "value": f"{cpu_percent}%", "inline": True})
+
+            embed = {
+                "title": "🎮 Roblox Client Window Preview",
+                "description": "\n".join(desc_lines),
+                "color": 0x8B5CF6,
+                "fields": embed_fields,
+                "image": {
+                    "url": "attachment://client_preview.png"
+                },
+                "footer": {
+                    "text": "Roblox Account Manager • Window Preview"
+                },
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }
+
+            content = ""
+            ping_user = str(self.config.get("ping_user_id", "")).strip()
+            if ping_user:
+                content = f"<@{ping_user}>"
+
+            payload = {
+                "content": content,
+                "embeds": [embed]
+            }
+
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(b'Content-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n')
+            body.extend(json.dumps(payload).encode("utf-8"))
+            body.extend(b"\r\n")
+
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(b'Content-Disposition: form-data; name="file"; filename="client_preview.png"\r\nContent-Type: image/png\r\n\r\n')
+            body.extend(file_bytes)
+            body.extend(b"\r\n")
+            body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+
+            req = urllib.request.Request(
+                canonical_url,
+                data=bytes(body),
+                headers={
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "User-Agent": "FRAM-WebhookManager/1.0"
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=20) as response:
+                if response.status in (200, 204):
+                    self._add_history(f"Window Preview ({username or pid or 'Client'})", "Success")
+                    return True, "Window preview delivered successfully."
+                else:
+                    err = f"Discord returned HTTP {response.status}"
+                    self._add_history("Window Preview", err)
+                    return False, err
+        except Exception as e:
+            err = "Failed to send window preview webhook"
+            self._add_history("Window Preview", err)
             return False, err
         finally:
             if file_path and os.path.exists(file_path):
@@ -377,33 +569,79 @@ class WebhookManager:
             url=target_url
         )
 
-    def notify_launch(self, username, place_id=None, job_id=None):
+    def notify_launch(self, username, place_id=None, job_id=None, display_name=None, user_id=None, avatar_url=None, place_name=None):
         if not self.config.get("enabled") or not self.config.get("send_launches"):
             return
         fields = [
-            {"name": "Account", "value": username, "inline": True},
-            {"name": "Place ID", "value": str(place_id or "Home"), "inline": True}
+            {"name": "Account", "value": f"**{display_name}** (`@{username}`)" if display_name else f"**@{username}**", "inline": True}
         ]
+        if place_id:
+            place_label = f"[{place_name or place_id}](https://www.roblox.com/games/{place_id})" if place_name else f"[{place_id}](https://www.roblox.com/games/{place_id})"
+            fields.append({"name": "Game / Place", "value": place_label, "inline": True})
+        else:
+            fields.append({"name": "Game / Place", "value": "Home / App", "inline": True})
         if job_id:
-            fields.append({"name": "Job / Server ID", "value": str(job_id), "inline": False})
+            fields.append({"name": "Job / Server ID", "value": f"`{job_id}`", "inline": False})
+
+        thumb = avatar_url or (f"https://www.roblox.com/headshot-thumbnail/image?userId={user_id}&width=150&height=150&format=png" if user_id else None)
+        author = {
+            "name": f"{display_name} (@{username})" if display_name else f"@{username}",
+            "icon_url": thumb or "https://www.roblox.com/favicon.ico"
+        }
+
         threading.Thread(
             target=self.post_embed,
-            args=("🚀 Account Launch Event", f"Account **{username}** initiated Roblox client launch.", fields, 0x3B82F6),
+            args=("🚀 Account Launch Event", f"Account **{display_name or username}** initiated Roblox client launch.", fields, 0x3B82F6),
+            kwargs={"thumbnail_url": thumb, "author": author},
             daemon=True
         ).start()
 
-    def notify_rejoin(self, username, place_id, reason=None):
+    def notify_rejoin(self, username, place_id, reason=None, display_name=None, user_id=None, avatar_url=None, place_name=None):
         if not self.config.get("enabled") or not self.config.get("send_rejoins"):
             return
         fields = [
-            {"name": "Account", "value": username, "inline": True},
-            {"name": "Target Place", "value": str(place_id), "inline": True}
+            {"name": "Account", "value": f"**{display_name}** (`@{username}`)" if display_name else f"**@{username}**", "inline": True}
         ]
+        if place_id:
+            place_label = f"[{place_name or place_id}](https://www.roblox.com/games/{place_id})" if place_name else f"[{place_id}](https://www.roblox.com/games/{place_id})"
+            fields.append({"name": "Target Place", "value": place_label, "inline": True})
         if reason:
             fields.append({"name": "Trigger Reason", "value": str(reason), "inline": False})
+
+        thumb = avatar_url or (f"https://www.roblox.com/headshot-thumbnail/image?userId={user_id}&width=150&height=150&format=png" if user_id else None)
+        author = {
+            "name": f"{display_name} (@{username})" if display_name else f"@{username}",
+            "icon_url": thumb or "https://www.roblox.com/favicon.ico"
+        }
+
         threading.Thread(
             target=self.post_embed,
-            args=("🔄 Auto-Rejoin Triggered", f"Auto-Rejoin monitor re-launched account **{username}**.", fields, 0xF59E0B),
+            args=("🔄 Auto-Rejoin Triggered", f"Auto-Rejoin monitor re-launched account **{display_name or username}**.", fields, 0xF59E0B),
+            kwargs={"thumbnail_url": thumb, "author": author},
+            daemon=True
+        ).start()
+
+    def notify_crash(self, username, pid=None, reason=None, display_name=None, user_id=None, avatar_url=None):
+        if not self.config.get("enabled"):
+            return
+        fields = [
+            {"name": "Account", "value": f"**{display_name}** (`@{username}`)" if display_name else f"**@{username}**", "inline": True}
+        ]
+        if pid:
+            fields.append({"name": "Process PID", "value": f"`{pid}`", "inline": True})
+        if reason:
+            fields.append({"name": "Status", "value": str(reason), "inline": False})
+
+        thumb = avatar_url or (f"https://www.roblox.com/headshot-thumbnail/image?userId={user_id}&width=150&height=150&format=png" if user_id else None)
+        author = {
+            "name": f"{display_name} (@{username})" if display_name else f"@{username}",
+            "icon_url": thumb or "https://www.roblox.com/favicon.ico"
+        }
+
+        threading.Thread(
+            target=self.post_embed,
+            args=("⚠️ Client Crash / Termination", f"Process for **{display_name or username}** terminated unexpectedly or crashed.", fields, 0xEF4444),
+            kwargs={"thumbnail_url": thumb, "author": author},
             daemon=True
         ).start()
 

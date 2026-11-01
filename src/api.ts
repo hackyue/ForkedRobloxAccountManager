@@ -82,6 +82,8 @@ export interface RobloxInstanceProcess {
   user_id?: string;
   place_id?: string;
   is_hidden?: boolean;
+  uptime_sec?: number;
+  is_muted?: boolean;
 }
 
 export interface RunningInstancesResponse {
@@ -936,6 +938,35 @@ class ApiService {
 
   async trimInstanceMemory(pid: number): Promise<{ success: boolean; savedMb?: number; message?: string; error?: string }> {
     return this.request<{ success: boolean; savedMb?: number; message?: string; error?: string }>('/instances/trim', 'POST', { pid });
+  }
+
+  async muteInstance(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string }>('/instances/mute', 'POST', { pid });
+  }
+
+  async unmuteInstance(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string }>('/instances/unmute', 'POST', { pid });
+  }
+
+  async muteAllInstances(): Promise<{ success: boolean; count?: number; message?: string; error?: string }> {
+    return this.request<{ success: boolean; count?: number; message?: string; error?: string }>('/instances/mute-all', 'POST');
+  }
+
+  async unmuteAllInstances(): Promise<{ success: boolean; count?: number; message?: string; error?: string }> {
+    return this.request<{ success: boolean; count?: number; message?: string; error?: string }>('/instances/unmute-all', 'POST');
+  }
+
+  async trimAllInstances(): Promise<{ success: boolean; count?: number; savedMb?: number; message?: string; error?: string }> {
+    return this.request<{ success: boolean; count?: number; savedMb?: number; message?: string; error?: string }>('/instances/trim-all', 'POST');
+  }
+
+  async sendWindowPreview(params?: { pid?: number; username?: string; placeId?: string; placeName?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request<{ success: boolean; message?: string; error?: string }>('/webhook/preview-window', 'POST', {
+      pid: params?.pid,
+      username: params?.username,
+      place_id: params?.placeId,
+      place_name: params?.placeName
+    });
   }
 
   async getAuthStatus(): Promise<{ encryptionEnabled: boolean; encryptionMethod: string; locked: boolean }> {
