@@ -28,7 +28,7 @@ export interface Game {
   name: string;
   placeId: string;
   serverId?: string;
-  serverMode?: 'vip' | 'jobid' | 'subplace';
+  serverMode?: 'vip' | 'jobid' | 'subplace' | 'random';
   placeMode?: 'place' | 'user';
   icon_url?: string;
 }
@@ -228,7 +228,7 @@ export interface Settings {
   lastJobId?: string;
   lastSubplaceId?: string;
   lastPlaceMode?: 'place' | 'user';
-  lastServerMode?: 'vip' | 'jobid' | 'subplace';
+  lastServerMode?: 'vip' | 'jobid' | 'subplace' | 'random';
   autoSaveLaunchDetails?: boolean;
   autoArrangeScope?: 'both' | 'primary' | 'secondary';
   autoArrangeDimensionMode?: 'auto' | 'target_size';
@@ -237,6 +237,8 @@ export interface Settings {
   keepClientsArranged?: boolean;
   preferredRegion?: string;
   serverPerAccount?: boolean;
+  randomServer?: boolean;
+  randomizeServerJobIds?: boolean;
   bloxgenApiKey?: string;
   bloxgenAutoAddAccounts?: boolean;
   bloxgenDefaultGroup?: string;
@@ -587,7 +589,7 @@ class ApiService {
     return this.request<{ success: boolean; changed: number }>('/accounts/bulk-vip', 'POST', { mapping });
   }
 
-  async launchAccount(params: { username: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
+  async launchAccount(params: { username: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string; serverPerAccount?: boolean; randomServer?: boolean; preferredRegion?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
     return this.request<{ success: boolean; message?: string; error?: string }>('/accounts/launch', 'POST', params);
   }
 
@@ -913,7 +915,7 @@ class ApiService {
     return this.request<{ success: boolean; message?: string; error?: string; username?: string; auto_rejoin_disabled?: boolean }>('/instances/kill', 'POST', { pid, username });
   }
 
-  async relaunchInstance(params: { pid?: number; username?: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
+  async relaunchInstance(params: { pid?: number; username?: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string; serverPerAccount?: boolean; randomServer?: boolean; preferredRegion?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
     return this.request<{ success: boolean; message?: string; error?: string }>('/instances/relaunch', 'POST', params);
   }
 

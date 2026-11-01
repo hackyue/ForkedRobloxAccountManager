@@ -3135,6 +3135,7 @@ class RobloxAccountManager:
                         imported_settings['confirmBeforeLaunch'] = bool(raw_ui['confirm_before_launch'])
                     if 'randomize_server_job_ids' in raw_ui:
                         imported_settings['randomizeServerJobIds'] = bool(raw_ui['randomize_server_job_ids'])
+                        imported_settings['randomServer'] = bool(raw_ui['randomize_server_job_ids'])
                     if 'prefer_small_public_servers' in raw_ui:
                         imported_settings['preferSmallPublicServers'] = bool(raw_ui['prefer_small_public_servers'])
                     if 'pick_server_per_account' in raw_ui:

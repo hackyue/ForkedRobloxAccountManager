@@ -13,6 +13,7 @@ import uuid
 import hashlib
 import hmac
 import secrets
+import random
 import time
 import threading
 import platform
@@ -608,7 +609,9 @@ def load_data(force_reload: bool = False) -> Dict[str, Any]:
             'antiAfkShowNextLabel': False,
             'preferredRegion': '',
             'serverPerAccount': False,
-            'pick_server_per_account': False
+            'pick_server_per_account': False,
+            'randomServer': False,
+            'randomizeServerJobIds': False
         }
     }
     
@@ -1289,6 +1292,9 @@ def launch_account():
             j_server = ""
             if server_id:
                 place_id = server_id
+        elif server_mode == "random":
+            p_server = ""
+            j_server = ""
         else:
             p_server = "" if server_mode == "jobid" else server_id
             j_server = server_id if server_mode == "jobid" else ""
@@ -1317,33 +1323,80 @@ def launch_account():
             )
         )
 
-        if (pref_region or server_per_acc) and place_id and not p_server and not j_server and launch_mode == 'game':
+        random_server = bool(
+            req_data.get('randomServer')
+            if 'randomServer' in req_data
+            else (
+                req_data.get('random_server')
+                if 'random_server' in req_data
+                else (
+                    settings.get('randomServer')
+                    if 'randomServer' in settings
+                    else (
+                        settings.get('randomizeServerJobIds', False)
+                        or (server_mode == 'random')
+                    )
+                )
+            )
+        )
+
+        normalized_launch_mode = str(launch_mode or 'game').strip().lower()
+        is_game_launch = normalized_launch_mode not in ('join_user', 'user')
+
+        clean_place_id = str(place_id or '').strip()
+        if not clean_place_id.isdigit():
+            digit_match = re.search(r'(\d{4,15})', clean_place_id)
+            if digit_match:
+                clean_place_id = digit_match.group(1)
+
+        if clean_place_id:
+            place_id = clean_place_id
+
+        should_pick_server = bool(pref_region or server_per_acc or random_server or server_mode == 'random')
+
+        if should_pick_server and clean_place_id and not p_server and not j_server and is_game_launch:
             try:
                 acc_cookie = manager.accounts[username].get('cookie', '')
-                pool_key = f"{place_id}_{pref_region}_{server_per_acc}"
+                pool_key = f"{clean_place_id}_{pref_region.lower()}"
                 now = time.time()
-                candidates = []
                 with server_job_pool_lock:
+                    cached_pool = server_job_pool_cache.get(pool_key)
                     if (
-                        server_job_pool_cache.get('key') == pool_key
-                        and now - server_job_pool_cache.get('timestamp', 0) < 60
-                        and server_job_pool_cache.get('jobs')
+                        not cached_pool
+                        or (now - cached_pool.get('timestamp', 0) > 120)
+                        or not cached_pool.get('all_jobs')
                     ):
-                        candidates = server_job_pool_cache['jobs']
-                    else:
-                        candidates = RobloxAPI.get_public_server_job_candidates(
-                            place_id=place_id,
+                        fetched = RobloxAPI.get_public_server_job_candidates(
+                            place_id=clean_place_id,
                             max_pages=3,
                             preferred_region=pref_region,
                             roblosecurity_cookie=acc_cookie
                         ) or []
-                        server_job_pool_cache['key'] = pool_key
-                        server_job_pool_cache['jobs'] = candidates
-                        server_job_pool_cache['timestamp'] = now
+                        if fetched:
+                            cached_pool = {
+                                'all_jobs': list(fetched),
+                                'available_jobs': list(fetched),
+                                'timestamp': now
+                            }
+                            server_job_pool_cache[pool_key] = cached_pool
 
-                    if candidates:
-                        j_server = candidates.pop(0) if server_per_acc else candidates[0]
-                        print(f"[INFO] Server selection (region='{pref_region}', per_account={server_per_acc}) assigned Job ID: {j_server}")
+                    if cached_pool and cached_pool.get('all_jobs'):
+                        all_jobs = cached_pool['all_jobs']
+                        if server_per_acc:
+                            if not cached_pool.get('available_jobs'):
+                                cached_pool['available_jobs'] = list(all_jobs)
+                            if cached_pool['available_jobs']:
+                                j_server = cached_pool['available_jobs'].pop(0)
+                            else:
+                                j_server = random.choice(all_jobs)
+                        elif random_server or server_mode == 'random':
+                            j_server = random.choice(all_jobs)
+                        else:
+                            j_server = all_jobs[0]
+
+                        if j_server:
+                            server_id = j_server
+                            print(f"[INFO] Server selection (place='{clean_place_id}', region='{pref_region}', per_account={server_per_acc}, random={random_server}) assigned Job ID: {j_server}")
             except Exception as e:
                 print(f"[WARNING] Server selection lookup failed: {e}")
 
@@ -4550,7 +4603,9 @@ def clear_all_data():
         'antiAfkShowNextLabel': False,
         'preferredRegion': '',
         'serverPerAccount': False,
-        'pick_server_per_account': False
+        'pick_server_per_account': False,
+        'randomServer': False,
+        'randomizeServerJobIds': False
     }
 
     fresh_data = {

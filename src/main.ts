@@ -171,7 +171,7 @@ interface State {
   activeSavedUser: string | null;
   savedUsers: SavedUser[];
   placeMode: 'place' | 'user';
-  serverMode: 'vip' | 'jobid' | 'subplace';
+  serverMode: 'vip' | 'jobid' | 'subplace' | 'random';
   targetGameName?: string;
   targetGameIcon?: string;
   targetGameLoading?: boolean;
@@ -265,6 +265,7 @@ const state: State = {
     keepClientsArranged: false,
     preferredRegion: '',
     serverPerAccount: false,
+    randomServer: false,
     enableTopmost: false,
     autoRelaunchEnabled: false,
     autoRelaunchIntervalMinutes: 60,
@@ -629,7 +630,9 @@ async function loadFromBackend(retries = 5, delay = 600): Promise<void> {
           ? (state.settings.lastJobId || '')
           : state.serverMode === 'subplace'
             ? (state.settings.lastSubplaceId || '')
-            : (state.settings.lastVipServerId || state.settings.lastServerId || '');
+            : state.serverMode === 'random'
+              ? ''
+              : (state.settings.lastVipServerId || state.settings.lastServerId || '');
         if (initialServerVal) {
           serverInputEl.value = initialServerVal;
         }
@@ -711,7 +714,7 @@ function getAccount(id: number): Account | null {
   return null;
 }
 
-function detectServerMode(serverId: string, fallbackMode: 'vip' | 'jobid' | 'subplace' = 'vip'): 'vip' | 'jobid' | 'subplace' {
+function detectServerMode(serverId: string, fallbackMode: 'vip' | 'jobid' | 'subplace' | 'random' = 'vip'): 'vip' | 'jobid' | 'subplace' | 'random' {
   const trimmed = (serverId || '').trim();
   if (!trimmed) return fallbackMode;
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
@@ -1120,14 +1123,21 @@ async function handleLaunchSelectedAccounts(): Promise<void> {
 
     try {
       const placeIdToLaunch = (state.serverMode === 'subplace' && server.trim()) ? server.trim() : place;
-      const serverIdToLaunch = (state.placeMode === 'user' || state.serverMode === 'subplace') ? '' : server;
+      const serverIdToLaunch = (state.placeMode === 'user' || state.serverMode === 'subplace' || state.serverMode === 'random') ? '' : server;
+      const isBatch = accountsToLaunch.length > 1;
+      const useServerPerAccount = isBatch ? Boolean(state.settings.serverPerAccount || state.serverMode === 'random') : false;
+      const useRandomServer = !isBatch ? Boolean(state.settings.randomServer || state.serverMode === 'random') : Boolean(state.serverMode === 'random');
+
       const res = await apiService.launchAccount({
         username: a.username,
         placeId: placeIdToLaunch,
         serverId: serverIdToLaunch,
         serverMode: state.serverMode,
         version: state.selectedVersion === 'auto' ? undefined : state.selectedVersion,
-        launchMode: state.placeMode === 'user' ? 'join_user' : 'place'
+        launchMode: state.placeMode === 'user' ? 'join_user' : 'place',
+        serverPerAccount: useServerPerAccount,
+        randomServer: useRandomServer,
+        preferredRegion: state.settings.preferredRegion || undefined
       });
 
       if (res.success) {
@@ -3603,7 +3613,7 @@ function saveLaunchBarState(): void {
     state.settings.lastJobId = currentServerVal;
   } else if (state.serverMode === 'subplace') {
     state.settings.lastSubplaceId = currentServerVal;
-  } else {
+  } else if (state.serverMode === 'vip') {
     state.settings.lastVipServerId = currentServerVal;
   }
   state.settings.lastServerId = currentServerVal;
@@ -3653,7 +3663,7 @@ function switchPlaceMode(targetMode: 'place' | 'user'): void {
   toast(targetMode === 'place' ? 'Switched to Place ID mode' : 'Switched to Join User mode', 'info');
 }
 
-function switchServerMode(targetMode: 'vip' | 'jobid' | 'subplace'): void {
+function switchServerMode(targetMode: 'vip' | 'jobid' | 'subplace' | 'random'): void {
   if (state.serverMode === targetMode) return;
 
   const serverInput = document.getElementById('server-input') as HTMLInputElement | null;
@@ -3662,7 +3672,7 @@ function switchServerMode(targetMode: 'vip' | 'jobid' | 'subplace'): void {
       state.settings.lastJobId = serverInput.value;
     } else if (state.serverMode === 'subplace') {
       state.settings.lastSubplaceId = serverInput.value;
-    } else {
+    } else if (state.serverMode === 'vip') {
       state.settings.lastVipServerId = serverInput.value;
     }
   }
@@ -3673,7 +3683,9 @@ function switchServerMode(targetMode: 'vip' | 'jobid' | 'subplace'): void {
     ? (state.settings.lastJobId || '')
     : targetMode === 'subplace'
       ? (state.settings.lastSubplaceId || '')
-      : (state.settings.lastVipServerId || (targetMode === 'vip' && !state.settings.lastVipServerId && !state.settings.lastJobId && !state.settings.lastSubplaceId ? state.settings.lastServerId || '' : ''));
+      : targetMode === 'random'
+        ? ''
+        : (state.settings.lastVipServerId || (targetMode === 'vip' && !state.settings.lastVipServerId && !state.settings.lastJobId && !state.settings.lastSubplaceId ? state.settings.lastServerId || '' : ''));
 
   if (serverInput) {
     serverInput.value = restoredVal;
@@ -3681,7 +3693,7 @@ function switchServerMode(targetMode: 'vip' | 'jobid' | 'subplace'): void {
 
   renderLaunchBar();
   saveLaunchBarState();
-  const modeName = targetMode === 'jobid' ? 'Join Job ID' : targetMode === 'subplace' ? 'Subplace' : 'Private Server';
+  const modeName = targetMode === 'jobid' ? 'Join Job ID' : targetMode === 'subplace' ? 'Subplace' : targetMode === 'random' ? 'Random Server' : 'Private Server';
   toast(`Switched to ${modeName} mode`, 'info');
 }
 
@@ -3960,6 +3972,10 @@ function renderLaunchBar(): void {
         serverInput.placeholder = 'Subplace ID...';
         serverInput.title = 'Subplace ID mode';
         if (serverLabel) serverLabel.textContent = 'Subplace ID';
+      } else if (state.serverMode === 'random') {
+        serverInput.placeholder = 'Random Public Server';
+        serverInput.title = 'Random Server mode (picks a random public server)';
+        if (serverLabel) serverLabel.textContent = 'Random Server';
       } else {
         serverInput.placeholder = 'Private Server Link...';
         serverInput.title = 'Private Server Link mode';
@@ -4090,6 +4106,7 @@ const ALL_SETTINGS_ITEMS: SettingItemDefinition[] = [
   { id: 'setting-auto-save-launch-details', tab: 'launching', label: 'Save Launch Details', desc: 'Automatically save game place IDs and user targets to the Saved Games bar' },
   { id: 'setting-preferred-region', tab: 'launching', label: 'Preferred Server Region', desc: 'Automatically select a preferred geographic region when joining public servers' },
   { id: 'setting-server-per-account', tab: 'launching', label: 'Server For Each Account', desc: 'Assign a different public server to each account during batch launching' },
+  { id: 'setting-random-server', tab: 'launching', label: 'Random Server', desc: 'Choose a random public server when launching a single account' },
   { id: 'setting-auto-kill-roblox', tab: 'launching', label: 'Auto-Close Roblox Clients on FRAM Exit', desc: 'Automatically terminate Roblox clients when FRAM closes' },
   { id: 'setting-headless-mode', tab: 'launching', label: 'Headless Client Launch', desc: 'Launch Roblox instances hidden in the background' },
   { id: 'setting-headless-idle-priority', tab: 'launching', label: 'Idle CPU Priority', desc: 'Lower background Roblox client CPU priority to Idle', dependsOn: { key: 'headlessMode', value: true } },
@@ -6936,8 +6953,11 @@ function renderSettingsView(): void {
     serverCard.appendChild(regionRow);
 
     const serverPerAccountRow = settingsToggleRow('Server For Each Account', 'Assign a different public server to each account during batch launching', 'serverPerAccount');
-    serverPerAccountRow.style.borderBottom = 'none';
     serverCard.appendChild(serverPerAccountRow);
+
+    const randomServerRow = settingsToggleRow('Random Server', 'Choose a random public server when launching a single account', 'randomServer');
+    randomServerRow.style.borderBottom = 'none';
+    serverCard.appendChild(randomServerRow);
 
     serverSec.appendChild(serverCard);
     inner.appendChild(serverSec);
@@ -8503,7 +8523,7 @@ function renderSettingsView(): void {
       const categoryMatches: Record<string, string[]> = {
         general: ['always on top', 'start fram on windows startup', 'minimize to system tray', 'default startup landing view', 'validate cookies on startup', 'multi select', 'account list default sorting', 'automatic update checks', 'auto update to pre-releases', 'auto update to latest release', 'check for updates now', 'rerun setup wizard'],
         roblox: ['roblox installation path', 'roblox client settings', 'preserve global client settings', 'preserve in-game settings', 'roblox fastflags', 'roblox fastflags editor', 'roblox icon & thumbnail cache', 'auto-check for roblox updates', 'rblxswap', 'clean traces', 'alt swap', 'spoof mac', 'hwid', 'mac address', 'disk volume serial', 'anticheat', 'restore identifiers', 'spoof hardware'],
-        launching: ['multi-instance roblox', 'multi-account launch stagger delay', 'confirm before account launch', 'preferred server region', 'server for each account', 'save launch details', 'auto-close roblox clients on fram exit', 'headless client launch', 'idle cpu priority', 'headless auto memory trim', 'headless actions'],
+        launching: ['multi-instance roblox', 'multi-account launch stagger delay', 'confirm before account launch', 'preferred server region', 'server for each account', 'random server', 'save launch details', 'auto-close roblox clients on fram exit', 'headless client launch', 'idle cpu priority', 'headless auto memory trim', 'headless actions'],
         automation: ['keep roblox clients arranged', 'auto-arrange monitor scope', 'auto-arrange tile sizing mode', 'target client width', 'target client height', 'anti-afk', 'anti-afk interval', 'simulated input key', 'manual test pulse', 'auto-rejoin', 'auto-relaunch', 'relaunch group now', 'auto memory trim', 'preferred automation browser'],
         appearance: ['color theme', 'custom theme studio', 'custom accent color', 'custom background wallpaper', 'wallpaper blur', 'wallpaper opacity', 'wallpaper dim', 'ui layout format preset', 'show account inspector panel', 'show saved games bar', 'compact table rows', 'show avatars in table', 'download avatar profile icons', 'show account status dot'],
         notifications: ['toast screen position', 'notification display time', 'show launch alerts', 'show error & warning alerts', 'show success popups', 'audio chime effects', 'preview notification'],
@@ -17666,7 +17686,7 @@ function initApp(): void {
                     <button type="button" class="launch-mode-btn launch-subplaces-btn" id="server-subplaces-btn" title="View Universe Subplaces" style="display: none;">
                       <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
                     </button>
-                    <button type="button" class="launch-mode-btn" id="server-mode-btn" title="Select server mode (Private Server, Job ID, Subplace)">
+                    <button type="button" class="launch-mode-btn" id="server-mode-btn" title="Select server mode (Private Server, Job ID, Subplace, Random Server)">
                       <svg class="launch-mode-arrow" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
                     </button>
                     <div class="launch-mode-dropdown" id="server-mode-dropdown" style="display: none;">
@@ -17688,6 +17708,13 @@ function initApp(): void {
                         <div class="launch-mode-option-info">
                           <span class="launch-mode-option-title">Subplace</span>
                           <span class="launch-mode-option-desc">Universe subplace ID</span>
+                        </div>
+                        <svg class="launch-mode-check" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                      </div>
+                      <div class="launch-mode-option" data-mode="random">
+                        <div class="launch-mode-option-info">
+                          <span class="launch-mode-option-title">Random Server</span>
+                          <span class="launch-mode-option-desc">Pick a random public server</span>
                         </div>
                         <svg class="launch-mode-check" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                       </div>
@@ -19337,7 +19364,7 @@ function initApp(): void {
     });
     serverInput.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      const nextMode = state.serverMode === 'vip' ? 'jobid' : state.serverMode === 'jobid' ? 'subplace' : 'vip';
+      const nextMode = state.serverMode === 'vip' ? 'jobid' : state.serverMode === 'jobid' ? 'subplace' : state.serverMode === 'subplace' ? 'random' : 'vip';
       switchServerMode(nextMode);
     });
   }
@@ -19373,7 +19400,7 @@ function initApp(): void {
     serverModeDropdown.querySelectorAll('.launch-mode-option').forEach(opt => {
       opt.addEventListener('click', (e) => {
         e.stopPropagation();
-        const mode = opt.getAttribute('data-mode') as 'vip' | 'jobid' | 'subplace';
+        const mode = opt.getAttribute('data-mode') as 'vip' | 'jobid' | 'subplace' | 'random';
         if (mode) {
           switchServerMode(mode);
         }
