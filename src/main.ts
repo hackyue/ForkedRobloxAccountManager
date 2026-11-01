@@ -144,6 +144,11 @@ let setupData: any = {
   autoMemoryTrimEnabled: false,
   autoCloseCrashHandlers: false,
   headlessMode: false,
+  headlessTrimMemory: true,
+  headlessIdlePriority: true,
+  headlessEcoQoS: true,
+  headlessFpsCap: 15,
+  headlessGraphicsOpt: true,
   autoValidateOnLaunch: true,
   selectedTheme: 'default-dark',
   accentColor: '',
@@ -4110,6 +4115,9 @@ const ALL_SETTINGS_ITEMS: SettingItemDefinition[] = [
   { id: 'setting-auto-kill-roblox', tab: 'launching', label: 'Auto-Close Roblox Clients on FRAM Exit', desc: 'Automatically terminate Roblox clients when FRAM closes' },
   { id: 'setting-headless-mode', tab: 'launching', label: 'Headless Client Launch', desc: 'Launch Roblox instances hidden in the background' },
   { id: 'setting-headless-idle-priority', tab: 'launching', label: 'Idle CPU Priority', desc: 'Lower background Roblox client CPU priority to Idle', dependsOn: { key: 'headlessMode', value: true } },
+  { id: 'setting-headless-eco-qos', tab: 'launching', label: 'EcoQoS / Efficiency Mode', desc: 'Throttle background instances to Efficiency CPU cores and lower processor power consumption', dependsOn: { key: 'headlessMode', value: true }, isVisible: () => !isMacOS() },
+  { id: 'setting-headless-fps-cap', tab: 'launching', label: 'Headless Target FPS Cap', desc: 'Throttle headless render rate via FastFlags to reduce GPU and CPU load', dependsOn: { key: 'headlessMode', value: true } },
+  { id: 'setting-headless-graphics-opt', tab: 'launching', label: 'Headless Graphics Optimization', desc: 'Automatically disable 3D grass, dynamic shadows, and heavy post-processing in headless mode', dependsOn: { key: 'headlessMode', value: true } },
   { id: 'setting-headless-trim-memory', tab: 'launching', label: 'Headless Auto Memory Trim', desc: 'Automatically optimize memory usage for background instances', dependsOn: { key: 'headlessMode', value: true }, isVisible: () => !isMacOS() },
   { id: 'setting-headless-actions', tab: 'launching', label: 'Headless Actions', desc: 'Quick actions to hide or restore all running Roblox clients', dependsOn: { key: 'headlessMode', value: true } },
 
@@ -6984,8 +6992,36 @@ function renderSettingsView(): void {
     if (state.settings.headlessMode) {
       headlessCard.appendChild(settingsToggleRow('Idle CPU Priority', 'Lower background Roblox client CPU priority to Idle', 'headlessIdlePriority'));
       if (!isMacOS()) {
+        headlessCard.appendChild(settingsToggleRow('EcoQoS / Efficiency Mode', 'Throttle background instances to Efficiency CPU cores and lower processor power consumption', 'headlessEcoQoS'));
         headlessCard.appendChild(settingsToggleRow('Headless Auto Memory Trim', 'Automatically optimize memory usage for background instances', 'headlessTrimMemory'));
       }
+
+      const fpsRow = el('div', { class: 'setting-row' }, []);
+      const fpsText = el('div', {}, [
+        el('div', { class: 'setting-label' }, [document.createTextNode('Headless Target FPS Cap')]),
+        el('div', { class: 'setting-desc' }, [document.createTextNode('Throttle headless render rate via FastFlags to reduce GPU and CPU load')])
+      ]);
+      const fpsSel = el('select', { class: 'setting-select' }, []) as HTMLSelectElement;
+      const fpsOptions = [
+        { value: '15', label: '15 FPS (Recommended - ~80% GPU savings)' },
+        { value: '30', label: '30 FPS (~50% GPU savings)' },
+        { value: '10', label: '10 FPS (~85% GPU savings)' },
+        { value: '5', label: '5 FPS (~90% GPU savings)' },
+        { value: '1', label: '1 FPS (Extreme AFK savings)' },
+        { value: '60', label: '60 FPS (No FPS limit)' }
+      ];
+      fpsOptions.forEach(opt => {
+        const o = el('option', { value: opt.value }, []) as HTMLOptionElement;
+        o.textContent = opt.label;
+        if (String(state.settings.headlessFpsCap || '15') === opt.value) o.selected = true;
+        fpsSel.appendChild(o);
+      });
+      fpsSel.addEventListener('change', (e) => updateSetting('headlessFpsCap', Number((e.target as HTMLSelectElement).value)));
+      fpsRow.appendChild(fpsText);
+      fpsRow.appendChild(fpsSel);
+      headlessCard.appendChild(fpsRow);
+
+      headlessCard.appendChild(settingsToggleRow('Headless Graphics Optimization', 'Automatically disable 3D grass, dynamic shadows, and heavy post-processing in headless mode', 'headlessGraphicsOpt'));
 
       const headlessActionsRow = el('div', { class: 'setting-row', style: 'border-bottom:none;' }, []);
       const headlessActionsText = el('div', {}, [
@@ -8523,7 +8559,7 @@ function renderSettingsView(): void {
       const categoryMatches: Record<string, string[]> = {
         general: ['always on top', 'start fram on windows startup', 'minimize to system tray', 'default startup landing view', 'validate cookies on startup', 'multi select', 'account list default sorting', 'automatic update checks', 'auto update to pre-releases', 'auto update to latest release', 'check for updates now', 'rerun setup wizard'],
         roblox: ['roblox installation path', 'roblox client settings', 'preserve global client settings', 'preserve in-game settings', 'roblox fastflags', 'roblox fastflags editor', 'roblox icon & thumbnail cache', 'auto-check for roblox updates', 'rblxswap', 'clean traces', 'alt swap', 'spoof mac', 'hwid', 'mac address', 'disk volume serial', 'anticheat', 'restore identifiers', 'spoof hardware'],
-        launching: ['multi-instance roblox', 'multi-account launch stagger delay', 'confirm before account launch', 'preferred server region', 'server for each account', 'random server', 'save launch details', 'auto-close roblox clients on fram exit', 'headless client launch', 'idle cpu priority', 'headless auto memory trim', 'headless actions'],
+        launching: ['multi-instance roblox', 'multi-account launch stagger delay', 'confirm before account launch', 'preferred server region', 'server for each account', 'random server', 'save launch details', 'auto-close roblox clients on fram exit', 'headless client launch', 'idle cpu priority', 'ecoqos', 'efficiency mode', 'headless target fps cap', 'headless graphics optimization', 'headless auto memory trim', 'headless actions'],
         automation: ['keep roblox clients arranged', 'auto-arrange monitor scope', 'auto-arrange tile sizing mode', 'target client width', 'target client height', 'anti-afk', 'anti-afk interval', 'simulated input key', 'manual test pulse', 'auto-rejoin', 'auto-relaunch', 'relaunch group now', 'auto memory trim', 'preferred automation browser'],
         appearance: ['color theme', 'custom theme studio', 'custom accent color', 'custom background wallpaper', 'wallpaper blur', 'wallpaper opacity', 'wallpaper dim', 'ui layout format preset', 'show account inspector panel', 'show saved games bar', 'compact table rows', 'show avatars in table', 'download avatar profile icons', 'show account status dot'],
         notifications: ['toast screen position', 'notification display time', 'show launch alerts', 'show error & warning alerts', 'show success popups', 'audio chime effects', 'preview notification'],

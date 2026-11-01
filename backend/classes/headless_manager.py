@@ -37,6 +37,7 @@ class HeadlessManager:
         self.last_trim_ts = 0.0
         self.seen_pids: Set[int] = set()
         self.first_seen_pids: Dict[int, float] = {}
+        self.initial_trimmed_pids: Set[int] = set()
         self.hidden_hwnds: Set[int] = set()
         self.restored_pids: Set[int] = set()
         self.restored_hwnds: Set[int] = set()
@@ -60,6 +61,10 @@ class HeadlessManager:
         settings = self.get_settings()
         return bool(settings.get("headlessIdlePriority", True) or settings.get("roblox_headless_idle_priority", True))
 
+    def is_eco_qos_enabled(self) -> bool:
+        settings = self.get_settings()
+        return bool(settings.get("headlessEcoQoS", True) or settings.get("roblox_headless_eco_qos", True))
+
     def is_trim_memory_enabled(self) -> bool:
         settings = self.get_settings()
         return bool(settings.get("headlessTrimMemory", True) or settings.get("roblox_headless_trim_memory", True))
@@ -71,6 +76,100 @@ class HeadlessManager:
             return max(0, min(300, val))
         except Exception:
             return 0
+
+    def set_process_eco_qos(self, pid: int, enable: bool = True) -> bool:
+        if platform.system() != "Windows" or not pid:
+            return False
+        handle = None
+        try:
+            kernel32 = ctypes.windll.kernel32
+            if not hasattr(kernel32, "SetProcessInformation"):
+                return False
+            access = self._PROCESS_SET_INFORMATION | self._PROCESS_QUERY_LIMITED_INFORMATION
+            handle = kernel32.OpenProcess(access, False, int(pid))
+            if not handle:
+                return False
+
+            class PROCESS_POWER_THROTTLING_STATE(ctypes.Structure):
+                _fields_ = [
+                    ("Version", ctypes.c_ulong),
+                    ("ControlMask", ctypes.c_ulong),
+                    ("StateMask", ctypes.c_ulong),
+                ]
+
+            state = PROCESS_POWER_THROTTLING_STATE()
+            state.Version = 1
+            state.ControlMask = 0x1 | 0x4
+            state.StateMask = (0x1 | 0x4) if enable else 0
+
+            kernel32.SetProcessInformation.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+            ]
+            kernel32.SetProcessInformation.restype = ctypes.c_bool
+            res = kernel32.SetProcessInformation(handle, 4, ctypes.byref(state), ctypes.sizeof(state))
+            return bool(res)
+        except Exception:
+            return False
+        finally:
+            if handle:
+                try:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
+
+    def cloak_window(self, hwnd: int, cloak: bool = True) -> bool:
+        if platform.system() != "Windows" or not hwnd:
+            return False
+        try:
+            dwmapi = ctypes.windll.dwmapi
+            val = ctypes.c_int(1 if cloak else 0)
+            dwmapi.DwmSetWindowAttribute.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+                ctypes.c_void_p,
+                ctypes.c_ulong,
+            ]
+            dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+            hr = dwmapi.DwmSetWindowAttribute(hwnd, 13, ctypes.byref(val), ctypes.sizeof(val))
+            return hr == 0
+        except Exception:
+            return False
+
+    def sync_fastflags(self) -> None:
+        settings = self.get_settings()
+        enabled = self.is_enabled()
+        fps_cap = settings.get("headlessFpsCap", 15)
+        graphics_opt = bool(settings.get("headlessGraphicsOpt", True))
+        try:
+            from classes.fastflags import FastFlagsManager
+            ffm = FastFlagsManager()
+            flags = ffm.load_fast_flags() or {}
+            changed = False
+            if enabled:
+                if fps_cap and str(fps_cap).isdigit() and int(fps_cap) > 0:
+                    val = int(fps_cap)
+                    if flags.get("DFIntTaskSchedulerTargetFps") != val:
+                        flags["DFIntTaskSchedulerTargetFps"] = val
+                        changed = True
+                if graphics_opt:
+                    opt_flags = {
+                        "FIntFRMMaxGrassDistance": 0,
+                        "FIntFRMMinGrassDistance": 0,
+                        "DFFlagDisablePostFx": True,
+                        "FFlagDebugDisableShadowmap": True,
+                        "DFFlagDebugPauseVoxelizer": True,
+                    }
+                    for k, v in opt_flags.items():
+                        if flags.get(k) != v:
+                            flags[k] = v
+                            changed = True
+            if changed:
+                ffm.save_fast_flags(flags)
+        except Exception:
+            pass
 
     def get_roblox_pids(self) -> Set[int]:
         pids: Set[int] = set()
@@ -146,6 +245,7 @@ class HeadlessManager:
             return False
         if platform.system() == "Darwin":
             try:
+                subprocess.run(["taskpolicy", "-b", "-p", str(hwnd)], capture_output=True, check=False)
                 script = f'tell application "System Events" to set visible of (every process whose unix id is {int(hwnd)}) to false'
                 res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=3)
                 if res.returncode == 0:
@@ -159,8 +259,10 @@ class HeadlessManager:
             return False
         changed = False
         try:
-            if win32gui.IsWindowVisible(hwnd):
+            if win32gui.IsWindow(hwnd):
+                win32gui.ShowWindow(hwnd, getattr(win32con, "SW_SHOWMINNOACTIVE", 7))
                 win32gui.ShowWindow(hwnd, getattr(win32con, "SW_HIDE", 0))
+                self.cloak_window(hwnd, cloak=True)
                 changed = True
         except Exception:
             pass
@@ -185,6 +287,7 @@ class HeadlessManager:
             return False
         if platform.system() == "Darwin":
             try:
+                subprocess.run(["taskpolicy", "-B", "-p", str(hwnd)], capture_output=True, check=False)
                 script = f'tell application "System Events" to set visible of (every process whose unix id is {int(hwnd)}) to true'
                 res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=3)
                 if res.returncode == 0:
@@ -197,6 +300,7 @@ class HeadlessManager:
         if not win32gui:
             return False
         try:
+            self.cloak_window(hwnd, cloak=False)
             win32gui.ShowWindow(hwnd, getattr(win32con, "SW_SHOW", 5))
             win32gui.ShowWindow(hwnd, getattr(win32con, "SW_RESTORE", 9))
             self.hidden_hwnds.discard(int(hwnd))
@@ -299,6 +403,9 @@ class HeadlessManager:
             for stale_pid in (self.restored_pids - pids):
                 self.restored_pids.discard(stale_pid)
 
+            for stale_pid in (self.initial_trimmed_pids - pids):
+                self.initial_trimmed_pids.discard(stale_pid)
+
             for stale_pid in set(self.first_seen_pids.keys()) - pids:
                 self.first_seen_pids.pop(stale_pid, None)
 
@@ -351,7 +458,21 @@ class HeadlessManager:
                 for pid in ready_pids:
                     self.set_process_priority(pid, self._NORMAL_PRIORITY_CLASS)
 
+            if self.is_eco_qos_enabled():
+                for pid in ready_pids:
+                    self.set_process_eco_qos(pid, enable=True)
+            else:
+                for pid in ready_pids:
+                    self.set_process_eco_qos(pid, enable=False)
+
             if self.is_trim_memory_enabled():
+                for pid in ready_pids:
+                    age = now - float(self.first_seen_pids.get(pid, now))
+                    if age >= 5.0 and pid not in self.initial_trimmed_pids:
+                        if self.trim_process_memory(pid):
+                            trimmed_count += 1
+                        self.initial_trimmed_pids.add(pid)
+
                 should_trim = force_trim or (now - self.last_trim_ts) >= self.ROBLOX_HEADLESS_MEMORY_TRIM_INTERVAL_SECONDS
                 if should_trim:
                     for pid in ready_pids:
@@ -383,6 +504,7 @@ class HeadlessManager:
                 ok, _ = self.set_process_priority(pid, self._NORMAL_PRIORITY_CLASS)
                 if ok:
                     priority_count += 1
+                self.set_process_eco_qos(pid, enable=False)
                 self.restored_pids.add(int(pid))
 
             self.hidden_hwnds.clear()
@@ -420,6 +542,7 @@ class HeadlessManager:
             enabled = self.is_enabled()
 
         if enabled:
+            self.sync_fastflags()
             if not self.watchdog_running:
                 self.watchdog_running = True
                 self.generation += 1

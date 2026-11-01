@@ -210,6 +210,9 @@ export interface Settings {
   headlessMode?: boolean;
   headlessTrimMemory?: boolean;
   headlessIdlePriority?: boolean;
+  headlessEcoQoS?: boolean;
+  headlessFpsCap?: number | string;
+  headlessGraphicsOpt?: boolean;
   headlessDetectionDelaySeconds?: number;
   autoRejoinEnabled?: boolean;
   autoRejoinDelaySeconds?: number;
