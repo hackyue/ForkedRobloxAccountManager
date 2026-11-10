@@ -2324,6 +2324,7 @@ class RobloxAPI:
                         ["open", "-n", "-a", mac_app_bundle, "--args", url],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
+                        close_fds=True,
                     )
                     _log_debug(f"Launching Roblox Home on macOS via open -n -a {mac_app_bundle} --args {url}")
                 elif launcher_id:
@@ -2340,7 +2341,8 @@ class RobloxAPI:
                             cwd=effective_path,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
-                            creationflags=creation_flags
+                            creationflags=creation_flags,
+                            close_fds=True,
                         )
                         _log_debug(f"Launching Roblox Home via RobloxPlayerBeta.exe with URL arg: {url}")
                     except Exception as exc:
@@ -2478,6 +2480,7 @@ class RobloxAPI:
                     ["open", "-n", "-a", mac_app_bundle, "--args", url],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    close_fds=True,
                 )
                 _log_debug(f"Launching game on macOS via open -n -a {mac_app_bundle} --args {url}")
             elif launcher_id:
@@ -2495,7 +2498,8 @@ class RobloxAPI:
                             cwd=effective_path,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
-                            creationflags=creation_flags
+                            creationflags=creation_flags,
+                            close_fds=True,
                         )
                         _log_debug(f"Launching game via RobloxPlayerBeta.exe with URL arg: {url}")
                         print("[SUCCESS] Roblox launched successfully!")

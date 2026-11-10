@@ -127,15 +127,17 @@ API_AUTH_TOKEN = os.environ.get('FRAM_API_TOKEN') or secrets.token_urlsafe(48)
 _BACKEND_START_TIME = time.time()
 _INITIAL_PPID = os.getppid()
 
-def _write_backend_pid():
+def _write_backend_pid(active_port=None):
     try:
         data_folder = get_data_folder()
         os.makedirs(data_folder, exist_ok=True)
         pid_path = os.path.join(data_folder, '.backend_pid')
+        resolved_port = int(active_port if active_port is not None else os.environ.get('PORT', 5050))
         pid_info = {
             'pid': os.getpid(),
             'ppid': _INITIAL_PPID,
             'parent_pid': os.environ.get('FRAM_PARENT_PID'),
+            'port': resolved_port,
             'started_at': _BACKEND_START_TIME,
             'executable': sys.executable
         }
@@ -1686,7 +1688,7 @@ def launch_roblox_app():
             creation_flags = getattr(subprocess, 'DETACHED_PROCESS', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
 
         if target_exe and os.path.isfile(target_exe):
-            subprocess.Popen([target_exe], creationflags=creation_flags, close_fds=True if platform.system() != 'Windows' else False)
+            subprocess.Popen([target_exe], creationflags=creation_flags, close_fds=True)
             return jsonify({'success': True, 'message': f'Launched {os.path.basename(target_exe)}'})
 
         if platform.system() == 'Windows':
@@ -5181,7 +5183,8 @@ if exist "{root_dir}" (
                 [bat_path],
                 creationflags=subprocess.CREATE_NO_WINDOW | 0x00000008,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
+                close_fds=True
             )
         else:
             if os.path.exists(root_dir):
@@ -6714,18 +6717,46 @@ if __name__ == '__main__':
 
     start_background_services()
 
-    # Allow address reuse so TIME_WAIT sockets from previous sessions do not block bind (WSAEADDRINUSE / WinError 10048).
-    socketserver.TCPServer.allow_reuse_address = True
-    http.server.HTTPServer.allow_reuse_address = True
-    try:
-        import werkzeug.serving
-        werkzeug.serving.BaseWSGIServer.allow_reuse_address = True
-    except Exception:
-        pass
+    if platform.system() == "Windows":
+        # Prevent binding over an active/zombie listening socket, and mark the listening socket
+        # handle as non-inheritable so child processes (e.g. RobloxPlayerBeta.exe) never inherit it.
+        socketserver.TCPServer.allow_reuse_address = False
+        http.server.HTTPServer.allow_reuse_address = False
+        try:
+            import werkzeug.serving
+            werkzeug.serving.BaseWSGIServer.allow_reuse_address = False
+            _orig_server_bind = werkzeug.serving.BaseWSGIServer.server_bind
+
+            def _non_inheritable_server_bind(self):
+                try:
+                    excl_opt = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+                    if excl_opt is not None:
+                        self.socket.setsockopt(socket.SOL_SOCKET, excl_opt, 1)
+                except Exception:
+                    pass
+                try:
+                    k32 = ctypes.windll.kernel32
+                    k32.SetHandleInformation(ctypes.c_void_p(int(self.socket.fileno())), 1, 0)
+                except Exception:
+                    pass
+                return _orig_server_bind(self)
+
+            werkzeug.serving.BaseWSGIServer.server_bind = _non_inheritable_server_bind
+        except Exception:
+            pass
+    else:
+        socketserver.TCPServer.allow_reuse_address = True
 
     max_bind_attempts = 20
     for attempt in range(max_bind_attempts):
         try:
+            os.environ['PORT'] = str(port)
+            try:
+                import classes.icon_cache as _ic_mod
+                _ic_mod.BACKEND_PORT = port
+            except Exception:
+                pass
+            _write_backend_pid(port)
             print(f"[INFO] Binding Flask server to 127.0.0.1:{port} (attempt {attempt + 1}/{max_bind_attempts})...")
             app.run(host='127.0.0.1', port=port, debug=False, threaded=True, use_reloader=False)
             break
@@ -6733,8 +6764,13 @@ if __name__ == '__main__':
             if _IS_SHUTTING_DOWN:
                 break
             if attempt < max_bind_attempts - 1:
-                print(f"[WARNING] Bind attempt {attempt + 1} on port {port} failed ({e}); retrying in 0.5s...")
-                time.sleep(0.5)
+                if attempt >= 1:
+                    old_port = port
+                    port += 1
+                    print(f"[WARNING] Bind attempt {attempt + 1} on port {old_port} failed ({e}); switching to fallback port {port}...")
+                else:
+                    print(f"[WARNING] Bind attempt {attempt + 1} on port {port} failed ({e}); retrying in 0.4s...")
+                time.sleep(0.4)
             else:
                 print(f"[ERROR] Could not bind backend to port {port} after {max_bind_attempts} attempts: {e}")
                 perform_graceful_shutdown()
