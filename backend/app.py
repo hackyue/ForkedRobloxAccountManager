@@ -6714,18 +6714,14 @@ if __name__ == '__main__':
 
     start_background_services()
 
-    if platform.system() == "Windows":
-        # On Windows, SO_REUSEADDR allows multiple processes to bind the same port simultaneously,
-        # which hijacks or splits traffic if an old process is still shutting down.
-        socketserver.TCPServer.allow_reuse_address = False
-        http.server.HTTPServer.allow_reuse_address = False
-        try:
-            import werkzeug.serving
-            werkzeug.serving.BaseWSGIServer.allow_reuse_address = False
-        except Exception:
-            pass
-    else:
-        socketserver.TCPServer.allow_reuse_address = True
+    # Allow address reuse so TIME_WAIT sockets from previous sessions do not block bind (WSAEADDRINUSE / WinError 10048).
+    socketserver.TCPServer.allow_reuse_address = True
+    http.server.HTTPServer.allow_reuse_address = True
+    try:
+        import werkzeug.serving
+        werkzeug.serving.BaseWSGIServer.allow_reuse_address = True
+    except Exception:
+        pass
 
     max_bind_attempts = 20
     for attempt in range(max_bind_attempts):

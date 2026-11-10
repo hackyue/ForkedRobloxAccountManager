@@ -373,6 +373,57 @@ fn force_kill_pid_tree(app_dir: &Path, pid: u32, label: &str) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn find_pids_listening_on_port(port: u16) -> Vec<u32> {
+    let mut pids = Vec::new();
+    let port_suffix = format!(":{}", port);
+    if let Ok(out) = Command::new("netstat")
+        .args(["-ano", "-p", "tcp"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            let upper = line.to_uppercase();
+            if upper.contains("LISTENING") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 {
+                    let local_addr = parts[1];
+                    let state = parts[parts.len() - 2];
+                    let pid_str = parts[parts.len() - 1];
+                    if state.eq_ignore_ascii_case("LISTENING") && local_addr.ends_with(&port_suffix) {
+                        if let Ok(pid) = pid_str.parse::<u32>() {
+                            if pid > 0 && !pids.contains(&pid) {
+                                pids.push(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pids
+}
+
+#[cfg(not(target_os = "windows"))]
+fn find_pids_listening_on_port(port: u16) -> Vec<u32> {
+    let mut pids = Vec::new();
+    if let Ok(out) = Command::new("lsof")
+        .args(["-ti", &format!(":{}", port)])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            if let Ok(pid) = line.trim().parse::<u32>() {
+                if pid > 0 && !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+    }
+    pids
+}
+
 fn cleanup_stale_backend(app_dir: &Path) -> bool {
     let pid_file = app_dir.join("data").join(".backend_pid");
     let current_launcher_pid = std::process::id().to_string();
@@ -411,7 +462,9 @@ fn cleanup_stale_backend(app_dir: &Path) -> bool {
         return true;
     }
 
-    if !port_open && recorded_pid.is_none() {
+    let listening_pids = find_pids_listening_on_port(5050);
+
+    if !port_open && recorded_pid.is_none() && listening_pids.is_empty() {
         return false;
     }
 
@@ -419,8 +472,8 @@ fn cleanup_stale_backend(app_dir: &Path) -> bool {
         app_dir,
         "WARN",
         &format!(
-            "Cleaning up stale/previous backend state (port_open={}, healthy={}, recorded_pid={:?}, recorded_ppid={:?}, recorded_parent_pid={:?})",
-            port_open, healthy, recorded_pid, recorded_ppid, recorded_parent_pid
+            "Cleaning up stale/previous backend state (port_open={}, healthy={}, recorded_pid={:?}, recorded_ppid={:?}, recorded_parent_pid={:?}, listening_pids={:?})",
+            port_open, healthy, recorded_pid, recorded_ppid, recorded_parent_pid, listening_pids
         ),
     );
 
@@ -445,13 +498,20 @@ fn cleanup_stale_backend(app_dir: &Path) -> bool {
         }
     }
 
+    for lp in &listening_pids {
+        if *lp != std::process::id() && Some(*lp) != recorded_pid && Some(*lp) != recorded_ppid {
+            force_kill_pid_tree(app_dir, *lp, "stale port 5050 listener");
+        }
+    }
+
     #[cfg(target_os = "windows")]
-    if is_port_open() {
-        log_launcher(app_dir, "WARN", "Port 5050 still occupied; running taskkill /F /T /IM backend.exe");
-        let _ = Command::new("taskkill")
-            .args(["/F", "/T", "/IM", "backend.exe"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
+    {
+        for exe in &["backend.exe", "FRAMBackend.exe"] {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/IM", exe])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
     }
 
     let _ = fs::remove_file(&pid_file);
@@ -1200,11 +1260,219 @@ fn shutdown_backend_process(app_handle: &tauri::AppHandle) {
         std::thread::sleep(Duration::from_millis(50));
     }
 
+    let remaining_pids = find_pids_listening_on_port(5050);
+    for rp in remaining_pids {
+        if rp != std::process::id() {
+            force_kill_pid_tree(&app_dir, rp, "shutdown lingering port listener");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for exe in &["backend.exe", "FRAMBackend.exe"] {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/IM", exe])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+    }
+
     log_launcher(&app_dir, "INFO", "shutdown_backend_process completed");
+    let _ = fs::remove_file(app_dir.join("data").join(".app_instance"));
+    let _ = fs::remove_file(app_dir.join("data").join(".fram_instance.lock"));
+}
+
+#[cfg(target_os = "windows")]
+mod single_instance {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    extern "system" {
+        fn CreateMutexW(
+            lpMutexAttributes: *mut std::ffi::c_void,
+            bInitialOwner: i32,
+            lpName: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn GetLastError() -> u32;
+        fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
+        fn FindWindowW(lpClassName: *const u16, lpWindowName: *const u16) -> *mut std::ffi::c_void;
+        fn ShowWindow(hWnd: *mut std::ffi::c_void, nCmdShow: i32) -> i32;
+        fn SetForegroundWindow(hWnd: *mut std::ffi::c_void) -> i32;
+    }
+
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    const SW_RESTORE: i32 = 9;
+
+    #[allow(dead_code)]
+    pub struct SingleInstanceGuard(*mut std::ffi::c_void);
+
+    unsafe impl Send for SingleInstanceGuard {}
+    unsafe impl Sync for SingleInstanceGuard {}
+
+    impl Drop for SingleInstanceGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+    }
+
+    pub fn acquire_single_instance() -> Option<SingleInstanceGuard> {
+        let name: Vec<u16> = OsStr::new("Local\\ForkedRobloxAccountManager_AppMutex")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            let handle = CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr());
+            if handle.is_null() {
+                return None;
+            }
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                let title: Vec<u16> = OsStr::new("FRAM")
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                if !hwnd.is_null() {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                }
+                CloseHandle(handle);
+                return None;
+            }
+            Some(SingleInstanceGuard(handle))
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod single_instance {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    use std::path::Path;
+
+    #[allow(dead_code)]
+    pub struct SingleInstanceGuard(std::fs::File);
+
+    unsafe impl Send for SingleInstanceGuard {}
+    unsafe impl Sync for SingleInstanceGuard {}
+
+    pub fn acquire_single_instance(app_dir: &Path) -> Option<SingleInstanceGuard> {
+        let lock_path = app_dir.join("data").join(".fram_instance.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .open(&lock_path)
+            .ok()?;
+
+        let fd = file.as_raw_fd();
+        let res = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        if res != 0 {
+            return None;
+        }
+        Some(SingleInstanceGuard(file))
+    }
+}
+
+fn notify_existing_instance(app_dir: &Path) -> bool {
+    let ipc_file = app_dir.join("data").join(".app_instance");
+    if let Ok(raw) = fs::read_to_string(&ipc_file) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(port) = val.get("port").and_then(|p| p.as_u64()).map(|p| p as u16) {
+                if let Ok(addr) = format!("127.0.0.1:{}", port).parse::<std::net::SocketAddr>() {
+                    if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(400)) {
+                        let _ = stream.set_write_timeout(Some(Duration::from_millis(400)));
+                        if stream.write_all(b"FOCUS\n").is_ok() {
+                            let _ = stream.flush();
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn start_instance_ipc_server(app_handle: tauri::AppHandle, app_dir: PathBuf) {
+    std::thread::spawn(move || {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let port = match listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(_) => return,
+        };
+
+        let ipc_file = app_dir.join("data").join(".app_instance");
+        let payload = serde_json::json!({
+            "pid": std::process::id(),
+            "port": port
+        });
+        let _ = fs::write(&ipc_file, payload.to_string());
+
+        for stream in listener.incoming() {
+            if let Ok(mut s) = stream {
+                let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+                let mut buf = [0u8; 64];
+                if let Ok(n) = s.read(&mut buf) {
+                    let msg = String::from_utf8_lossy(&buf[..n]);
+                    if msg.contains("FOCUS") {
+                        if let Some(w) = app_handle.get_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                        let _ = s.write_all(b"OK\n");
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn main() {
     let app_dir = get_root_app_dir();
+
+    #[cfg(target_os = "windows")]
+    let _instance_guard = match single_instance::acquire_single_instance() {
+        Some(g) => g,
+        None => {
+            log_launcher(
+                &app_dir,
+                "INFO",
+                &format!(
+                    "Another instance of FRAM is already running. Focus requested. Exiting duplicate instance (PID={}).",
+                    std::process::id()
+                ),
+            );
+            let _ = notify_existing_instance(&app_dir);
+            std::process::exit(0);
+        }
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let _instance_guard = match single_instance::acquire_single_instance(&app_dir) {
+        Some(g) => g,
+        None => {
+            log_launcher(
+                &app_dir,
+                "INFO",
+                &format!(
+                    "Another instance of FRAM is already running. Focus requested. Exiting duplicate instance (PID={}).",
+                    std::process::id()
+                ),
+            );
+            let _ = notify_existing_instance(&app_dir);
+            std::process::exit(0);
+        }
+    };
+
     log_launcher(
         &app_dir,
         "INFO",
@@ -1223,6 +1491,12 @@ fn main() {
         .unwrap_or_else(|_| reqwest::Client::new());
 
     let app = tauri::Builder::default()
+        .setup(|app| {
+            let app_handle = app.handle();
+            let app_dir = get_root_app_dir();
+            start_instance_ipc_server(app_handle, app_dir);
+            Ok(())
+        })
         .manage(BackendProcess(Mutex::new(child)))
         .manage(AuthToken(Mutex::new(token)))
         .manage(BackendStartStatus(Mutex::new(backend_status)))
