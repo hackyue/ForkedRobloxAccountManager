@@ -127,19 +127,10 @@ API_AUTH_TOKEN = os.environ.get('FRAM_API_TOKEN') or secrets.token_urlsafe(48)
 _BACKEND_START_TIME = time.time()
 _INITIAL_PPID = os.getppid()
 
-def _write_auth_token():
+def _write_backend_pid():
     try:
         data_folder = get_data_folder()
         os.makedirs(data_folder, exist_ok=True)
-        token_path = os.path.join(data_folder, '.api_token')
-        with open(token_path, 'w', encoding='utf-8') as f:
-            f.write(API_AUTH_TOKEN)
-            f.flush()
-            os.fsync(f.fileno())
-        try:
-            os.chmod(token_path, 0o600)
-        except OSError:
-            pass
         pid_path = os.path.join(data_folder, '.backend_pid')
         pid_info = {
             'pid': os.getpid(),
@@ -153,7 +144,7 @@ def _write_auth_token():
             pf.flush()
             os.fsync(pf.fileno())
     except Exception as e:
-        print(f"[WARNING] Could not write API auth token or PID file: {e}")
+        print(f"[WARNING] Could not write backend PID file: {e}")
 
 quick_signin_sessions = {}
 quick_signin_lock = threading.Lock()
@@ -5853,7 +5844,8 @@ def get_system_diagnostics():
             'recent_logs': recent_logs
         })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_detailed_error("Failed to get system diagnostics", exc=e, source="diagnostics")
+        return jsonify({'success': False, 'error': 'Failed to retrieve system diagnostics'}), 500
 
 @app.route('/api/auth/token', methods=['GET'])
 def get_auth_token():
@@ -5968,7 +5960,7 @@ def start_background_services():
             return
         _SERVICES_STARTED = True
 
-    _write_auth_token()
+    _write_backend_pid()
     atexit.register(perform_graceful_shutdown)
 
     def _deferred_init():

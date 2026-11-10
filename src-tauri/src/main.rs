@@ -523,7 +523,7 @@ fn get_root_app_dir() -> PathBuf {
     target_dir
 }
 
-fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
+fn start_backend_if_needed(app_dir: &Path, auth_token: &str) -> (Option<Child>, BackendStatus) {
     let parent_pid = std::process::id().to_string();
     log_launcher(
         app_dir,
@@ -544,14 +544,7 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
     }
 
     let stale_token_path = app_dir.join("data").join(".api_token");
-    let mut initial_token = read_auth_token(app_dir);
-    if initial_token.is_empty() {
-        initial_token = generate_api_token();
-        if let Ok(mut tf) = fs::File::create(&stale_token_path) {
-            let _ = tf.write_all(initial_token.as_bytes());
-            let _ = tf.flush();
-        }
-    }
+    let _ = fs::remove_file(&stale_token_path);
 
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new("."));
@@ -597,7 +590,7 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
             cmd.current_dir(app_dir);
             cmd.env("FRAM_APP_DIR", app_dir.to_str().unwrap_or_default());
             cmd.env("FRAM_PARENT_PID", &parent_pid);
-            cmd.env("FRAM_API_TOKEN", &initial_token);
+            cmd.env("FRAM_API_TOKEN", auth_token);
             cmd.env("PYTHONUNBUFFERED", "1");
 
             if let Ok(out_f) = fs::File::create(&log_path) {
@@ -730,7 +723,7 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
         cmd.current_dir(script_parent);
         cmd.env("FRAM_APP_DIR", app_dir.to_str().unwrap_or_default());
         cmd.env("FRAM_PARENT_PID", &parent_pid);
-        cmd.env("FRAM_API_TOKEN", &initial_token);
+        cmd.env("FRAM_API_TOKEN", auth_token);
         cmd.env("PYTHONUNBUFFERED", "1");
 
         if let Ok(out_f) = fs::File::create(&fallback_log_path) {
@@ -878,6 +871,7 @@ fn get_backend_status(state: tauri::State<BackendStartStatus>) -> Result<Backend
 #[tauri::command]
 fn get_backend_diagnostics(
     status_state: tauri::State<BackendStartStatus>,
+    auth_token_state: tauri::State<AuthToken>,
 ) -> Result<BackendDiagnostics, String> {
     let app_dir = get_root_app_dir();
     let log_path = app_dir.join("logs").join("backend.log");
@@ -892,7 +886,11 @@ fn get_backend_diagnostics(
     };
 
     let pid_info = fs::read_to_string(&pid_path).unwrap_or_default();
-    let token = read_auth_token(&app_dir);
+    let token = if let Ok(lock) = auth_token_state.0.lock() {
+        lock.clone()
+    } else {
+        read_auth_token(&app_dir)
+    };
 
     Ok(BackendDiagnostics {
         app_dir: app_dir.to_string_lossy().to_string(),
@@ -925,7 +923,8 @@ async fn relaunch_backend(
     std::thread::sleep(Duration::from_millis(400));
     cleanup_stale_backend(&app_dir);
 
-    let (child, backend_status) = start_backend_if_needed(&app_dir);
+    let new_token = generate_api_token();
+    let (child, backend_status) = start_backend_if_needed(&app_dir, &new_token);
 
     if let Ok(mut lock) = process_state.0.lock() {
         *lock = child;
@@ -935,7 +934,6 @@ async fn relaunch_backend(
         *lock = backend_status.clone();
     }
 
-    let new_token = read_auth_token(&app_dir);
     if let Ok(mut lock) = auth_token_state.0.lock() {
         *lock = new_token;
     }
@@ -1213,8 +1211,8 @@ fn main() {
         &format!("=== FRAM Starting (PID={}, OS={}) ===", std::process::id(), std::env::consts::OS),
     );
 
-    let (child, backend_status) = start_backend_if_needed(&app_dir);
-    let token = read_auth_token(&app_dir);
+    let token = generate_api_token();
+    let (child, backend_status) = start_backend_if_needed(&app_dir, &token);
     let http_client = reqwest::Client::builder()
         .no_proxy()
         .tcp_nodelay(true)
