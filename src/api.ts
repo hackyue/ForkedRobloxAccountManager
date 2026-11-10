@@ -1004,6 +1004,23 @@ class ApiService {
     }
   }
 
+  async getBackendStatus(): Promise<{ started: boolean; reason: string }> {
+    try {
+      return await invoke<{ started: boolean; reason: string }>('get_backend_status');
+    } catch (e: any) {
+      return { started: false, reason: e?.message || String(e) };
+    }
+  }
+
+  async getBackendDiagnostics(): Promise<BackendDiagnostics | null> {
+    try {
+      return await invoke<BackendDiagnostics>('get_backend_diagnostics');
+    } catch (e: any) {
+      console.error('Failed to get backend diagnostics:', e);
+      return null;
+    }
+  }
+
   async getInstallerAvailableVersions(): Promise<{ success: boolean; versions: InstallerVersionEntry[]; error?: string }> {
     return this.request<{ success: boolean; versions: InstallerVersionEntry[]; error?: string }>('/installer/available-versions');
   }
@@ -1447,6 +1464,21 @@ export interface RblxSwapCleanResult {
   success: boolean;
   logs: RblxSwapCleanLog[];
   error?: string;
+}
+
+export interface BackendDiagnostics {
+  app_dir: string;
+  exe_path: string;
+  launcher_pid: number;
+  port_open: boolean;
+  backend_healthy: boolean;
+  status_started: boolean;
+  status_reason: string;
+  token_present: boolean;
+  backend_pid_info: string;
+  launcher_log: string;
+  backend_log: string;
+  backend_err_log: string;
 }
 
 export interface RblxSwapCleanStatus {

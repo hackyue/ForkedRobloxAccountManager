@@ -123,11 +123,15 @@ def _is_trusted_local_origin(val: str) -> bool:
         return True
     return bool(_TRUSTED_ORIGIN_RE.match(v))
 
-API_AUTH_TOKEN = secrets.token_urlsafe(48)
+API_AUTH_TOKEN = os.environ.get('FRAM_API_TOKEN') or secrets.token_urlsafe(48)
+_BACKEND_START_TIME = time.time()
+_INITIAL_PPID = os.getppid()
 
 def _write_auth_token():
     try:
-        token_path = os.path.join(get_data_folder(), '.api_token')
+        data_folder = get_data_folder()
+        os.makedirs(data_folder, exist_ok=True)
+        token_path = os.path.join(data_folder, '.api_token')
         with open(token_path, 'w', encoding='utf-8') as f:
             f.write(API_AUTH_TOKEN)
             f.flush()
@@ -136,14 +140,20 @@ def _write_auth_token():
             os.chmod(token_path, 0o600)
         except OSError:
             pass
+        pid_path = os.path.join(data_folder, '.backend_pid')
+        pid_info = {
+            'pid': os.getpid(),
+            'ppid': _INITIAL_PPID,
+            'parent_pid': os.environ.get('FRAM_PARENT_PID'),
+            'started_at': _BACKEND_START_TIME,
+            'executable': sys.executable
+        }
+        with open(pid_path, 'w', encoding='utf-8') as pf:
+            json.dump(pid_info, pf)
+            pf.flush()
+            os.fsync(pf.fileno())
     except Exception as e:
-        print(f"[WARNING] Could not write API auth token file: {e}")
-
-_write_auth_token()
-try:
-    cleanup_temp_files()
-except Exception as e:
-    log_detailed_error("Failed to run startup temp file cleanup", exc=e, source="startup")
+        print(f"[WARNING] Could not write API auth token or PID file: {e}")
 
 quick_signin_sessions = {}
 quick_signin_lock = threading.Lock()
@@ -267,6 +277,7 @@ def enforce_api_auth():
         auth_exempt = (
             '/api/health',
             '/api/system/platform',
+            '/api/system/diagnostics',
             '/api/auth/token',
             '/api/auth/status',
             '/api/auth/unlock',
@@ -311,6 +322,9 @@ def enforce_vault_lock():
             '/api/health',
             '/api/system/platform',
             '/api/system/logs',
+            '/api/system/shutdown',
+            '/api/system/diagnostics',
+            '/api/system/last-error',
             '/api/setup/complete',
             '/api/setup/encryption-status',
             '/api/setup/preview-framdata',
@@ -349,51 +363,55 @@ class MultiInstanceController:
     def __init__(self):
         self.mutex_handles = []
         self.is_enabled = False
+        self._lock = threading.Lock()
 
     def enable(self) -> bool:
-        if platform.system() != "Windows":
-            print("[INFO] Multi-instance Roblox is only supported on Windows")
-            self.is_enabled = True
-            return True
-        try:
-            if not self.mutex_handles:
-                kernel32 = ctypes.windll.kernel32
-                kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
-                kernel32.CreateMutexW.restype = ctypes.c_void_p
-                kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-                kernel32.CloseHandle.restype = ctypes.c_bool
+        with self._lock:
+            if platform.system() != "Windows":
+                if not self.is_enabled:
+                    print("[INFO] Multi-instance Roblox is only supported on Windows")
+                self.is_enabled = True
+                return True
+            try:
+                if not self.mutex_handles:
+                    kernel32 = ctypes.windll.kernel32
+                    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+                    kernel32.CreateMutexW.restype = ctypes.c_void_p
+                    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+                    kernel32.CloseHandle.restype = ctypes.c_bool
 
-                m1 = kernel32.CreateMutexW(None, True, "ROBLOX_singletonEvent")
-                m2 = kernel32.CreateMutexW(None, True, "ROBLOX_singletonMutex")
-                self.mutex_handles = [m for m in (m1, m2) if m]
-                print(f"[SUCCESS] Multi-instance Roblox enabled. Active mutex handles: {self.mutex_handles}")
-            self.is_enabled = True
-            return True
-        except Exception as e:
-            print(f"[ERROR] Failed to enable multi-instance: {e}")
-            return False
+                    m1 = kernel32.CreateMutexW(None, True, "ROBLOX_singletonEvent")
+                    m2 = kernel32.CreateMutexW(None, True, "ROBLOX_singletonMutex")
+                    self.mutex_handles = [m for m in (m1, m2) if m]
+                    print(f"[SUCCESS] Multi-instance Roblox enabled. Active mutex handles: {self.mutex_handles}")
+                self.is_enabled = True
+                return True
+            except Exception as e:
+                print(f"[ERROR] Failed to enable multi-instance: {e}")
+                return False
 
     def disable(self) -> bool:
-        if platform.system() != "Windows":
-            self.is_enabled = False
-            return True
-        try:
-            if self.mutex_handles:
-                kernel32 = ctypes.windll.kernel32
-                kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-                kernel32.CloseHandle.restype = ctypes.c_bool
-                for m in self.mutex_handles:
-                    try:
-                        kernel32.CloseHandle(m)
-                    except Exception:
-                        pass
-                self.mutex_handles = []
-                print("[INFO] Multi-instance Roblox disabled. Mutexes released.")
-            self.is_enabled = False
-            return True
-        except Exception as e:
-            print(f"[ERROR] Failed to disable multi-instance: {e}")
-            return False
+        with self._lock:
+            if platform.system() != "Windows":
+                self.is_enabled = False
+                return True
+            try:
+                if self.mutex_handles:
+                    kernel32 = ctypes.windll.kernel32
+                    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+                    kernel32.CloseHandle.restype = ctypes.c_bool
+                    for m in self.mutex_handles:
+                        try:
+                            kernel32.CloseHandle(m)
+                        except Exception:
+                            pass
+                    self.mutex_handles = []
+                    print("[INFO] Multi-instance Roblox disabled. Mutexes released.")
+                self.is_enabled = False
+                return True
+            except Exception as e:
+                print(f"[ERROR] Failed to disable multi-instance: {e}")
+                return False
 
     def sync_state(self, enabled: bool):
         if enabled:
@@ -546,6 +564,7 @@ _DATA_CACHE: Optional[Dict[str, Any]] = None
 _DATA_CACHE_TIME: float = 0.0
 _DATA_CACHE_TTL: float = 1.5
 _DATA_CACHE_LOCK = threading.Lock()
+_LOAD_DATA_LOCK = threading.RLock()
 
 def invalidate_data_cache():
     global _DATA_CACHE, _DATA_CACHE_TIME
@@ -564,11 +583,21 @@ def _clone_data_fast(src: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 def load_data(force_reload: bool = False) -> Dict[str, Any]:
-    global _DATA_CACHE, _DATA_CACHE_TIME, last_account_decryption_error
     now = time.time()
     with _DATA_CACHE_LOCK:
         if not force_reload and _DATA_CACHE is not None and (now - _DATA_CACHE_TIME) < _DATA_CACHE_TTL:
             return _clone_data_fast(_DATA_CACHE)
+
+    with _LOAD_DATA_LOCK:
+        now = time.time()
+        with _DATA_CACHE_LOCK:
+            if not force_reload and _DATA_CACHE is not None and (now - _DATA_CACHE_TIME) < _DATA_CACHE_TTL:
+                return _clone_data_fast(_DATA_CACHE)
+        return _load_data_unlocked(force_reload)
+
+
+def _load_data_unlocked(force_reload: bool = False) -> Dict[str, Any]:
+    global _DATA_CACHE, _DATA_CACHE_TIME, last_account_decryption_error
 
     data = {
         'accounts': [],
@@ -940,7 +969,16 @@ def sync_startup_registry(enable: bool):
         import winreg
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         app_name = "Forked Account Manager"
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+
+        existing_val = None
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ) as rkey:
+                existing_val, _ = winreg.QueryValueEx(rkey, app_name)
+        except FileNotFoundError:
+            existing_val = None
+        except OSError:
+            existing_val = None
+
         if enable:
             exe_path = sys.executable
             base_dir = os.path.dirname(os.path.abspath(exe_path))
@@ -954,13 +992,19 @@ def sync_startup_registry(enable: bool):
                         break
                 if found_gui:
                     break
-            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{exe_path}"')
+            desired_val = f'"{exe_path}"'
+            if existing_val == desired_val:
+                return
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as wkey:
+                winreg.SetValueEx(wkey, app_name, 0, winreg.REG_SZ, desired_val)
         else:
-            try:
-                winreg.DeleteValue(key, app_name)
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
+            if existing_val is None:
+                return
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as wkey:
+                try:
+                    winreg.DeleteValue(wkey, app_name)
+                except FileNotFoundError:
+                    pass
     except Exception as e:
         print(f"Error syncing startup registry: {e}")
 
@@ -1525,7 +1569,6 @@ def launch_account():
 last_manual_kill_timestamp = 0.0
 last_launch_times = {}
 last_launch_info = {}
-anti_afk_manager.start_loop()
 
 @app.route('/api/roblox/kill', methods=['POST', 'OPTIONS'])
 def kill_roblox_processes():
@@ -2714,8 +2757,6 @@ def background_auto_rejoin_worker():
         except Exception as e:
             print(f"[ERROR] background_auto_rejoin_worker error: {e}")
 
-threading.Thread(target=background_auto_rejoin_worker, daemon=True).start()
-
 group_auto_relaunch_state = {
     'next_run_ts': None,
     'last_run_ts': None,
@@ -2846,8 +2887,6 @@ def background_group_auto_relaunch_worker():
         except Exception as e:
             print(f"[ERROR] background_group_auto_relaunch_worker: {e}")
             time.sleep(10)
-
-threading.Thread(target=background_group_auto_relaunch_worker, daemon=True).start()
 
 @app.route('/api/auto-relaunch/status', methods=['GET', 'OPTIONS'])
 def get_auto_relaunch_status():
@@ -3654,8 +3693,6 @@ def background_auto_memory_trim_worker():
         except Exception as e:
             print(f"[ERROR] background_auto_memory_trim_worker error: {e}")
 
-threading.Thread(target=background_auto_memory_trim_worker, daemon=True).start()
-
 ALLOWED_PROCESS_NAMES = {
     'robloxplayerbeta.exe',
     'robloxplayerlauncher.exe',
@@ -3673,15 +3710,15 @@ ALLOWED_PROCESS_NAMES = {
 def terminate_crash_handlers(log_if_killed: bool = True):
     if platform.system() == "Windows":
         try:
-            ps_script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'RobloxCrashHandler' } | Select-Object -ExpandProperty ProcessId"
-            res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             killed = 0
-            if res.returncode == 0 and res.stdout.strip():
-                for line in res.stdout.strip().splitlines():
-                    line = line.strip()
-                    if line.isdigit():
-                        subprocess.run(["taskkill", "/F", "/PID", line], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    pname = str(proc.info.get('name') or '').lower()
+                    if 'robloxcrashhandler' in pname:
+                        proc.kill()
                         killed += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
             if killed > 0 and log_if_killed:
                 add_backend_log(f"Terminated {killed} RobloxCrashHandler process(es)", level='info', category='system')
             return killed
@@ -3701,8 +3738,6 @@ def background_auto_crash_handler_killer_worker():
                 terminate_crash_handlers(log_if_killed=True)
         except Exception as e:
             print(f"[ERROR] background_auto_crash_handler_killer_worker error: {e}")
-
-threading.Thread(target=background_auto_crash_handler_killer_worker, daemon=True).start()
 
 @app.route('/api/instances/kill-crash-handlers', methods=['POST', 'OPTIONS'])
 def kill_all_crash_handlers():
@@ -5777,7 +5812,48 @@ def get_system_platform():
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat(), **_get_platform_capabilities()})
+    if _IS_SHUTTING_DOWN:
+        return jsonify({
+            'status': 'shutting_down',
+            'pid': os.getpid(),
+            'timestamp': datetime.now().isoformat()
+        }), 503
+    return jsonify({
+        'status': 'healthy',
+        'pid': os.getpid(),
+        'ppid': _INITIAL_PPID,
+        'parent_pid': os.environ.get('FRAM_PARENT_PID'),
+        'uptime_sec': round(time.time() - _BACKEND_START_TIME, 2),
+        'timestamp': datetime.now().isoformat(),
+        **_get_platform_capabilities()
+    })
+
+@app.route('/api/system/diagnostics', methods=['GET'])
+def get_system_diagnostics():
+    try:
+        cfg = get_cached_encryption_config()
+        enc_enabled = cfg.is_encryption_enabled() if cfg else False
+        enc_method = cfg.get_encryption_method() if cfg else None
+        is_locked = bool(enc_enabled and enc_method == 'password' and active_master_password is None)
+        with backend_logs_lock:
+            recent_logs = list(backend_logs)[-80:]
+        return jsonify({
+            'success': True,
+            'pid': os.getpid(),
+            'ppid': _INITIAL_PPID,
+            'parent_pid': os.environ.get('FRAM_PARENT_PID'),
+            'frozen': bool(getattr(sys, 'frozen', False)),
+            'executable': sys.executable,
+            'data_folder': get_data_folder(),
+            'uptime_sec': round(time.time() - _BACKEND_START_TIME, 2),
+            'shutting_down': _IS_SHUTTING_DOWN,
+            'encryption_enabled': enc_enabled,
+            'encryption_method': enc_method,
+            'vault_locked': is_locked,
+            'recent_logs': recent_logs
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/auth/token', methods=['GET'])
 def get_auth_token():
@@ -5796,6 +5872,8 @@ def get_auth_token():
 
 _IS_SHUTTING_DOWN = False
 _SHUTDOWN_LOCK = threading.Lock()
+_SERVICES_STARTED = False
+_SERVICES_LOCK = threading.Lock()
 
 def perform_graceful_shutdown():
     global _IS_SHUTTING_DOWN
@@ -5804,8 +5882,27 @@ def perform_graceful_shutdown():
             return
         _IS_SHUTTING_DOWN = True
 
+    print(f"[INFO] Backend (PID={os.getpid()}) initiating graceful shutdown...")
+
     try:
-        anti_afk_manager.stop_loop()
+        data_folder = get_data_folder()
+        for fname in ('.api_token', '.backend_pid'):
+            fpath = os.path.join(data_folder, fname)
+            if os.path.exists(fpath):
+                try:
+                    os.unlink(fpath)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+    try:
+        multi_instance_controller.disable()
+    except Exception:
+        pass
+
+    try:
+        anti_afk_manager.stop_loop(timeout=0.4)
     except Exception as e:
         log_detailed_error("Error stopping anti_afk_manager during shutdown", exc=e, source="shutdown")
 
@@ -5830,9 +5927,8 @@ def perform_graceful_shutdown():
         log_detailed_error("Error flushing icon_cache during shutdown", exc=e, source="shutdown")
 
     try:
-        mgr = get_account_manager()
-        if mgr:
-            mgr.save_accounts()
+        if account_manager is not None:
+            account_manager.save_accounts()
     except Exception as e:
         log_detailed_error("Error saving accounts during shutdown", exc=e, source="shutdown")
 
@@ -5841,18 +5937,60 @@ def perform_graceful_shutdown():
     except Exception as e:
         log_detailed_error("Error cleaning temporary files during shutdown", exc=e, source="shutdown")
 
-    try:
-        token_path = os.path.join(get_data_folder(), '.api_token')
-        if os.path.exists(token_path):
-            os.unlink(token_path)
-    except Exception:
-        pass
+def _parent_process_watchdog():
+    raw_parent = os.environ.get('FRAM_PARENT_PID', '').strip()
+    target_parent_pid = int(raw_parent) if raw_parent.isdigit() and int(raw_parent) > 1 else None
+    is_frozen = bool(getattr(sys, 'frozen', False))
+    watch_ppid = _INITIAL_PPID if (is_frozen and _INITIAL_PPID and _INITIAL_PPID > 1) else None
 
-atexit.register(perform_graceful_shutdown)
+    if not target_parent_pid and not watch_ppid:
+        return
+
+    print(f"[INFO] Parent process watchdog active (FRAM_PARENT_PID={target_parent_pid}, bootloader_ppid={watch_ppid})")
+    while not _IS_SHUTTING_DOWN:
+        time.sleep(1.5)
+        try:
+            if target_parent_pid and not psutil.pid_exists(target_parent_pid):
+                print(f"[INFO] Parent Tauri process (PID={target_parent_pid}) exited; shutting down backend (PID={os.getpid()}).")
+                perform_graceful_shutdown()
+                os._exit(0)
+            if watch_ppid and not psutil.pid_exists(watch_ppid):
+                print(f"[INFO] Bootloader parent process (PID={watch_ppid}) exited; shutting down backend (PID={os.getpid()}).")
+                perform_graceful_shutdown()
+                os._exit(0)
+        except Exception:
+            pass
+
+def start_background_services():
+    global _SERVICES_STARTED
+    with _SERVICES_LOCK:
+        if _SERVICES_STARTED:
+            return
+        _SERVICES_STARTED = True
+
+    _write_auth_token()
+    atexit.register(perform_graceful_shutdown)
+
+    def _deferred_init():
+        try:
+            cleanup_temp_files()
+        except Exception as e:
+            log_detailed_error("Failed to run startup temp file cleanup", exc=e, source="startup")
+        try:
+            anti_afk_manager.start_loop()
+        except Exception as e:
+            print(f"[WARNING] Failed to start anti_afk_manager loop: {e}")
+
+    threading.Thread(target=_deferred_init, daemon=True, name="deferred-startup-init").start()
+    threading.Thread(target=_parent_process_watchdog, daemon=True, name="parent-watchdog").start()
+    threading.Thread(target=background_auto_rejoin_worker, daemon=True, name="auto-rejoin-worker").start()
+    threading.Thread(target=background_group_auto_relaunch_worker, daemon=True, name="group-relaunch-worker").start()
+    threading.Thread(target=background_auto_memory_trim_worker, daemon=True, name="memory-trim-worker").start()
+    threading.Thread(target=background_auto_crash_handler_killer_worker, daemon=True, name="crash-killer-worker").start()
 
 def _signal_handler(signum, frame):
     perform_graceful_shutdown()
-    sys.exit(0)
+    os._exit(0)
 
 try:
     signal.signal(signal.SIGINT, _signal_handler)
@@ -6559,31 +6697,57 @@ def spoof_rblx_all():
 if __name__ == '__main__':
     import socket
     import socketserver
+    import http.server
     port = int(os.environ.get('PORT', 5050))
+
+    print(
+        f"[INFO] Starting FRAM Backend (PID={os.getpid()}, PPID={_INITIAL_PPID}, "
+        f"FRAM_PARENT_PID={os.environ.get('FRAM_PARENT_PID')}, port={port}, "
+        f"frozen={getattr(sys, 'frozen', False)}, data_folder={DATA_FOLDER})"
+    )
 
     try:
         with socket.create_connection(('127.0.0.1', port), timeout=0.4):
             try:
                 req = urllib.request.Request(f'http://127.0.0.1:{port}/api/health')
                 with urllib.request.urlopen(req, timeout=0.8) as resp:
-                    if resp.status == 200:
-                        print(f"[INFO] Backend is already running on 127.0.0.1:{port}")
-                        sys.exit(0)
-            except Exception:
-                pass
+                    body = resp.read().decode('utf-8', errors='ignore')
+                    if resp.status == 200 and '"healthy"' in body:
+                        print(f"[INFO] Healthy backend is already running on 127.0.0.1:{port}; exiting duplicate instance.")
+                        os._exit(0)
+            except Exception as health_err:
+                print(f"[WARNING] Port {port} had an existing listener but health check failed ({health_err}); waiting for port release...")
     except OSError:
         pass
 
-    socketserver.TCPServer.allow_reuse_address = True
+    start_background_services()
 
-    max_bind_attempts = 10
+    if platform.system() == "Windows":
+        # On Windows, SO_REUSEADDR allows multiple processes to bind the same port simultaneously,
+        # which hijacks or splits traffic if an old process is still shutting down.
+        socketserver.TCPServer.allow_reuse_address = False
+        http.server.HTTPServer.allow_reuse_address = False
+        try:
+            import werkzeug.serving
+            werkzeug.serving.BaseWSGIServer.allow_reuse_address = False
+        except Exception:
+            pass
+    else:
+        socketserver.TCPServer.allow_reuse_address = True
+
+    max_bind_attempts = 20
     for attempt in range(max_bind_attempts):
         try:
-            app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
+            print(f"[INFO] Binding Flask server to 127.0.0.1:{port} (attempt {attempt + 1}/{max_bind_attempts})...")
+            app.run(host='127.0.0.1', port=port, debug=False, threaded=True, use_reloader=False)
             break
-        except OSError as e:
+        except (OSError, SystemExit) as e:
+            if _IS_SHUTTING_DOWN:
+                break
             if attempt < max_bind_attempts - 1:
-                time.sleep(0.6)
+                print(f"[WARNING] Bind attempt {attempt + 1} on port {port} failed ({e}); retrying in 0.5s...")
+                time.sleep(0.5)
             else:
-                print(f"[ERROR] Could not bind backend to port {port}: {e}")
-                sys.exit(1)
+                print(f"[ERROR] Could not bind backend to port {port} after {max_bind_attempts} attempts: {e}")
+                perform_graceful_shutdown()
+                os._exit(1)

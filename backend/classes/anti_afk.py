@@ -982,7 +982,6 @@ class AntiAfkManager:
             self._stop_event.clear()
             self.worker_thread = threading.Thread(target=self._loop, daemon=True, name="anti-afk-worker")
             self.worker_thread.start()
-            self._sync_overlay()
 
     def stop_loop(self, timeout: float = 5.0):
         with self.lock:
@@ -1027,7 +1026,9 @@ class AntiAfkManager:
                 pass
 
     def _loop(self):
-        overlay_check_counter = 0
+        overlay_check_counter = 2
+        if self._stop_event.wait(1.5):
+            return
         while not self._stop_event.is_set():
             try:
                 if self.is_enabled():

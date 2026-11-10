@@ -18,15 +18,49 @@ from Crypto.Protocol.KDF import PBKDF2
 
 class HardwareEncryption:
     """Hardware-based encryption using machine-specific identifiers"""
+
+    _CACHED_MACHINE_ID: Optional[str] = None
+    _CACHED_KEY: Optional[bytes] = None
+    _CACHED_CANDIDATE_KEYS: Optional[list] = None
     
     def __init__(self, data_folder=None, config=None):
         self.data_folder = data_folder or self._resolve_data_folder()
         self.config = config or self._resolve_config()
         self.candidate_keys = []
-        self.machine_id = self._get_machine_id()
-        self.key = self._derive_key_from_machine_id(self.machine_id)
-        if self.key not in self.candidate_keys:
-            self.candidate_keys.insert(0, self.key)
+        self._key_to_mid = {}
+
+        stored_mid = None
+        if self.config and hasattr(self.config, 'get_hardware_machine_id'):
+            stored_mid = self.config.get_hardware_machine_id()
+
+        if stored_mid:
+            self.machine_id = stored_mid
+            if HardwareEncryption._CACHED_MACHINE_ID == stored_mid and HardwareEncryption._CACHED_KEY is not None:
+                self.key = HardwareEncryption._CACHED_KEY
+            else:
+                self.key = self._derive_key_from_machine_id(self.machine_id)
+                HardwareEncryption._CACHED_MACHINE_ID = self.machine_id
+                HardwareEncryption._CACHED_KEY = self.key
+        elif HardwareEncryption._CACHED_MACHINE_ID and HardwareEncryption._CACHED_KEY is not None:
+            self.machine_id = HardwareEncryption._CACHED_MACHINE_ID
+            self.key = HardwareEncryption._CACHED_KEY
+            if self.config and hasattr(self.config, 'set_hardware_machine_id'):
+                try:
+                    self.config.set_hardware_machine_id(self.machine_id)
+                except Exception:
+                    pass
+        else:
+            self.machine_id = self._get_machine_id(include_slow_probes=False)
+            self.key = self._derive_key_from_machine_id(self.machine_id)
+            HardwareEncryption._CACHED_MACHINE_ID = self.machine_id
+            HardwareEncryption._CACHED_KEY = self.key
+            if self.config and hasattr(self.config, 'set_hardware_machine_id'):
+                try:
+                    self.config.set_hardware_machine_id(self.machine_id)
+                except Exception:
+                    pass
+
+        self.candidate_keys = [self.key]
 
     def _resolve_data_folder(self):
         try:
@@ -44,7 +78,7 @@ class HardwareEncryption:
             pass
         return None
     
-    def _get_machine_id(self):
+    def _get_machine_id(self, include_slow_probes=False):
         """Generate unique machine ID from hardware identifiers and anchor stable keys"""
         def no_window_kwargs():
             if platform.system() != "Windows":
@@ -62,6 +96,7 @@ class HardwareEncryption:
             return kwargs
         
         hardware_parts = []
+        reg_hardware_parts = []
         anchored_guid = None
         backup_guid = None
         registry_guid = None
@@ -84,29 +119,41 @@ class HardwareEncryption:
         try:
             if platform.system() == "Windows":
                 try:
-                    ps_cmd = ['powershell', '-NoProfile', '-Command', '(Get-CimInstance Win32_ComputerSystemProduct).UUID']
-                    res = subprocess.check_output(ps_cmd, **no_window_kwargs()).decode().strip()
-                    if res:
-                        hardware_parts.append(res)
-                except Exception:
-                    pass
-
-                try:
-                    ps_cmd = ['powershell', '-NoProfile', '-Command', '(Get-CimInstance Win32_Processor).ProcessorId']
-                    res = subprocess.check_output(ps_cmd, **no_window_kwargs()).decode().strip()
-                    if res:
-                        hardware_parts.append(res)
+                    import winreg
+                    access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0, access) as key:
+                        guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+                        if guid:
+                            registry_guid = str(guid).strip()
                 except Exception:
                     pass
 
                 try:
                     import winreg
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography")
-                    guid, _ = winreg.QueryValueEx(key, "MachineGuid")
-                    if guid:
-                        registry_guid = str(guid).strip()
+                    access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\SystemInformation", 0, access) as key:
+                        hw_id, _ = winreg.QueryValueEx(key, "ComputerHardwareId")
+                        if hw_id and isinstance(hw_id, str):
+                            reg_hardware_parts.append(hw_id.strip().strip("{}"))
                 except Exception:
                     pass
+
+                if include_slow_probes:
+                    try:
+                        ps_cmd = ['powershell', '-NoProfile', '-Command', '(Get-CimInstance Win32_ComputerSystemProduct).UUID']
+                        res = subprocess.check_output(ps_cmd, timeout=4, **no_window_kwargs()).decode(errors="ignore").strip()
+                        if res:
+                            hardware_parts.append(res)
+                    except Exception:
+                        pass
+
+                    try:
+                        ps_cmd = ['powershell', '-NoProfile', '-Command', '(Get-CimInstance Win32_Processor).ProcessorId']
+                        res = subprocess.check_output(ps_cmd, timeout=4, **no_window_kwargs()).decode(errors="ignore").strip()
+                        if res:
+                            hardware_parts.append(res)
+                    except Exception:
+                        pass
             elif platform.system() == "Darwin":
                 try:
                     import re as _re
@@ -127,8 +174,11 @@ class HardwareEncryption:
                     pass
 
             if not hardware_parts:
-                hardware_parts.append(platform.node())
-                hardware_parts.append(str(os.getuid()) if hasattr(os, 'getuid') else "0")
+                if reg_hardware_parts:
+                    hardware_parts.extend(reg_hardware_parts)
+                else:
+                    hardware_parts.append(platform.node())
+                    hardware_parts.append(str(os.getuid()) if hasattr(os, 'getuid') else "0")
         except Exception:
             hardware_parts.append(platform.node())
             hardware_parts.append(platform.machine())
@@ -147,24 +197,36 @@ class HardwareEncryption:
 
         primary_string = "-".join(primary_identifiers)
 
-        candidate_strings = [primary_string]
-        if backup_guid and backup_guid != chosen_guid:
-            candidate_strings.append("-".join(list(hardware_parts) + [backup_guid]))
-        if registry_guid and registry_guid != chosen_guid:
-            candidate_strings.append("-".join(list(hardware_parts) + [registry_guid]))
-        candidate_strings.append("-".join(hardware_parts))
-        candidate_strings.append(f"{platform.node()}-{platform.machine()}")
-        candidate_strings.append(platform.node())
+        if include_slow_probes:
+            candidate_strings = [primary_string]
+            if backup_guid and backup_guid != chosen_guid:
+                candidate_strings.append("-".join(list(hardware_parts) + [backup_guid]))
+            if registry_guid and registry_guid != chosen_guid:
+                candidate_strings.append("-".join(list(hardware_parts) + [registry_guid]))
+            candidate_strings.append("-".join(hardware_parts))
+            if reg_hardware_parts and reg_hardware_parts != hardware_parts:
+                if chosen_guid:
+                    candidate_strings.append("-".join(list(reg_hardware_parts) + [chosen_guid]))
+                candidate_strings.append("-".join(reg_hardware_parts))
+            node_uid = [platform.node(), str(os.getuid()) if hasattr(os, 'getuid') else "0"]
+            if chosen_guid:
+                candidate_strings.append("-".join(node_uid + [chosen_guid]))
+            candidate_strings.append("-".join(node_uid))
+            candidate_strings.append(f"{platform.node()}-{platform.machine()}")
+            candidate_strings.append(platform.node())
 
-        self.candidate_keys = []
-        for ms in candidate_strings:
-            mid = hashlib.sha256(ms.encode()).hexdigest()
-            k1 = self._derive_key_from_machine_id(mid)
-            if k1 not in self.candidate_keys:
-                self.candidate_keys.append(k1)
-            k2 = PBKDF2(mid, b'roblox_account_manager_salt_v1', dkLen=32, count=100000)
-            if k2 not in self.candidate_keys:
-                self.candidate_keys.append(k2)
+            self.candidate_keys = []
+            for ms in candidate_strings:
+                mid = hashlib.sha256(ms.encode()).hexdigest()
+                k1 = self._derive_key_from_machine_id(mid)
+                if k1 not in self.candidate_keys:
+                    self.candidate_keys.append(k1)
+                    self._key_to_mid[k1] = mid
+                k2 = PBKDF2(mid, b'roblox_account_manager_salt_v1', dkLen=32, count=100000)
+                if k2 not in self.candidate_keys:
+                    self.candidate_keys.append(k2)
+                    self._key_to_mid[k2] = mid
+            HardwareEncryption._CACHED_CANDIDATE_KEYS = list(self.candidate_keys)
 
         return hashlib.sha256(primary_string.encode()).hexdigest()
     
@@ -204,15 +266,43 @@ class HardwareEncryption:
         except Exception as e:
             raise Exception(f"Decryption package invalid: {str(e)}")
 
-        keys_to_try = [self.key] + [k for k in self.candidate_keys if k != self.key]
+        # Fast path: try primary cached/stored key first without spawning subprocesses
+        try:
+            cipher = AES.new(self.key, AES.MODE_GCM, nonce=nonce)
+            data_bytes = cipher.decrypt_and_verify(ciphertext, tag)
+            data_string = data_bytes.decode('utf-8')
+            try:
+                return json.loads(data_string)
+            except (json.JSONDecodeError, ValueError):
+                return data_string
+        except Exception:
+            pass
+
+        # Fallback path: lazily compute candidate keys (including legacy WMI probes) only when needed
+        if len(self.candidate_keys) <= 1:
+            if HardwareEncryption._CACHED_CANDIDATE_KEYS:
+                self.candidate_keys = list(HardwareEncryption._CACHED_CANDIDATE_KEYS)
+            else:
+                self._get_machine_id(include_slow_probes=True)
+
+        keys_to_try = [k for k in self.candidate_keys if k != self.key]
 
         for k in keys_to_try:
             try:
                 cipher = AES.new(k, AES.MODE_GCM, nonce=nonce)
                 data_bytes = cipher.decrypt_and_verify(ciphertext, tag)
                 data_string = data_bytes.decode('utf-8')
-                if k != self.key:
-                    self.key = k
+                self.key = k
+                HardwareEncryption._CACHED_KEY = k
+                matched_mid = self._key_to_mid.get(k)
+                if matched_mid:
+                    self.machine_id = matched_mid
+                    HardwareEncryption._CACHED_MACHINE_ID = matched_mid
+                    if self.config and hasattr(self.config, 'set_hardware_machine_id'):
+                        try:
+                            self.config.set_hardware_machine_id(matched_mid)
+                        except Exception:
+                            pass
                 try:
                     return json.loads(data_string)
                 except (json.JSONDecodeError, ValueError):
@@ -356,13 +446,25 @@ class EncryptionConfig:
             self.config['hardware_guid'] = str(guid).strip()
             self.save_config()
 
-    def enable_hardware_encryption(self, hardware_guid=None):
+    def get_hardware_machine_id(self):
+        """Get stored derived hardware machine ID hash"""
+        return self.config.get('hardware_machine_id', None)
+
+    def set_hardware_machine_id(self, machine_id):
+        """Set stored derived hardware machine ID hash"""
+        if machine_id:
+            self.config['hardware_machine_id'] = str(machine_id).strip()
+            self.save_config()
+
+    def enable_hardware_encryption(self, hardware_guid=None, hardware_machine_id=None):
         """Enable hardware-based encryption"""
         self.config['encryption_enabled'] = True
         self.config['encryption_method'] = 'hardware'
         self.config['no_encryption_chosen'] = False
         if hardware_guid:
             self.config['hardware_guid'] = str(hardware_guid).strip()
+        if hardware_machine_id:
+            self.config['hardware_machine_id'] = str(hardware_machine_id).strip()
         if 'salt' in self.config:
             del self.config['salt']
         if 'password_hash' in self.config:
@@ -381,6 +483,8 @@ class EncryptionConfig:
         self.config['no_encryption_chosen'] = False  
         if 'hardware_guid' in self.config:
             del self.config['hardware_guid']
+        if 'hardware_machine_id' in self.config:
+            del self.config['hardware_machine_id']
         self.save_config()
     
     def is_no_encryption_chosen(self):
@@ -398,5 +502,7 @@ class EncryptionConfig:
             del self.config['password_hash']
         if 'hardware_guid' in self.config:
             del self.config['hardware_guid']
+        if 'hardware_machine_id' in self.config:
+            del self.config['hardware_machine_id']
         self.save_config()
 

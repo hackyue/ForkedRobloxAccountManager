@@ -474,6 +474,35 @@ function showLoaderError(reason: string): void {
     }
     if (tracebackBtn) {
       tracebackBtn.onclick = async () => {
+        let diagText = '';
+        try {
+          const diag = await apiService.getBackendDiagnostics();
+          if (diag) {
+            const sections: string[] = [];
+            sections.push('=== Backend Diagnostics ===');
+            sections.push(`Launcher PID: ${diag.launcher_pid}`);
+            sections.push(`Executable: ${diag.exe_path}`);
+            sections.push(`App Directory: ${diag.app_dir}`);
+            sections.push(`Port 5050 Open: ${diag.port_open}`);
+            sections.push(`Backend Healthy: ${diag.backend_healthy}`);
+            sections.push(`Backend Start Status: ${diag.status_started} (${diag.status_reason})`);
+            sections.push(`API Token Present: ${diag.token_present}`);
+            if (diag.backend_pid_info) {
+              sections.push(`Recorded PID Info: ${diag.backend_pid_info.trim()}`);
+            }
+            if (diag.backend_err_log) {
+              sections.push(`\n=== backend_err.log ===\n${diag.backend_err_log}`);
+            }
+            if (diag.backend_log) {
+              sections.push(`\n=== backend.log ===\n${diag.backend_log}`);
+            }
+            if (diag.launcher_log) {
+              sections.push(`\n=== launcher.log ===\n${diag.launcher_log}`);
+            }
+            diagText = sections.join('\n');
+          }
+        } catch (_) { }
+
         try {
           const lastErr = await apiService.getLastError();
           if (lastErr && lastErr.has_error) {
@@ -481,17 +510,18 @@ function showLoaderError(reason: string): void {
               title: lastErr.title || 'Backend Error Traceback',
               exception_name: lastErr.exception_name || 'Exception',
               exception_message: lastErr.exception_message || reason,
-              traceback: lastErr.traceback || reason,
+              traceback: diagText ? `${lastErr.traceback || reason}\n\n${diagText}` : (lastErr.traceback || reason),
               github_issue_url: lastErr.github_issue_url
             });
             return;
           }
         } catch (_) { }
+
         showTracebackModal({
-          title: 'Error Traceback',
+          title: 'Error Traceback & Diagnostics',
           exception_name: 'Launch Error',
           exception_message: reason,
-          traceback: `Error: ${reason}`
+          traceback: diagText ? `${diagText}\n\nError: ${reason}` : `Error: ${reason}`
         });
       };
     }

@@ -1,12 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::fs;
-use std::net::TcpStream;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::{CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem};
 
@@ -24,15 +25,102 @@ struct BackendStatus {
     reason: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct BackendDiagnostics {
+    app_dir: String,
+    exe_path: String,
+    launcher_pid: u32,
+    port_open: bool,
+    backend_healthy: bool,
+    status_started: bool,
+    status_reason: String,
+    token_present: bool,
+    backend_pid_info: String,
+    launcher_log: String,
+    backend_log: String,
+    backend_err_log: String,
+}
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-fn is_backend_running() -> bool {
+fn log_launcher(app_dir: &Path, level: &str, msg: &str) {
+    let logs_dir = app_dir.join("logs");
+    let _ = fs::create_dir_all(&logs_dir);
+    let log_file = logs_dir.join("launcher.log");
+
+    if let Ok(meta) = fs::metadata(&log_file) {
+        if meta.len() > 2_000_000 {
+            let backup_file = logs_dir.join("launcher.prev.log");
+            let _ = fs::rename(&log_file, &backup_file);
+        }
+    }
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let secs = (now_ms / 1000) % 86400;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    let ms = now_ms % 1000;
+
+    let line = format!(
+        "[{:02}:{:02}:{:02}.{:03}] [PID:{}] [{}] {}\n",
+        h,
+        m,
+        s,
+        ms,
+        std::process::id(),
+        level,
+        msg
+    );
+
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_file) {
+        let _ = f.write_all(line.as_bytes());
+        let _ = f.flush();
+    }
+}
+
+fn is_port_open() -> bool {
     TcpStream::connect_timeout(
         &"127.0.0.1:5050".parse().unwrap(),
-        Duration::from_millis(500),
+        Duration::from_millis(400),
     )
     .is_ok()
+}
+
+fn is_backend_healthy() -> bool {
+    let addr = match "127.0.0.1:5050".parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+
+    let req = b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:5050\r\nConnection: close\r\n\r\n";
+    if stream.write_all(req).is_err() {
+        return false;
+    }
+    let _ = stream.flush();
+
+    let mut buf = [0u8; 2048];
+    let n = match stream.read(&mut buf) {
+        Ok(n) if n > 0 => n,
+        _ => return false,
+    };
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    (resp.contains("200 OK") || resp.contains("200 ")) && resp.contains("\"healthy\"")
+}
+
+#[allow(dead_code)]
+fn is_backend_running() -> bool {
+    is_backend_healthy() || is_port_open()
 }
 
 fn is_valid_backend_exe(path: &Path) -> bool {
@@ -196,29 +284,199 @@ fn find_python_executable(base_dirs: &[PathBuf]) -> Vec<PathBuf> {
 
 fn find_backend_executable(search_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    let mut seen_canonical = Vec::new();
     #[cfg(target_os = "windows")]
     let exe_names = ["backend.exe", "FRAMBackend.exe", "fram_backend.exe"];
     #[cfg(not(target_os = "windows"))]
     let exe_names = ["backend", "FRAMBackend", "fram_backend", "backend.exe"];
 
     for dir in search_dirs {
-        for name in &exe_names {
-            let path = dir.join(name);
-            if is_valid_backend_exe(&path) {
-                candidates.push(path);
-            }
-        }
-
-        let res_dir = dir.join("resources");
-        for name in &exe_names {
-            let path = res_dir.join(name);
-            if is_valid_backend_exe(&path) {
-                candidates.push(path);
+        for sub in [dir.clone(), dir.join("resources")] {
+            for name in &exe_names {
+                let path = sub.join(name);
+                if is_valid_backend_exe(&path) {
+                    let canon = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    if !seen_canonical.contains(&canon) {
+                        seen_canonical.push(canon);
+                        candidates.push(path);
+                    }
+                }
             }
         }
     }
 
     candidates
+}
+
+fn generate_api_token() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    let addr = (&nanos as *const u128) as usize;
+    format!("fram_{:x}_{:x}_{:x}", nanos, pid, addr)
+}
+
+fn send_shutdown_http(token: &str) -> bool {
+    let addr = match "127.0.0.1:5050".parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(400)) {
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(400)));
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+        let req = format!(
+            "POST /api/system/shutdown HTTP/1.1\r\nHost: 127.0.0.1:5050\r\nX-FRAM-Token: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            token
+        );
+        if stream.write_all(req.as_bytes()).is_ok() {
+            let _ = stream.flush();
+            let _ = stream.shutdown(Shutdown::Write);
+            let mut resp_buf = [0u8; 256];
+            let _ = stream.read(&mut resp_buf);
+            return true;
+        }
+    }
+    false
+}
+
+fn force_kill_pid_tree(app_dir: &Path, pid: u32, label: &str) {
+    if pid <= 1 || pid == std::process::id() {
+        return;
+    }
+    log_launcher(app_dir, "INFO", &format!("Terminating {} process tree (PID={})", label, pid));
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(out) = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            log_launcher(
+                app_dir,
+                "INFO",
+                &format!("taskkill PID={} status={} stdout='{}' stderr='{}'", pid, out.status, stdout, stderr),
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = Command::new("pkill")
+            .args(["-P", &pid.to_string()])
+            .output();
+        let _ = Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+    }
+}
+
+fn cleanup_stale_backend(app_dir: &Path) -> bool {
+    let pid_file = app_dir.join("data").join(".backend_pid");
+    let current_launcher_pid = std::process::id().to_string();
+
+    let mut recorded_pid: Option<u32> = None;
+    let mut recorded_ppid: Option<u32> = None;
+    let mut recorded_parent_pid: Option<String> = None;
+
+    if let Ok(raw) = fs::read_to_string(&pid_file) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+            recorded_pid = val.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32);
+            recorded_ppid = val.get("ppid").and_then(|v| v.as_u64()).map(|v| v as u32);
+            recorded_parent_pid = val
+                .get("parent_pid")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
+    }
+
+    let port_open = is_port_open();
+    let healthy = if port_open { is_backend_healthy() } else { false };
+
+    let is_orphaned_from_previous_launcher = match &recorded_parent_pid {
+        Some(pp) => pp != &current_launcher_pid,
+        None => false,
+    };
+
+    // If a healthy external dev backend is running (no FRAM_PARENT_PID set) and we have or can fetch its token, reuse it
+    if healthy && !is_orphaned_from_previous_launcher && recorded_parent_pid.is_none() {
+        log_launcher(
+            app_dir,
+            "INFO",
+            "Detected healthy external backend on port 5050 without FRAM_PARENT_PID; reusing instance.",
+        );
+        return true;
+    }
+
+    if !port_open && recorded_pid.is_none() {
+        return false;
+    }
+
+    log_launcher(
+        app_dir,
+        "WARN",
+        &format!(
+            "Cleaning up stale/previous backend state (port_open={}, healthy={}, recorded_pid={:?}, recorded_ppid={:?}, recorded_parent_pid={:?})",
+            port_open, healthy, recorded_pid, recorded_ppid, recorded_parent_pid
+        ),
+    );
+
+    if port_open {
+        let existing_token = read_auth_token(app_dir);
+        if send_shutdown_http(&existing_token) {
+            for _ in 0..25 {
+                std::thread::sleep(Duration::from_millis(50));
+                if !is_port_open() {
+                    break;
+                }
+            }
+        }
+    }
+
+    if let Some(p) = recorded_pid {
+        force_kill_pid_tree(app_dir, p, "recorded backend");
+    }
+    if let Some(pp) = recorded_ppid {
+        if Some(pp) != recorded_pid {
+            force_kill_pid_tree(app_dir, pp, "recorded backend bootloader");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    if is_port_open() {
+        log_launcher(app_dir, "WARN", "Port 5050 still occupied; running taskkill /F /T /IM backend.exe");
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/IM", "backend.exe"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+
+    let _ = fs::remove_file(&pid_file);
+
+    for _ in 0..40 {
+        if !is_port_open() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    false
+}
+
+fn read_tail_file(path: &Path, max_lines: usize) -> String {
+    if let Ok(content) = fs::read_to_string(path) {
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<&str> = trimmed.lines().collect();
+        let start = if lines.len() > max_lines { lines.len() - max_lines } else { 0 };
+        return lines[start..].join("\n");
+    }
+    String::new()
 }
 
 fn get_root_app_dir() -> PathBuf {
@@ -266,12 +524,34 @@ fn get_root_app_dir() -> PathBuf {
 }
 
 fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
-    if is_backend_running() {
-        return (None, BackendStatus { started: true, reason: "Backend already running".to_string() });
+    let parent_pid = std::process::id().to_string();
+    log_launcher(
+        app_dir,
+        "INFO",
+        &format!("start_backend_if_needed called (launcher_pid={})", parent_pid),
+    );
+
+    let already_running = cleanup_stale_backend(app_dir);
+    if already_running && is_backend_healthy() {
+        log_launcher(app_dir, "INFO", "Reusing healthy existing backend instance on port 5050");
+        return (
+            None,
+            BackendStatus {
+                started: true,
+                reason: "Backend already running (healthy)".to_string(),
+            },
+        );
     }
 
     let stale_token_path = app_dir.join("data").join(".api_token");
-    let _ = fs::remove_file(&stale_token_path);
+    let mut initial_token = read_auth_token(app_dir);
+    if initial_token.is_empty() {
+        initial_token = generate_api_token();
+        if let Ok(mut tf) = fs::File::create(&stale_token_path) {
+            let _ = tf.write_all(initial_token.as_bytes());
+            let _ = tf.flush();
+        }
+    }
 
     let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new("."));
@@ -297,10 +577,28 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
     ];
 
     let backend_exe_candidates = find_backend_executable(&exe_search_dirs);
+    log_launcher(
+        app_dir,
+        "INFO",
+        &format!("Found {} candidate backend binaries", backend_exe_candidates.len()),
+    );
+
     for be_exe in &backend_exe_candidates {
         if is_valid_backend_exe(be_exe) {
+            log_launcher(app_dir, "INFO", &format!("Attempting to spawn standalone backend: {}", be_exe.display()));
+
+            #[cfg(target_os = "windows")]
+            {
+                let ads_path = format!("{}:Zone.Identifier", be_exe.display());
+                let _ = fs::remove_file(ads_path);
+            }
+
             let mut cmd = Command::new(be_exe);
+            cmd.current_dir(app_dir);
             cmd.env("FRAM_APP_DIR", app_dir.to_str().unwrap_or_default());
+            cmd.env("FRAM_PARENT_PID", &parent_pid);
+            cmd.env("FRAM_API_TOKEN", &initial_token);
+            cmd.env("PYTHONUNBUFFERED", "1");
 
             if let Ok(out_f) = fs::File::create(&log_path) {
                 cmd.stdout(Stdio::from(out_f));
@@ -314,28 +612,63 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
 
             match cmd.spawn() {
                 Ok(mut child) => {
+                    let child_id = child.id();
+                    log_launcher(
+                        app_dir,
+                        "INFO",
+                        &format!("Spawned backend process (PID={}); waiting for /api/health...", child_id),
+                    );
                     let mut crashed = false;
-                    for _ in 0..200 {
+                    // Wait up to 20 seconds (400 * 50ms) for startup
+                    for i in 0..400 {
                         std::thread::sleep(Duration::from_millis(50));
-                        if is_backend_running() {
-                            return (Some(child), BackendStatus { started: true, reason: "Backend started successfully (standalone)".to_string() });
+                        if is_backend_healthy() {
+                            log_launcher(
+                                app_dir,
+                                "INFO",
+                                &format!("Backend healthy after approx {}ms (PID={})", (i + 1) * 50, child_id),
+                            );
+                            return (
+                                Some(child),
+                                BackendStatus {
+                                    started: true,
+                                    reason: "Backend started successfully (standalone)".to_string(),
+                                },
+                            );
                         }
-                        if let Ok(Some(_)) = child.try_wait() {
+                        if let Ok(Some(status)) = child.try_wait() {
+                            log_launcher(
+                                app_dir,
+                                "ERROR",
+                                &format!("Backend process PID={} exited early with status: {:?}", child_id, status),
+                            );
                             crashed = true;
                             break;
                         }
                     }
                     if !crashed {
-                        if is_backend_running() {
-                            return (Some(child), BackendStatus { started: true, reason: "Backend started successfully (standalone)".to_string() });
-                        }
+                        log_launcher(
+                            app_dir,
+                            "ERROR",
+                            &format!("Backend process PID={} timed out after 20s without becoming healthy", child_id),
+                        );
+                        force_kill_pid_tree(app_dir, child_id, "timed-out backend");
                         let _ = child.kill();
                     }
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    log_launcher(
+                        app_dir,
+                        "ERROR",
+                        &format!("Failed to spawn backend binary {}: {}", be_exe.display(), e),
+                    );
+                    continue;
+                }
             }
         }
     }
+
+    log_launcher(app_dir, "WARN", "Standalone backend candidates failed; checking for Python app.py script fallback");
 
     let possible_paths = [
         exe_dir.join("backend").join("app.py"),
@@ -368,7 +701,12 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
             } else {
                 format!("Standalone backend failed to start ({}) and backend/app.py was not found.", err_detail)
             };
-            let _ = fs::write(&log_path, format!("Error: {}", msg));
+            log_launcher(app_dir, "ERROR", &msg);
+            let _ = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .and_then(|mut f| f.write_all(format!("\nError: {}\n", msg).as_bytes()));
             return (None, BackendStatus { started: false, reason: msg });
         }
     };
@@ -377,16 +715,28 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
     let base_dirs = vec![exe_dir.to_path_buf(), cur_dir.to_path_buf(), script_parent.to_path_buf()];
     let python_candidates = find_python_executable(&base_dirs);
 
+    let fallback_log_path = app_dir.join("logs").join("backend_fallback.log");
+    let fallback_err_log_path = app_dir.join("logs").join("backend_fallback_err.log");
+
     for py_exe in &python_candidates {
+        log_launcher(
+            app_dir,
+            "INFO",
+            &format!("Attempting to spawn Python fallback: {} {}", py_exe.display(), target_script.display()),
+        );
+
         let mut cmd = Command::new(py_exe);
         cmd.arg(&target_script);
         cmd.current_dir(script_parent);
         cmd.env("FRAM_APP_DIR", app_dir.to_str().unwrap_or_default());
+        cmd.env("FRAM_PARENT_PID", &parent_pid);
+        cmd.env("FRAM_API_TOKEN", &initial_token);
+        cmd.env("PYTHONUNBUFFERED", "1");
 
-        if let Ok(out_f) = fs::File::create(&log_path) {
+        if let Ok(out_f) = fs::File::create(&fallback_log_path) {
             cmd.stdout(Stdio::from(out_f));
         }
-        if let Ok(err_f) = fs::File::create(&err_log_path) {
+        if let Ok(err_f) = fs::File::create(&fallback_err_log_path) {
             cmd.stderr(Stdio::from(err_f));
         }
 
@@ -395,41 +745,66 @@ fn start_backend_if_needed(app_dir: &Path) -> (Option<Child>, BackendStatus) {
 
         match cmd.spawn() {
             Ok(mut child) => {
+                let child_id = child.id();
                 let mut crashed = false;
-                for _ in 0..160 {
+                for i in 0..300 {
                     std::thread::sleep(Duration::from_millis(50));
-                    if is_backend_running() {
-                        return (Some(child), BackendStatus { started: true, reason: "Backend started successfully".to_string() });
+                    if is_backend_healthy() {
+                        log_launcher(
+                            app_dir,
+                            "INFO",
+                            &format!("Python fallback backend healthy after {}ms (PID={})", (i + 1) * 50, child_id),
+                        );
+                        return (
+                            Some(child),
+                            BackendStatus {
+                                started: true,
+                                reason: "Backend started successfully (Python fallback)".to_string(),
+                            },
+                        );
                     }
-                    if let Ok(Some(_)) = child.try_wait() {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        log_launcher(
+                            app_dir,
+                            "ERROR",
+                            &format!("Python fallback PID={} exited early with status: {:?}", child_id, status),
+                        );
                         crashed = true;
                         break;
                     }
                 }
                 if !crashed {
-                    if is_backend_running() {
-                        return (Some(child), BackendStatus { started: true, reason: "Backend started successfully".to_string() });
-                    }
+                    force_kill_pid_tree(app_dir, child_id, "timed-out python backend");
                     let _ = child.kill();
                 }
             }
-            Err(_) => continue,
+            Err(e) => {
+                log_launcher(
+                    app_dir,
+                    "ERROR",
+                    &format!("Failed to spawn python interpreter {}: {}", py_exe.display(), e),
+                );
+                continue;
+            }
         }
     }
 
     let err_detail = read_recent_error_log(&err_log_path, &log_path);
-    if !python_candidates.is_empty() && !err_detail.is_empty() {
-        return (
-            None,
-            BackendStatus {
-                started: false,
-                reason: format!("Backend process exited before binding port 5050: {}", err_detail),
-            },
-        );
-    }
+    let fallback_detail = read_recent_error_log(&fallback_err_log_path, &fallback_log_path);
+    let combined_detail = if !fallback_detail.is_empty() {
+        fallback_detail
+    } else {
+        err_detail
+    };
 
-    let _ = fs::write(&log_path, "Error: Could not find backend binary or a working Python executable on host system.");
-    (None, BackendStatus { started: false, reason: "Backend failed to start. Ensure Python 3.8+ with required packages (pip install -r backend/requirements.txt) or the bundled backend executable is present.".to_string() })
+    let reason_msg = if !combined_detail.is_empty() {
+        format!("Backend process failed to start or bind port 5050: {}", combined_detail)
+    } else {
+        "Backend failed to start. Ensure Windows Defender or security software has not blocked backend.exe or port 5050.".to_string()
+    };
+
+    log_launcher(app_dir, "ERROR", &reason_msg);
+    (None, BackendStatus { started: false, reason: reason_msg })
 }
 
 #[tauri::command]
@@ -490,14 +865,49 @@ fn read_auth_token(app_dir: &Path) -> String {
 
 #[tauri::command]
 fn get_backend_status(state: tauri::State<BackendStartStatus>) -> Result<BackendStatus, String> {
-    if is_backend_running() {
+    if is_backend_healthy() {
         return Ok(BackendStatus {
             started: true,
-            reason: "Backend running".to_string(),
+            reason: "Backend running and healthy".to_string(),
         });
     }
     let lock = state.0.lock().map_err(|e| e.to_string())?;
     Ok(lock.clone())
+}
+
+#[tauri::command]
+fn get_backend_diagnostics(
+    status_state: tauri::State<BackendStartStatus>,
+) -> Result<BackendDiagnostics, String> {
+    let app_dir = get_root_app_dir();
+    let log_path = app_dir.join("logs").join("backend.log");
+    let err_log_path = app_dir.join("logs").join("backend_err.log");
+    let launcher_log_path = app_dir.join("logs").join("launcher.log");
+    let pid_path = app_dir.join("data").join(".backend_pid");
+
+    let (started, reason) = if let Ok(lock) = status_state.0.lock() {
+        (lock.started, lock.reason.clone())
+    } else {
+        (false, "Lock error".to_string())
+    };
+
+    let pid_info = fs::read_to_string(&pid_path).unwrap_or_default();
+    let token = read_auth_token(&app_dir);
+
+    Ok(BackendDiagnostics {
+        app_dir: app_dir.to_string_lossy().to_string(),
+        exe_path: std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+        launcher_pid: std::process::id(),
+        port_open: is_port_open(),
+        backend_healthy: is_backend_healthy(),
+        status_started: started,
+        status_reason: reason,
+        token_present: !token.is_empty(),
+        backend_pid_info: pid_info,
+        launcher_log: read_tail_file(&launcher_log_path, 80),
+        backend_log: read_tail_file(&log_path, 80),
+        backend_err_log: read_tail_file(&err_log_path, 80),
+    })
 }
 
 #[tauri::command]
@@ -507,11 +917,14 @@ async fn relaunch_backend(
     auth_token_state: tauri::State<'_, AuthToken>,
     status_state: tauri::State<'_, BackendStartStatus>,
 ) -> Result<BackendStatus, String> {
+    let app_dir = get_root_app_dir();
+    log_launcher(&app_dir, "INFO", "relaunch_backend command invoked");
+
     shutdown_backend_process(&app_handle);
     SHUTDOWN_CALLED.store(false, Ordering::SeqCst);
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(400));
+    cleanup_stale_backend(&app_dir);
 
-    let app_dir = get_root_app_dir();
     let (child, backend_status) = start_backend_if_needed(&app_dir);
 
     if let Ok(mut lock) = process_state.0.lock() {
@@ -552,7 +965,7 @@ async fn get_api_token(
         return Ok(current_token);
     }
 
-    if !is_backend_running() {
+    if !is_port_open() {
         return Ok(String::new());
     }
 
@@ -584,18 +997,15 @@ async fn python_backend_request(
     let log_path = app_dir.join("logs").join("backend.log");
     let err_log_path = app_dir.join("logs").join("backend_err.log");
 
-    if !is_backend_running() {
+    if !is_port_open() {
         let err_detail = read_recent_error_log(&err_log_path, &log_path);
-        if !err_detail.is_empty() {
-            return Err(format!(
-                "Python backend is not running on port 5050 ({})",
-                err_detail
-            ));
-        }
-        return Err(format!(
-            "Python backend is not running on port 5050. Check {}",
-            err_log_path.display()
-        ));
+        let msg = if !err_detail.is_empty() {
+            format!("Python backend is not running on port 5050 ({})", err_detail)
+        } else {
+            format!("Python backend is not running on port 5050. Check logs at {}", err_log_path.display())
+        };
+        log_launcher(&app_dir, "WARN", &format!("Request {} {} rejected: backend not listening on port 5050", method, endpoint));
+        return Err(msg);
     }
 
     let mut token = {
@@ -659,6 +1069,7 @@ async fn python_backend_request(
     let mut response = send_req(token.clone()).await;
 
     if let Ok(ref resp) = response {
+        // Only refresh token on 401 Unauthorized if it's an actual token rejection (not vault lock)
         if resp.status() == 401 {
             let mut new_token = read_auth_token(&app_dir);
             if new_token.is_empty() || new_token == token {
@@ -670,7 +1081,7 @@ async fn python_backend_request(
                     }
                 }
             }
-            if !new_token.is_empty() {
+            if !new_token.is_empty() && new_token != token {
                 if let Ok(mut lock) = state.0.lock() {
                     *lock = new_token.clone();
                 }
@@ -685,7 +1096,8 @@ async fn python_backend_request(
             Ok(text)
         }
         Err(e) => {
-            Err(format!("Failed to connect to Python backend on port 5050: {}. Check {}.", e, err_log_path.display()))
+            log_launcher(&app_dir, "ERROR", &format!("HTTP request error for {} {}: {}", method, endpoint, e));
+            Err(format!("Failed to connect to Python backend on port 5050: {}. Check logs at {}.", e, err_log_path.display()))
         }
     }
 }
@@ -697,40 +1109,48 @@ fn shutdown_backend_process(app_handle: &tauri::AppHandle) {
         return;
     }
 
+    let app_dir = get_root_app_dir();
+    log_launcher(&app_dir, "INFO", "shutdown_backend_process initiated");
+
     let token = {
         if let Some(token_state) = app_handle.try_state::<AuthToken>() {
             if let Ok(lock) = token_state.0.lock() {
                 lock.clone()
             } else {
-                String::new()
+                read_auth_token(&app_dir)
             }
         } else {
-            String::new()
+            read_auth_token(&app_dir)
         }
     };
 
-    if let Ok(mut stream) = TcpStream::connect_timeout(
-        &"127.0.0.1:5050".parse().unwrap(),
-        Duration::from_millis(300),
-    ) {
-        use std::io::Write;
-        let req = format!(
-            "POST /api/system/shutdown HTTP/1.1\r\nHost: 127.0.0.1:5050\r\nX-FRAM-Token: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            token
-        );
-        let _ = stream.write_all(req.as_bytes());
+    // 1. Send graceful shutdown request and wait for it
+    if is_port_open() {
+        let sent = send_shutdown_http(&token);
+        log_launcher(&app_dir, "INFO", &format!("Sent HTTP shutdown signal (delivered={})", sent));
     }
 
+    // 2. Read recorded backend PID from .backend_pid before child is killed
+    let pid_file = app_dir.join("data").join(".backend_pid");
+    let mut recorded_child_pid: Option<u32> = None;
+    if let Ok(raw) = fs::read_to_string(&pid_file) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+            recorded_child_pid = val.get("pid").and_then(|v| v.as_u64()).map(|v| v as u32);
+        }
+    }
+
+    // 3. Give process a brief moment to exit cleanly
+    let mut exited = false;
     if let Some(be_state) = app_handle.try_state::<BackendProcess>() {
         let mut child_proc = None;
         if let Ok(mut lock) = be_state.0.lock() {
             child_proc = lock.take();
         }
         if let Some(mut child) = child_proc {
-            let mut exited = false;
-            for _ in 0..50 {
+            for _ in 0..40 {
                 match child.try_wait() {
-                    Ok(Some(_)) => {
+                    Ok(Some(status)) => {
+                        log_launcher(&app_dir, "INFO", &format!("Child backend exited cleanly with status: {:?}", status));
                         exited = true;
                         break;
                     }
@@ -745,27 +1165,54 @@ fn shutdown_backend_process(app_handle: &tauri::AppHandle) {
 
             if !exited {
                 let pid = child.id();
-                #[cfg(not(target_os = "windows"))]
-                {
-                    let _ = Command::new("pkill")
-                        .args(["-P", &pid.to_string()])
-                        .output();
-                }
-                let _ = child.kill();
+                log_launcher(&app_dir, "WARN", &format!("Backend child PID={} did not exit cleanly; terminating tree...", pid));
+
                 #[cfg(target_os = "windows")]
                 {
-                    let _ = Command::new("taskkill")
-                        .args(["/F", "/T", "/PID", &pid.to_string()])
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output();
+                    // CRITICAL: On Windows with PyInstaller, taskkill must run BEFORE child.kill()
+                    // so the process tree can be traversed and all child processes killed.
+                    force_kill_pid_tree(&app_dir, pid, "spawned child");
                 }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = Command::new("pkill").args(["-P", &pid.to_string()]).output();
+                    let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+                }
+
+                let _ = child.kill();
             }
         }
     }
+
+    // 4. Also kill the recorded Python worker PID if PyInstaller spawned a separate worker
+    if let Some(wpid) = recorded_child_pid {
+        force_kill_pid_tree(&app_dir, wpid, "recorded worker");
+    }
+
+    // 5. Clean up stale pid and token files
+    let _ = fs::remove_file(&pid_file);
+    let _ = fs::remove_file(app_dir.join("data").join(".api_token"));
+
+    // 6. Wait for port 5050 to close
+    for _ in 0..30 {
+        if !is_port_open() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    log_launcher(&app_dir, "INFO", "shutdown_backend_process completed");
 }
 
 fn main() {
     let app_dir = get_root_app_dir();
+    log_launcher(
+        &app_dir,
+        "INFO",
+        &format!("=== FRAM Starting (PID={}, OS={}) ===", std::process::id(), std::env::consts::OS),
+    );
+
     let (child, backend_status) = start_backend_if_needed(&app_dir);
     let token = read_auth_token(&app_dir);
     let http_client = reqwest::Client::builder()
@@ -821,6 +1268,7 @@ fn main() {
             python_backend_request,
             get_api_token,
             get_backend_status,
+            get_backend_diagnostics,
             relaunch_backend
         ])
         .on_window_event(|event| match event.event() {
