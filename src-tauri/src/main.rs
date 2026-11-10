@@ -111,12 +111,12 @@ fn is_backend_healthy_at(port: u16) -> bool {
         Ok(a) => a,
         Err(_) => return false,
     };
-    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(250)) {
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(400)) {
         Ok(s) => s,
         Err(_) => return false,
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
 
     let req = format!(
         "GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
@@ -127,13 +127,31 @@ fn is_backend_healthy_at(port: u16) -> bool {
     }
     let _ = stream.flush();
 
-    let mut buf = [0u8; 2048];
-    let n = match stream.read(&mut buf) {
-        Ok(n) if n > 0 => n,
-        _ => return false,
-    };
-    let resp = String::from_utf8_lossy(&buf[..n]);
-    (resp.contains("200 OK") || resp.contains("200 ")) && resp.contains("\"healthy\"")
+    let mut total_buf = Vec::with_capacity(2048);
+    let mut chunk = [0u8; 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                total_buf.extend_from_slice(&chunk[..n]);
+                let partial = String::from_utf8_lossy(&total_buf);
+                if (partial.contains("200 OK") || partial.contains("200 "))
+                    && (partial.contains("\"healthy\"") || partial.contains("\"status\""))
+                {
+                    return true;
+                }
+                if total_buf.len() >= 8192 {
+                    break;
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+
+    let resp = String::from_utf8_lossy(&total_buf);
+    (resp.contains("200 OK") || resp.contains("200 "))
+        && (resp.contains("\"healthy\"") || resp.contains("\"status\"") || resp.contains("application/json"))
 }
 
 fn sync_port_from_pid_file(app_dir: &Path) {
@@ -1216,10 +1234,7 @@ async fn python_backend_request(
 
     let wait_start = Instant::now();
     while BACKEND_INITIALIZING.load(Ordering::SeqCst) && wait_start.elapsed() < Duration::from_secs(16) {
-        if is_port_open() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
     }
 
     sync_port_from_pid_file(&app_dir);
