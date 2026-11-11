@@ -441,8 +441,13 @@ def _rejoin_launch_callback(session, attempt_number):
         return False
     uname = session.username
     place_id = session.place_id
-    p_server = session.private_server_link
-    j_server = session.server_job_id
+    rejoin_behavior = str(getattr(session, 'rejoin_launch_behavior', 'rejoin_same_server') or 'rejoin_same_server').strip().lower()
+    if rejoin_behavior == 'rejoin_same_game':
+        p_server = ""
+        j_server = ""
+    else:
+        p_server = session.private_server_link
+        j_server = session.server_job_id
     version = session.version_path
     mode = session.launch_mode
     launch_res = mgr.launch_roblox(
@@ -452,6 +457,7 @@ def _rejoin_launch_callback(session, attempt_number):
         server_job_id=j_server,
         version=version,
         launch_mode=mode,
+        preserve_rejoin_attempts=True,
         return_details=True
     )
     launched = launch_res[0] if isinstance(launch_res, tuple) else launch_res
@@ -463,6 +469,24 @@ def _rejoin_launch_callback(session, attempt_number):
             new_status = "banned" if "banned" in err_lower else "expired"
             update_account_status(uname, new_status)
     if launched:
+        now_ts = time.time()
+        record_launch_event(uname)
+        uname_lower = uname.lower()
+        prev_info = last_launch_info.get(uname_lower, {})
+        last_launch_info[uname_lower] = {
+            'place_id': place_id or prev_info.get('place_id', ''),
+            'server_id': (j_server or p_server) or prev_info.get('server_id', ''),
+            'server_mode': prev_info.get('server_mode', 'jobid' if j_server else 'vip'),
+            'version': version if version is not None else prev_info.get('version'),
+            'launch_mode': mode or prev_info.get('launch_mode', 'game'),
+            'timestamp': now_ts
+        }
+        last_launch_times[uname_lower] = now_ts
+        if auto_arranger.is_enabled():
+            auto_arranger.trigger_delayed_arrange(2.5)
+        if headless_manager.is_enabled():
+            headless_manager.trigger_delayed_headless()
+        invalidate_instances_cache()
         acc_meta = mgr.accounts.get(uname, {}) if mgr and hasattr(mgr, 'accounts') else {}
         p_name = get_place_name(place_id)
         webhook_manager.notify_rejoin(
@@ -2632,7 +2656,12 @@ recent_launches = []
 def record_launch_event(username):
     global recent_launches, last_launch_times
     now = time.time()
-    recent_launches.append({'username': username, 'timestamp': now})
+    recent_launches.append({
+        'id': str(uuid.uuid4()),
+        'username': username,
+        'timestamp': now,
+        'claimed_pid': None,
+    })
     recent_launches = [l for l in recent_launches if now - l['timestamp'] < 180]
     if username:
         last_launch_times[username.lower()] = now
@@ -2640,18 +2669,22 @@ def record_launch_event(username):
 def get_currently_running_usernames():
     running = set()
     try:
+        pid_ctime_list = []
         for proc in psutil.process_iter(['pid', 'name', 'create_time']):
             try:
                 pname = str(proc.info.get('name') or '').lower()
                 if pname not in ('robloxplayerbeta.exe', 'robloxplayerbeta', 'robloxplayer', 'robloxplayer.exe'):
                     continue
-                pid = proc.info['pid']
+                pid = int(proc.info['pid'])
                 creation_time_sec = proc.info.get('create_time') or None
-                acc_info = resolve_pid_account(pid, creation_time_sec)
-                if acc_info and acc_info.get("username"):
-                    running.add(acc_info["username"].lower())
+                pid_ctime_list.append((pid, creation_time_sec))
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
+        if pid_ctime_list:
+            resolved_map = resolve_active_pids_accounts(pid_ctime_list)
+            for acc_info in resolved_map.values():
+                if acc_info and acc_info.get("username"):
+                    running.add(str(acc_info["username"]).lower())
     except Exception:
         pass
     return running
@@ -2722,10 +2755,37 @@ def background_auto_rejoin_worker():
                 if uname_lower in running_usernames:
                     continue
 
+                tracked_pid = info.get('pid')
+                if tracked_pid and _is_roblox_pid(tracked_pid):
+                    continue
+
                 if manager and getattr(manager, 'auto_rejoin_monitor', None):
-                    active_sess = getattr(manager.auto_rejoin_monitor, 'active_sessions', {}).get(uname)
-                    if active_sess and getattr(active_sess, 'rejoin_in_progress', False):
-                        continue
+                    monitor = manager.auto_rejoin_monitor
+                    active_sessions = getattr(monitor, 'active_sessions', {}) or {}
+                    active_sess = active_sessions.get(uname)
+                    if active_sess is None:
+                        for s_uname, s_entry in active_sessions.items():
+                            if str(s_uname).lower() == uname_lower:
+                                active_sess = s_entry
+                                break
+                    if active_sess is not None:
+                        if getattr(active_sess, 'rejoin_in_progress', False):
+                            continue
+                        if getattr(active_sess, 'intentionally_stopped', False):
+                            continue
+                        if getattr(active_sess, 'disabled_reason', ''):
+                            continue
+                        if hasattr(monitor, '_is_manual_stop_active') and monitor._is_manual_stop_active(active_sess.username):
+                            continue
+                        sess_pid = int(getattr(active_sess, 'pid', 0) or 0)
+                        if sess_pid > 0 and _is_roblox_pid(sess_pid):
+                            continue
+                        if (
+                            getattr(monitor, '_running', False)
+                            and getattr(active_sess, 'auto_rejoin', False)
+                            and (getattr(active_sess, 'has_seen_in_game', False) or getattr(active_sess, 'has_seen_process_alive', False))
+                        ):
+                            continue
 
                 place_id = info.get('place_id', '')
                 server_id = info.get('server_id', '')
@@ -2733,11 +2793,14 @@ def background_auto_rejoin_worker():
                 version = info.get('version')
                 launch_mode = info.get('launch_mode', 'game')
 
-                p_server = acc.get('vip_server', '') if behavior == 'rejoin_same_server' else ''
-                if not p_server and server_mode != 'jobid':
-                    p_server = server_id
-
-                j_server = server_id if server_mode == "jobid" else ""
+                if behavior == 'rejoin_same_game':
+                    p_server = ''
+                    j_server = ''
+                else:
+                    p_server = acc.get('vip_server', '')
+                    if not p_server and server_mode != 'jobid':
+                        p_server = server_id
+                    j_server = server_id if server_mode == "jobid" else ""
 
                 try:
                     launch_res = manager.launch_roblox(
@@ -2747,6 +2810,7 @@ def background_auto_rejoin_worker():
                         server_job_id=j_server,
                         version=version,
                         launch_mode=launch_mode,
+                        preserve_rejoin_attempts=True,
                         return_details=True
                     )
                     launched = launch_res[0] if isinstance(launch_res, tuple) else launch_res
@@ -2758,8 +2822,12 @@ def background_auto_rejoin_worker():
                             new_status = "banned" if "banned" in err_lower else "expired"
                             update_account_status(uname, new_status)
                     if launched:
-                        info['timestamp'] = time.time()
-                        last_launch_times[uname_lower] = time.time()
+                        now_ts = time.time()
+                        record_launch_event(uname)
+                        info.pop('pid', None)
+                        info['timestamp'] = now_ts
+                        last_launch_times[uname_lower] = now_ts
+                        invalidate_instances_cache()
                         acc_meta = manager.accounts.get(uname, {}) if manager and hasattr(manager, 'accounts') else {}
                         p_name = get_place_name(place_id)
                         webhook_manager.notify_rejoin(
@@ -2862,15 +2930,18 @@ def run_group_auto_relaunch():
                         update_account_status(uname, new_status)
                 if launched:
                     success_count += 1
-                    last_launch_times[uname_lower] = time.time()
+                    now_ts = time.time()
+                    record_launch_event(uname)
+                    last_launch_times[uname_lower] = now_ts
                     last_launch_info[uname_lower] = {
-                        'timestamp': time.time(),
+                        'timestamp': now_ts,
                         'place_id': place_id,
                         'server_id': vip_server,
                         'server_mode': server_mode,
                         'version': version,
                         'launch_mode': 'game' if place_id else 'app'
                     }
+                    invalidate_instances_cache()
                 time.sleep(delay)
             except Exception as e:
                 print(f"[ERROR] Group auto-relaunch failed for {uname}: {e}")
@@ -2998,148 +3069,626 @@ def trigger_auto_relaunch_now():
 
 _PID_INFO_CACHE = {}
 _PID_INFO_CACHE_LOCK = threading.Lock()
+_PID_CMDLINE_CACHE = {}
 
 def resolve_pid_place_id(pid: int, acc_info: dict = None) -> str:
     if acc_info and acc_info.get('place_id'):
         return str(acc_info['place_id'])
+    for uname_key, info in last_launch_info.items():
+        if info.get('pid') == pid and info.get('place_id'):
+            return str(info['place_id'])
     if acc_info and acc_info.get('username'):
         uname_key = acc_info['username'].lower()
         info = last_launch_info.get(uname_key)
         if info and info.get('place_id'):
             return str(info['place_id'])
-    for uname_key, info in last_launch_info.items():
-        if info.get('pid') == pid and info.get('place_id'):
-            return str(info['place_id'])
     return ""
 
-def resolve_pid_account(pid, creation_time_sec=None, accounts_by_user=None, accounts_by_id=None):
-    with _PID_INFO_CACHE_LOCK:
-        if pid in _PID_INFO_CACHE:
-            cached_data, cached_ctime = _PID_INFO_CACHE[pid]
-            if creation_time_sec is None or cached_ctime is None or abs(creation_time_sec - cached_ctime) < 5.0:
-                return cached_data
-
-    if accounts_by_user is None or accounts_by_id is None:
-        manager = get_account_manager()
-        accounts_by_user = {}
-        accounts_by_id = {}
-        if manager and hasattr(manager, 'accounts') and isinstance(manager.accounts, dict):
-            for uname, acc in manager.accounts.items():
+def _load_accounts_lookup(accounts_by_user=None, accounts_by_id=None):
+    if accounts_by_user is not None and accounts_by_id is not None:
+        return accounts_by_user, accounts_by_id
+    accounts_by_user = {}
+    accounts_by_id = {}
+    manager = get_account_manager()
+    if manager and hasattr(manager, 'accounts') and isinstance(manager.accounts, dict):
+        for uname, acc in manager.accounts.items():
+            if uname and isinstance(acc, dict):
                 accounts_by_user[uname.lower()] = acc
                 uid = str(acc.get('user_id') or '').strip()
                 if uid:
                     accounts_by_id[uid] = acc
-        
+    try:
         app_data = load_data()
         for acc in app_data.get('accounts', []):
-            uname = acc.get('username', '')
+            if not isinstance(acc, dict):
+                continue
+            uname = str(acc.get('username') or '').strip()
             if uname:
                 accounts_by_user[uname.lower()] = acc
                 uid = str(acc.get('user_id') or '').strip()
                 if uid:
                     accounts_by_id[uid] = acc
+    except Exception:
+        pass
+    return accounts_by_user, accounts_by_id
 
-    resolved_result = None
+def _format_account_result(uname: str, acc: Optional[dict], place_id: str = "") -> Dict[str, Any]:
+    real_uname = str((acc.get('username') if acc and acc.get('username') else uname) or uname).strip()
+    resolved_place = str(place_id or '').strip()
+    if not resolved_place and real_uname:
+        resolved_place = str(last_launch_info.get(real_uname.lower(), {}).get('place_id') or '').strip()
+    return {
+        'username': real_uname,
+        'display_name': (acc.get('display_name') if acc and acc.get('display_name') else None) or real_uname,
+        'avatar_url': acc.get('avatar_url') if acc else None,
+        'user_id': acc.get('user_id') if acc else None,
+        'place_id': resolved_place
+    }
 
-    for uname_key, info in last_launch_info.items():
-        if info.get('pid') == pid:
-            acc = accounts_by_user.get(uname_key)
-            resolved_result = {
-                'username': acc.get('username') if acc else uname_key,
-                'display_name': acc.get('display_name') if acc else uname_key,
-                'avatar_url': acc.get('avatar_url') if acc else None,
-                'user_id': acc.get('user_id') if acc else None,
-                'place_id': info.get('place_id') or ''
-            }
-            break
+def _assign_exclusive_pid(uname: str, pid: int, place_id: str = "", verified: bool = False):
+    uname_clean = str(uname or '').strip()
+    uname_key = uname_clean.lower()
+    pid_int = int(pid)
+    if not uname_key or pid_int <= 0:
+        return
 
-    if not resolved_result:
-        manager = get_account_manager()
-        if manager and hasattr(manager, 'auto_rejoin_monitor') and manager.auto_rejoin_monitor:
-            monitor = manager.auto_rejoin_monitor
-            sessions = getattr(monitor, 'sessions', {})
-            for uname, session in sessions.items():
-                if int(getattr(session, 'pid', 0) or 0) == pid:
-                    acc = accounts_by_user.get(uname.lower())
-                    session_place = getattr(session, 'place_id', '') or last_launch_info.get(uname.lower(), {}).get('place_id', '')
-                    resolved_result = {
-                        'username': uname,
-                        'display_name': acc.get('display_name') if acc else uname,
-                        'avatar_url': acc.get('avatar_url') if acc else None,
-                        'user_id': acc.get('user_id') if acc else None,
-                        'place_id': session_place or ''
-                    }
-                    break
+    for other_key, other_info in list(last_launch_info.items()):
+        if other_key != uname_key and other_info.get('pid') == pid_int:
+            other_info.pop('pid', None)
 
-    if not resolved_result:
+    if uname_key in last_launch_info:
+        old_pid = last_launch_info[uname_key].get('pid')
+        if old_pid and int(old_pid) != pid_int:
+            with _PID_INFO_CACHE_LOCK:
+                old_cached = _PID_INFO_CACHE.get(int(old_pid))
+                if isinstance(old_cached, dict) and not old_cached.get('verified'):
+                    _PID_INFO_CACHE.pop(int(old_pid), None)
+        last_launch_info[uname_key]['pid'] = pid_int
+        if place_id:
+            last_launch_info[uname_key]['place_id'] = str(place_id)
+    else:
+        last_launch_info[uname_key] = {
+            'pid': pid_int,
+            'place_id': str(place_id or ''),
+            'server_id': '',
+            'server_mode': 'vip',
+            'version': None,
+            'launch_mode': 'game',
+            'timestamp': time.time()
+        }
+
+    with _PID_INFO_CACHE_LOCK:
+        for c_pid, c_entry in list(_PID_INFO_CACHE.items()):
+            if c_pid == pid_int or not isinstance(c_entry, dict):
+                continue
+            c_data = c_entry.get('data')
+            if isinstance(c_data, dict) and str(c_data.get('username') or '').strip().lower() == uname_key:
+                if verified or not c_entry.get('verified'):
+                    _PID_INFO_CACHE.pop(c_pid, None)
+
+    manager = get_account_manager()
+    if manager and hasattr(manager, 'update_active_session_pid'):
         try:
-            if platform.system() == "Darwin":
-                logs_dir = os.path.expanduser("~/Library/Logs/Roblox")
-            else:
-                logs_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Roblox", "logs")
-            if os.path.isdir(logs_dir):
-                entries = [os.path.join(logs_dir, n) for n in os.listdir(logs_dir) if n.lower().endswith(".log")]
-                entries.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-                for log_path in entries[:10]:
-                    try:
-                        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read(50000)
-                            if str(pid) in content:
-                                uid_match = re.search(r"userid:(\d+)", content, re.IGNORECASE)
-                                place_match = re.search(r'(?:placeid|place_id|placeId)[:=\s"]+(\d{4,16})', content, re.IGNORECASE)
-                                log_place = place_match.group(1) if place_match else ''
-                                if uid_match and uid_match.group(1) in accounts_by_id:
-                                    acc = accounts_by_id[uid_match.group(1)]
-                                    uname_key = acc.get('username', '').lower()
-                                    if uname_key in last_launch_info:
-                                        last_launch_info[uname_key]['pid'] = pid
-                                        if not log_place:
-                                            log_place = last_launch_info[uname_key].get('place_id', '')
-                                    resolved_result = {
-                                        'username': acc.get('username'),
-                                        'display_name': acc.get('display_name') or acc.get('username'),
-                                        'avatar_url': acc.get('avatar_url'),
-                                        'user_id': acc.get('user_id'),
-                                        'place_id': log_place or ''
-                                    }
-                                    break
-                    except Exception:
-                        pass
+            manager.update_active_session_pid(uname_clean, pid_int)
         except Exception:
             pass
 
-    if not resolved_result and creation_time_sec:
-        best_match = None
-        min_diff = 20.0
-        for l in recent_launches:
-            diff = abs(creation_time_sec - l['timestamp'])
-            if diff < min_diff:
-                min_diff = diff
-                best_match = l['username']
-        if best_match:
-            acc = accounts_by_user.get(best_match.lower())
-            best_place = ''
-            if best_match.lower() in last_launch_info:
-                last_launch_info[best_match.lower()]['pid'] = pid
-                best_place = last_launch_info[best_match.lower()].get('place_id', '')
-            manager = get_account_manager()
-            if manager and hasattr(manager, 'update_active_session_pid'):
-                try:
-                    manager.update_active_session_pid(best_match, pid)
-                except Exception:
-                    pass
-            resolved_result = {
-                'username': best_match,
-                'display_name': acc.get('display_name') if acc else best_match,
-                'avatar_url': acc.get('avatar_url') if acc else None,
-                'user_id': acc.get('user_id') if acc else None,
-                'place_id': best_place or ''
-            }
+def _get_roblox_logs_dir() -> str:
+    if platform.system() == "Darwin":
+        return os.path.expanduser("~/Library/Logs/Roblox")
+    return os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Roblox", "logs")
+
+def _inspect_pid_cmdline(pid: int, creation_time_sec: Optional[float] = None) -> Dict[str, str]:
+    pid_int = int(pid)
+    cached = _PID_CMDLINE_CACHE.get(pid_int)
+    if cached and (creation_time_sec is None or cached.get('ctime') is None or abs(creation_time_sec - cached['ctime']) < 5.0):
+        return cached.get('parsed', {})
+
+    parsed: Dict[str, str] = {}
+    try:
+        proc = psutil.Process(pid_int)
+        cmdline = proc.cmdline() or []
+        cmd_str = " ".join(str(a) for a in cmdline)
+        if cmd_str:
+            bt_match = re.search(r'(?:browsertrackerid|browserTrackerId)[:=](\d{6,20})', cmd_str, re.IGNORECASE)
+            if bt_match:
+                parsed['browser_tracker_id'] = bt_match.group(1)
+            lt_match = re.search(r'\+launchtime:(\d{10,16})', cmd_str, re.IGNORECASE)
+            if lt_match:
+                parsed['launch_time_ms'] = lt_match.group(1)
+            gi_match = re.search(r'\+gameinfo:([^+\s&"\']+)', cmd_str, re.IGNORECASE)
+            if gi_match:
+                parsed['auth_ticket'] = urllib.parse.unquote(gi_match.group(1))
+            pl_match = re.search(r'[?&]placeId=(\d{4,16})', cmd_str, re.IGNORECASE)
+            if pl_match:
+                parsed['place_id'] = pl_match.group(1)
+    except Exception:
+        pass
+
+    if len(_PID_CMDLINE_CACHE) > 200:
+        _PID_CMDLINE_CACHE.clear()
+    _PID_CMDLINE_CACHE[pid_int] = {'ctime': creation_time_sec, 'parsed': parsed}
+    return parsed
+
+def _discover_pid_to_player_log_map(logs_dir: str, target_pids: Optional[set] = None) -> Dict[int, str]:
+    pid_to_log: Dict[int, str] = {}
+    if target_pids:
+        for pid in target_pids:
+            try:
+                proc = psutil.Process(int(pid))
+                for f in proc.open_files():
+                    fpath = str(getattr(f, 'path', '') or '')
+                    fname_lower = os.path.basename(fpath).lower()
+                    if fname_lower.endswith('.log') and 'crashhandler' not in fname_lower and 'installer' not in fname_lower:
+                        if os.path.isfile(fpath):
+                            pid_to_log[int(pid)] = fpath
+                            break
+            except Exception:
+                continue
+
+    if not os.path.isdir(logs_dir):
+        return pid_to_log
+
+    try:
+        ch_files = [
+            os.path.join(logs_dir, n)
+            for n in os.listdir(logs_dir)
+            if n.lower().endswith('.log') and 'crashhandler' in n.lower()
+        ]
+        ch_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        for ch_path in ch_files[:30]:
+            try:
+                with open(ch_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    ch_content = f.read(16384)
+                pid_match = re.search(r'(?:--annotation=PID=|\bPID=)(\d+)', ch_content)
+                if not pid_match:
+                    continue
+                ch_pid = int(pid_match.group(1))
+                if target_pids and ch_pid not in target_pids:
+                    continue
+                if ch_pid in pid_to_log:
+                    continue
+                sentry_match = re.search(r'--sentryLogPath\s+([^\s"\']+\.log)', ch_content)
+                if not sentry_match:
+                    sentry_match = re.search(r'--attachment=attachment_[^=\s]+=([^\s"\']+\.log)', ch_content)
+                if sentry_match:
+                    player_log = sentry_match.group(1).strip()
+                    if not os.path.isabs(player_log):
+                        player_log = os.path.join(logs_dir, os.path.basename(player_log))
+                    if os.path.isfile(player_log):
+                        pid_to_log[ch_pid] = player_log
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return pid_to_log
+
+def _parse_player_log_start_time(log_path: str) -> Optional[float]:
+    import calendar
+    fname = os.path.basename(log_path)
+    ts_match = re.search(r'_(\d{8}T\d{6}Z)_Player_', fname, re.IGNORECASE)
+    if ts_match:
+        try:
+            tm = time.strptime(ts_match.group(1).upper(), "%Y%m%dT%H%M%SZ")
+            return float(calendar.timegm(tm))
+        except Exception:
+            pass
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            first_line = f.readline(512)
+        iso_match = re.match(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?Z', first_line)
+        if iso_match:
+            tm = time.strptime(iso_match.group(1), "%Y-%m-%dT%H:%M:%S")
+            frac = float("0." + iso_match.group(2)) if iso_match.group(2) else 0.0
+            return float(calendar.timegm(tm)) + frac
+    except Exception:
+        pass
+    try:
+        st = os.stat(log_path)
+        return float(getattr(st, 'st_birthtime', 0.0) or st.st_ctime or st.st_mtime)
+    except Exception:
+        return None
+
+def _parse_player_log_file(log_path: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    if not log_path or not os.path.isfile(log_path):
+        return result
+    try:
+        file_size = os.path.getsize(log_path)
+        head_limit = 196608
+        tail_limit = 196608
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            if file_size <= (head_limit + tail_limit):
+                content = f.read()
+            else:
+                head_text = f.read(head_limit)
+                f.seek(max(head_limit, file_size - tail_limit))
+                tail_text = f.read(tail_limit)
+                content = head_text + "\n" + tail_text
+
+        uid_match = re.search(r'\buserid:([1-9]\d*)', content, re.IGNORECASE)
+        if not uid_match:
+            uid_match = re.search(r'"UserId"(?:%3a|:)\s*([1-9]\d*)', content, re.IGNORECASE)
+        if uid_match:
+            result['user_id'] = uid_match.group(1)
+
+        uname_match = re.search(r'"UserName"(?:%3a|:)(?:%22|"|\\")([^"%\s\\,]+)', content, re.IGNORECASE)
+        if uname_match:
+            result['username'] = uname_match.group(1)
+
+        bt_match = re.search(r'(?:browsertrackerid[:=]|browserTrackerId\s*=\s*\[?|"BrowserTrackerId"(?:%3a|:)\s*)(\d{6,20})', content, re.IGNORECASE)
+        if bt_match:
+            result['browser_tracker_id'] = bt_match.group(1)
+
+        lt_match = re.search(r'\+launchtime:(\d{10,16})', content, re.IGNORECASE)
+        if lt_match:
+            result['launch_time_ms'] = lt_match.group(1)
+
+        place_matches = re.findall(r'(?:placeid|place_id|placeId|"PlaceId")(?:%3a|[:=\s"])+([1-9]\d{3,16})', content, re.IGNORECASE)
+        if place_matches:
+            result['place_id'] = place_matches[-1]
+    except Exception:
+        pass
+    return result
+
+def _match_launch_record(
+    records: List[Dict[str, Any]],
+    pid: Optional[int] = None,
+    browser_tracker_id: str = "",
+    launch_time_ms: str = "",
+    auth_ticket: str = "",
+    claimed_record_ids: Optional[set] = None,
+) -> Optional[Dict[str, Any]]:
+    claimed_ids = claimed_record_ids or set()
+    if pid and int(pid) > 0:
+        for r in reversed(records):
+            if r.get('record_id') in claimed_ids:
+                continue
+            if r.get('spawned_pid') and int(r['spawned_pid']) == int(pid):
+                return r
+    if browser_tracker_id:
+        for r in reversed(records):
+            if r.get('record_id') in claimed_ids:
+                continue
+            if r.get('browser_tracker_id') == browser_tracker_id:
+                return r
+    if launch_time_ms:
+        for r in reversed(records):
+            if r.get('record_id') in claimed_ids:
+                continue
+            if r.get('launch_time_ms') == launch_time_ms:
+                return r
+    if auth_ticket:
+        for r in reversed(records):
+            if r.get('record_id') in claimed_ids:
+                continue
+            if r.get('auth_ticket') and r.get('auth_ticket') == auth_ticket:
+                return r
+    return None
+
+def resolve_active_pids_accounts(
+    pid_ctime_list: List[Tuple[int, Optional[float]]],
+    accounts_by_user: Optional[Dict[str, Any]] = None,
+    accounts_by_id: Optional[Dict[str, Any]] = None,
+) -> Dict[int, Optional[Dict[str, Any]]]:
+    if not pid_ctime_list:
+        return {}
+
+    accounts_by_user, accounts_by_id = _load_accounts_lookup(accounts_by_user, accounts_by_id)
+    ordered_pids = sorted(
+        [(int(p), float(ct) if ct else 0.0) for p, ct in pid_ctime_list if p],
+        key=lambda item: (item[1] if item[1] > 0 else float('inf'), item[0])
+    )
+    active_pid_set = {p for p, _ in ordered_pids}
+
+    resolved_by_pid: Dict[int, Dict[str, Any]] = {}
+    verified_by_pid: Dict[int, bool] = {}
+    log_path_by_pid: Dict[int, str] = {}
+    claimed_usernames: set = set()
+    claimed_record_ids: set = set()
+    claimed_log_paths: set = set()
+
+    launch_records = RobloxAPI.get_recent_launch_records(max_age_sec=3600.0)
+
+    # Step 0: Check already-verified cache entries
+    with _PID_INFO_CACHE_LOCK:
+        for pid, ctime in ordered_pids:
+            c_entry = _PID_INFO_CACHE.get(pid)
+            if not isinstance(c_entry, dict) or not c_entry.get('verified'):
+                continue
+            c_ctime = c_entry.get('ctime') or 0.0
+            if ctime > 0 and c_ctime > 0 and abs(ctime - c_ctime) >= 5.0:
+                _PID_INFO_CACHE.pop(pid, None)
+                continue
+            c_data = c_entry.get('data')
+            if isinstance(c_data, dict) and c_data.get('username'):
+                uname_lower = str(c_data['username']).strip().lower()
+                if uname_lower not in claimed_usernames:
+                    c_log = c_entry.get('log_path') or ''
+                    updated_data = dict(c_data)
+                    if c_log and os.path.isfile(c_log):
+                        log_path_by_pid[pid] = c_log
+                        claimed_log_paths.add(os.path.realpath(c_log))
+                        log_info = _parse_player_log_file(c_log)
+                        if log_info.get('place_id'):
+                            updated_data['place_id'] = log_info['place_id']
+                    acc = accounts_by_user.get(uname_lower)
+                    if acc:
+                        updated_data = _format_account_result(
+                            acc.get('username') or updated_data['username'],
+                            acc,
+                            updated_data.get('place_id') or ''
+                        )
+                    resolved_by_pid[pid] = updated_data
+                    verified_by_pid[pid] = True
+                    claimed_usernames.add(uname_lower)
+                    if c_entry.get('record_id'):
+                        claimed_record_ids.add(c_entry['record_id'])
+
+    unresolved_pids = [(p, ct) for p, ct in ordered_pids if p not in resolved_by_pid]
+    logs_dir = _get_roblox_logs_dir()
+
+    if unresolved_pids:
+        pid_to_log = _discover_pid_to_player_log_map(logs_dir, {p for p, _ in unresolved_pids})
+        for pid, lpath in pid_to_log.items():
+            real_lpath = os.path.realpath(lpath)
+            if real_lpath not in claimed_log_paths:
+                log_path_by_pid[pid] = lpath
+                claimed_log_paths.add(real_lpath)
+
+        # Also gather recent Player logs in logs_dir for fallback timestamp/token matching
+        recent_player_logs: List[Tuple[str, Optional[float], Dict[str, str]]] = []
+        if os.path.isdir(logs_dir):
+            try:
+                p_files = [
+                    os.path.join(logs_dir, n)
+                    for n in os.listdir(logs_dir)
+                    if n.lower().endswith('.log') and '_player_' in n.lower() and 'crashhandler' not in n.lower()
+                ]
+                p_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                for pf in p_files[:25]:
+                    real_pf = os.path.realpath(pf)
+                    if real_pf in claimed_log_paths:
+                        continue
+                    l_start = _parse_player_log_start_time(pf)
+                    l_parsed = _parse_player_log_file(pf)
+                    recent_player_logs.append((pf, l_start, l_parsed))
+            except Exception:
+                pass
+
+        # Step 1: Deterministic verification via Process Cmdline, Spawned PID, or Mapped Player Log
+        for pid, ctime in list(unresolved_pids):
+            cmd_info = _inspect_pid_cmdline(pid, ctime if ctime > 0 else None)
+            matched_rec = _match_launch_record(
+                launch_records,
+                pid=pid,
+                browser_tracker_id=cmd_info.get('browser_tracker_id', ''),
+                launch_time_ms=cmd_info.get('launch_time_ms', ''),
+                auth_ticket=cmd_info.get('auth_ticket', ''),
+                claimed_record_ids=claimed_record_ids,
+            )
+
+            # If pid doesn't have a mapped log yet, see if any unclaimed Player log matches cmd_info or matched_rec or creation time
+            if pid not in log_path_by_pid and recent_player_logs:
+                target_bt = cmd_info.get('browser_tracker_id') or (matched_rec.get('browser_tracker_id') if matched_rec else '')
+                target_lt = cmd_info.get('launch_time_ms') or (matched_rec.get('launch_time_ms') if matched_rec else '')
+                for pf, l_start, l_parsed in recent_player_logs:
+                    real_pf = os.path.realpath(pf)
+                    if real_pf in claimed_log_paths:
+                        continue
+                    if (target_bt and l_parsed.get('browser_tracker_id') == target_bt) or (
+                        target_lt and l_parsed.get('launch_time_ms') == target_lt
+                    ):
+                        log_path_by_pid[pid] = pf
+                        claimed_log_paths.add(real_pf)
+                        break
+
+                if pid not in log_path_by_pid and ctime > 0:
+                    best_pf = None
+                    best_delta = 999.0
+                    for pf, l_start, _ in recent_player_logs:
+                        real_pf = os.path.realpath(pf)
+                        if real_pf in claimed_log_paths or not l_start:
+                            continue
+                        delta = l_start - ctime
+                        if -3.0 <= delta <= 15.0 and abs(delta) < best_delta:
+                            best_delta = abs(delta)
+                            best_pf = pf
+                    if best_pf:
+                        log_path_by_pid[pid] = best_pf
+                        claimed_log_paths.add(os.path.realpath(best_pf))
+
+            log_info = _parse_player_log_file(log_path_by_pid[pid]) if pid in log_path_by_pid else {}
+            if not matched_rec and log_info:
+                matched_rec = _match_launch_record(
+                    launch_records,
+                    browser_tracker_id=log_info.get('browser_tracker_id', ''),
+                    launch_time_ms=log_info.get('launch_time_ms', ''),
+                    claimed_record_ids=claimed_record_ids,
+                )
+
+            resolved_acc = None
+            resolved_uname = ""
+            if log_info.get('user_id') and log_info['user_id'] in accounts_by_id:
+                resolved_acc = accounts_by_id[log_info['user_id']]
+                resolved_uname = resolved_acc.get('username') or ''
+            elif log_info.get('username'):
+                uname_cand = log_info['username']
+                resolved_acc = accounts_by_user.get(uname_cand.lower())
+                resolved_uname = (resolved_acc.get('username') if resolved_acc else uname_cand) or uname_cand
+            elif matched_rec and matched_rec.get('username'):
+                uname_cand = matched_rec['username']
+                resolved_acc = accounts_by_user.get(uname_cand.lower())
+                resolved_uname = (resolved_acc.get('username') if resolved_acc else uname_cand) or uname_cand
+
+            if resolved_uname and resolved_uname.lower() not in claimed_usernames:
+                place_val = (
+                    log_info.get('place_id')
+                    or cmd_info.get('place_id')
+                    or (matched_rec.get('place_id') if matched_rec else '')
+                    or last_launch_info.get(resolved_uname.lower(), {}).get('place_id', '')
+                )
+                res_dict = _format_account_result(resolved_uname, resolved_acc, place_val)
+                if not res_dict.get('user_id') and log_info.get('user_id'):
+                    res_dict['user_id'] = log_info['user_id']
+                resolved_by_pid[pid] = res_dict
+                verified_by_pid[pid] = True
+                claimed_usernames.add(resolved_uname.lower())
+                if matched_rec and matched_rec.get('record_id'):
+                    claimed_record_ids.add(matched_rec['record_id'])
+                    RobloxAPI.claim_launch_record_pid(matched_rec['record_id'], pid)
+
+    # Step 2: Check existing tracked PID in last_launch_info / AutoRejoinMonitor.active_sessions (only if unclaimed)
+    unresolved_pids = [(p, ct) for p, ct in ordered_pids if p not in resolved_by_pid]
+    if unresolved_pids:
+        manager = get_account_manager()
+        monitor = getattr(manager, 'auto_rejoin_monitor', None) if manager else None
+        active_sessions = getattr(monitor, 'active_sessions', {}) if monitor else {}
+
+        for pid, ctime in list(unresolved_pids):
+            matched_uname = ""
+            matched_place = ""
+            for uname_key, info in last_launch_info.items():
+                if info.get('pid') == pid and uname_key not in claimed_usernames:
+                    matched_uname = uname_key
+                    matched_place = str(info.get('place_id') or '')
+                    break
+
+            if not matched_uname and active_sessions:
+                for uname, session in active_sessions.items():
+                    if int(getattr(session, 'pid', 0) or 0) == pid and uname.lower() not in claimed_usernames:
+                        matched_uname = uname
+                        matched_place = str(getattr(session, 'place_id', '') or last_launch_info.get(uname.lower(), {}).get('place_id', ''))
+                        break
+
+            if matched_uname:
+                acc = accounts_by_user.get(matched_uname.lower())
+                res_dict = _format_account_result(matched_uname, acc, matched_place)
+                resolved_by_pid[pid] = res_dict
+                verified_by_pid[pid] = False
+                claimed_usernames.add(matched_uname.lower())
+
+    # Step 3: Exclusive FIFO Launch Matching for brand-new unverified processes
+    unresolved_pids = [(p, ct) for p, ct in ordered_pids if p not in resolved_by_pid]
+    if unresolved_pids:
+        for pid, ctime in unresolved_pids:
+            if ctime <= 0:
+                continue
+            chosen_uname = ""
+            chosen_place = ""
+            chosen_rec_id = ""
+
+            # Check RobloxAPI launch records in FIFO order (oldest unclaimed launch preceding process creation)
+            for rec in launch_records:
+                rec_id = rec.get('record_id')
+                rec_uname = str(rec.get('username') or '').strip()
+                rec_uname_lower = rec_uname.lower()
+                if not rec_uname or rec_uname_lower in claimed_usernames or rec_id in claimed_record_ids:
+                    continue
+                rec_claimed_pid = rec.get('claimed_pid')
+                if rec_claimed_pid and int(rec_claimed_pid) != pid and int(rec_claimed_pid) in active_pid_set:
+                    continue
+                rec_ts = float(rec.get('timestamp') or 0.0)
+                delta = ctime - rec_ts
+                if -3.0 <= delta <= 45.0:
+                    chosen_uname = rec_uname
+                    chosen_place = str(rec.get('place_id') or '')
+                    chosen_rec_id = str(rec_id or '')
+                    break
+
+            if not chosen_uname:
+                for l_item in recent_launches:
+                    l_uname = str(l_item.get('username') or '').strip()
+                    l_uname_lower = l_uname.lower()
+                    if not l_uname or l_uname_lower in claimed_usernames:
+                        continue
+                    l_claimed = l_item.get('claimed_pid')
+                    if l_claimed and int(l_claimed) != pid and int(l_claimed) in active_pid_set:
+                        continue
+                    l_ts = float(l_item.get('timestamp') or 0.0)
+                    delta = ctime - l_ts
+                    if -3.0 <= delta <= 45.0:
+                        chosen_uname = l_uname
+                        l_item['claimed_pid'] = pid
+                        break
+
+            if chosen_uname:
+                acc = accounts_by_user.get(chosen_uname.lower())
+                res_dict = _format_account_result(chosen_uname, acc, chosen_place)
+                resolved_by_pid[pid] = res_dict
+                verified_by_pid[pid] = False
+                claimed_usernames.add(chosen_uname.lower())
+                if chosen_rec_id:
+                    claimed_record_ids.add(chosen_rec_id)
+                    RobloxAPI.claim_launch_record_pid(chosen_rec_id, pid)
+
+    # Step 4: Persist exclusive PID bindings and update cache
+    final_output: Dict[int, Optional[Dict[str, Any]]] = {}
+    now_ts = time.time()
+    for pid, ctime in ordered_pids:
+        res_data = resolved_by_pid.get(pid)
+        is_ver = bool(verified_by_pid.get(pid, False))
+        if res_data and res_data.get('username'):
+            _assign_exclusive_pid(
+                res_data['username'],
+                pid,
+                place_id=res_data.get('place_id') or '',
+                verified=is_ver
+            )
+            with _PID_INFO_CACHE_LOCK:
+                _PID_INFO_CACHE[pid] = {
+                    'data': res_data,
+                    'ctime': ctime if ctime > 0 else None,
+                    'verified': is_ver,
+                    'log_path': log_path_by_pid.get(pid, ''),
+                    'checked_at': now_ts,
+                }
+        final_output[pid] = res_data
+
+    return final_output
+
+def resolve_pid_account(pid, creation_time_sec=None, accounts_by_user=None, accounts_by_id=None):
+    try:
+        target_pid = int(pid)
+    except (TypeError, ValueError):
+        return None
 
     with _PID_INFO_CACHE_LOCK:
-        _PID_INFO_CACHE[pid] = (resolved_result, creation_time_sec)
+        cached = _PID_INFO_CACHE.get(target_pid)
+        if isinstance(cached, dict) and cached.get('verified'):
+            cached_ctime = cached.get('ctime')
+            if creation_time_sec is None or cached_ctime is None or abs(float(creation_time_sec) - float(cached_ctime)) < 5.0:
+                return cached.get('data')
 
-    return resolved_result
+    pid_ctime_list: List[Tuple[int, Optional[float]]] = []
+    seen_target = False
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+            try:
+                pname = str(proc.info.get('name') or '').lower()
+                if pname not in ('robloxplayerbeta.exe', 'robloxplayerbeta', 'robloxplayer', 'robloxplayer.exe'):
+                    continue
+                p_id = int(proc.info['pid'])
+                p_ct = proc.info.get('create_time') or (creation_time_sec if p_id == target_pid else None)
+                pid_ctime_list.append((p_id, p_ct))
+                if p_id == target_pid:
+                    seen_target = True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    except Exception:
+        pass
+
+    if not seen_target:
+        if creation_time_sec is None:
+            try:
+                creation_time_sec = psutil.Process(target_pid).create_time()
+            except Exception:
+                pass
+        pid_ctime_list.append((target_pid, creation_time_sec))
+
+    resolved_map = resolve_active_pids_accounts(pid_ctime_list, accounts_by_user, accounts_by_id)
+    return resolved_map.get(target_pid)
 
 _MUTED_PIDS = set()
 _MUTED_PIDS_LOCK = threading.Lock()
@@ -3345,6 +3894,18 @@ def get_running_instances():
                     except Exception:
                         pass
 
+            game_pid_ctime_list = [
+                (int(item['ProcessId']), item.get('CreationTimeSec'))
+                for item in procs_data
+                if not re.search(r'crashhandler', str(item.get('Name') or ''), re.IGNORECASE)
+                and re.search(r'robloxplayer(?:beta)?(?:\.exe)?$', str(item.get('Name') or ''), re.IGNORECASE)
+            ]
+            resolved_accounts_map = (
+                resolve_active_pids_accounts(game_pid_ctime_list, accounts_by_user, accounts_by_id)
+                if game_pid_ctime_list
+                else {}
+            )
+
             for item in procs_data:
                 pid = item['ProcessId']
                 pname = item['Name']
@@ -3394,7 +3955,7 @@ def get_running_instances():
                     crash_handlers.append(inst_obj)
                 elif re.search(r'robloxplayer(?:beta)?(?:\.exe)?$', pname, re.IGNORECASE):
                     inst_obj["process_type"] = "game"
-                    acc_info = resolve_pid_account(pid, creation_time_sec, accounts_by_user, accounts_by_id)
+                    acc_info = resolved_accounts_map.get(int(pid))
                     if acc_info:
                         inst_obj["username"] = acc_info.get("username")
                         inst_obj["display_name"] = acc_info.get("display_name")
@@ -6358,6 +6919,7 @@ def _webhook_resolve_instances() -> List[Dict[str, Any]]:
                     accounts_by_id[uid] = acc
 
         now = time.time()
+        game_procs = []
         for proc in psutil.process_iter(['pid', 'name', 'memory_info', 'create_time']):
             try:
                 pname = str(proc.info.get('name') or '')
@@ -6367,12 +6929,24 @@ def _webhook_resolve_instances() -> List[Dict[str, Any]]:
                 mem_info = proc.info.get('memory_info')
                 mem_mb = round((mem_info.rss if mem_info else 0) / (1024 * 1024), 1)
                 create_t = proc.info.get('create_time') or now
+                game_procs.append((pid, pname, mem_mb, create_t))
+            except Exception:
+                continue
+
+        resolved_map = (
+            resolve_active_pids_accounts([(p, ct) for p, _, _, ct in game_procs], accounts_by_user, accounts_by_id)
+            if game_procs
+            else {}
+        )
+
+        for pid, pname, mem_mb, create_t in game_procs:
+            try:
                 up_s = max(0, int(now - create_t))
                 m, s = divmod(up_s, 60)
                 h, m = divmod(m, 60)
                 uptime_str = f"{h}h {m}m" if h > 0 else f"{m}m {s}s"
 
-                acc_info = resolve_pid_account(pid, create_t, accounts_by_user, accounts_by_id) or {}
+                acc_info = resolved_map.get(pid) or {}
                 place_id = str(acc_info.get('place_id') or resolve_pid_place_id(pid, acc_info) or '')
                 place_name = get_place_name(place_id) if place_id else 'Roblox Client'
                 results.append({

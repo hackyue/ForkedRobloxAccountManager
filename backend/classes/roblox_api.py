@@ -106,6 +106,74 @@ class RobloxAPI:
     _ip_region_cache: dict[str, Optional[ServerRegionDetails]] = {}
     _server_region_cache_lock = threading.Lock()
     _public_server_region_probe_limit: int = 30
+    _recent_launch_records: list[dict[str, Any]] = []
+    _launch_records_lock = threading.Lock()
+
+    @staticmethod
+    def record_launch_ticket(
+        username: str,
+        place_id: str,
+        browser_tracker_id: int,
+        launch_time_ms: int,
+        auth_ticket: str = "",
+        spawned_pid: Optional[int] = None,
+    ) -> str:
+        now = time.time()
+        record_id = str(uuid.uuid4())
+        uname = str(username or "").strip()
+        record = {
+            "record_id": record_id,
+            "username": uname,
+            "username_lower": uname.lower(),
+            "place_id": str(place_id or "").strip(),
+            "browser_tracker_id": str(browser_tracker_id or "").strip(),
+            "launch_time_ms": str(launch_time_ms or "").strip(),
+            "auth_ticket": str(auth_ticket or "").strip(),
+            "timestamp": now,
+            "spawned_pid": int(spawned_pid) if spawned_pid and int(spawned_pid) > 0 else None,
+            "claimed_pid": int(spawned_pid) if spawned_pid and int(spawned_pid) > 0 else None,
+        }
+        with RobloxAPI._launch_records_lock:
+            RobloxAPI._recent_launch_records = [
+                r for r in RobloxAPI._recent_launch_records
+                if (now - float(r.get("timestamp", 0.0))) < 3600.0
+            ]
+            RobloxAPI._recent_launch_records.append(record)
+            if len(RobloxAPI._recent_launch_records) > 200:
+                RobloxAPI._recent_launch_records = RobloxAPI._recent_launch_records[-200:]
+        return record_id
+
+    @staticmethod
+    def update_launch_ticket_spawned_pid(record_id: str, spawned_pid: int) -> None:
+        if not record_id or not spawned_pid or int(spawned_pid) <= 0:
+            return
+        with RobloxAPI._launch_records_lock:
+            for r in RobloxAPI._recent_launch_records:
+                if r.get("record_id") == record_id:
+                    r["spawned_pid"] = int(spawned_pid)
+                    r["claimed_pid"] = int(spawned_pid)
+                    break
+
+    @staticmethod
+    def claim_launch_record_pid(record_id: str, pid: int) -> None:
+        if not record_id or not pid or int(pid) <= 0:
+            return
+        pid_int = int(pid)
+        with RobloxAPI._launch_records_lock:
+            for r in RobloxAPI._recent_launch_records:
+                if r.get("claimed_pid") == pid_int and r.get("record_id") != record_id:
+                    r["claimed_pid"] = None
+                if r.get("record_id") == record_id:
+                    r["claimed_pid"] = pid_int
+
+    @staticmethod
+    def get_recent_launch_records(max_age_sec: float = 3600.0) -> list[dict[str, Any]]:
+        now = time.time()
+        with RobloxAPI._launch_records_lock:
+            return [
+                dict(r) for r in RobloxAPI._recent_launch_records
+                if (now - float(r.get("timestamp", 0.0))) <= max_age_sec
+            ]
 
     @staticmethod
     def _set_bounded_cache(target_dict: dict, key: str, value: Any, max_size: int = 2000):
@@ -2301,8 +2369,15 @@ class RobloxAPI:
             normalized_launch_mode = "game"
 
         if normalized_launch_mode != "join_user" and (not game_id or game_id == ""):
-            browser_tracker_id = random.randint(55393295400, 55393295500)
+            browser_tracker_id = random.randint(100000000000, 999999999999)
             launch_time = int(time.time() * 1000)
+            launch_record_id = RobloxAPI.record_launch_ticket(
+                username=username,
+                place_id="",
+                browser_tracker_id=browser_tracker_id,
+                launch_time_ms=launch_time,
+                auth_ticket=auth_ticket,
+            )
 
             url = (
                 "roblox-player:1"
@@ -2336,7 +2411,7 @@ class RobloxAPI:
                     )
                 elif using_local_install:
                     try:
-                        subprocess.Popen(
+                        proc = subprocess.Popen(
                             [roblox_exe, url],
                             cwd=effective_path,
                             stdout=subprocess.DEVNULL,
@@ -2344,6 +2419,8 @@ class RobloxAPI:
                             creationflags=creation_flags,
                             close_fds=True,
                         )
+                        if getattr(proc, "pid", None):
+                            RobloxAPI.update_launch_ticket_spawned_pid(launch_record_id, proc.pid)
                         _log_debug(f"Launching Roblox Home via RobloxPlayerBeta.exe with URL arg: {url}")
                     except Exception as exc:
                         _log_debug(f"RobloxPlayerBeta.exe URL-arg launch failed, falling back to protocol launch: {exc}")
@@ -2367,7 +2444,7 @@ class RobloxAPI:
                     return False, err_msg
                 return False
                     
-        browser_tracker_id = random.randint(55393295400, 55393295500)
+        browser_tracker_id = random.randint(100000000000, 999999999999)
         launch_time = int(time.time() * 1000)
 
         clean_game_id = ""
@@ -2456,6 +2533,14 @@ class RobloxAPI:
             "+robloxLocale:en_us+gameLocale:en_us"
         )
 
+        launch_record_id = RobloxAPI.record_launch_ticket(
+            username=username,
+            place_id=clean_game_id if normalized_launch_mode != "join_user" else "",
+            browser_tracker_id=browser_tracker_id,
+            launch_time_ms=launch_time,
+            auth_ticket=auth_ticket,
+        )
+
         print(f"Launching Roblox...")
         print(f"Account: {username}")
         if normalized_launch_mode == "join_user":
@@ -2493,7 +2578,7 @@ class RobloxAPI:
             else:
                 if using_local_install:
                     try:
-                        subprocess.Popen(
+                        proc = subprocess.Popen(
                             [roblox_exe, url],
                             cwd=effective_path,
                             stdout=subprocess.DEVNULL,
@@ -2501,6 +2586,8 @@ class RobloxAPI:
                             creationflags=creation_flags,
                             close_fds=True,
                         )
+                        if getattr(proc, "pid", None):
+                            RobloxAPI.update_launch_ticket_spawned_pid(launch_record_id, proc.pid)
                         _log_debug(f"Launching game via RobloxPlayerBeta.exe with URL arg: {url}")
                         print("[SUCCESS] Roblox launched successfully!")
                         if enable_debug:

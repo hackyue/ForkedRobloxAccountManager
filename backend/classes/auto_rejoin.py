@@ -157,7 +157,20 @@ class AutoRejoinMonitor:
 
         with self._lock:
             self._manual_stop_grace.pop(username, None)
+            if normalized_pid > 0:
+                for other_uname, other_sess in self.active_sessions.items():
+                    if other_uname.lower() != username.lower() and int(getattr(other_sess, "pid", 0) or 0) == normalized_pid:
+                        other_sess.pid = 0
+                        other_sess.has_seen_process_alive = False
+                        other_sess.has_seen_window = False
+
             session = self.active_sessions.get(username)
+            if session is None:
+                for existing_uname, existing_sess in self.active_sessions.items():
+                    if existing_uname.lower() == username.lower():
+                        session = existing_sess
+                        username = existing_uname
+                        break
             if session is None:
                 session = SessionEntry(username=username, cookie=str(cookie or "").strip())
                 self.active_sessions[username] = session
@@ -206,7 +219,19 @@ class AutoRejoinMonitor:
         with self._lock:
             session = self.active_sessions.get(username)
             if session is None:
+                for existing_uname, existing_sess in self.active_sessions.items():
+                    if existing_uname.lower() == username.lower():
+                        session = existing_sess
+                        break
+            if session is None:
                 return False
+
+            for other_uname, other_sess in self.active_sessions.items():
+                if other_sess is not session and int(getattr(other_sess, "pid", 0) or 0) == normalized_pid:
+                    other_sess.pid = 0
+                    other_sess.has_seen_process_alive = False
+                    other_sess.has_seen_window = False
+
             session.pid = normalized_pid
             session.intentionally_stopped = False
             session.has_seen_process_alive = bool(self._is_process_running(normalized_pid))
@@ -695,6 +720,7 @@ class AutoRejoinMonitor:
             return
 
         previous_pid = 0
+        shared_with_other_session = False
         with self._lock:
             session = self.active_sessions.get(username)
             if session is None:
@@ -702,8 +728,12 @@ class AutoRejoinMonitor:
             previous_pid = self._normalize_int(session.pid, default=0, minimum=0)
             if previous_pid > 0:
                 session.pid = 0
+                for other_uname, other_sess in self.active_sessions.items():
+                    if other_sess is not session and int(getattr(other_sess, "pid", 0) or 0) == previous_pid:
+                        shared_with_other_session = True
+                        break
 
-        if previous_pid > 0:
+        if previous_pid > 0 and not shared_with_other_session:
             self._close_tracked_process(previous_pid, username)
 
         with self._lock:
