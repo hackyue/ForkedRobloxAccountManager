@@ -7717,6 +7717,7 @@ html[data-has-custom-bg="true"] #browser-view,
 html[data-has-custom-bg="true"] #vip-view,
 html[data-has-custom-bg="true"] #fastflags-view,
 html[data-has-custom-bg="true"] #clientsettings-view,
+html[data-has-custom-bg="true"] #webhooks-view,
 html[data-has-custom-bg="true"] #accounts-view {
   background: transparent !important;
 }
@@ -10089,3 +10090,189 @@ textarea {
 [data-os="windows"] .macos-only {
   display: none !important;
 }
+
+/* ==========================================================================
+   Webhook Manager (Minimal Sidebar App UI)
+   ========================================================================== */
+
+#webhooks-view {
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.webhook-app-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.wh-card {
+  background: var(--card, rgba(20, 20, 25, 0.5));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wh-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-bright, #ffffff);
+  letter-spacing: 0.2px;
+}
+
+.wh-inline-fields {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wh-inline-field {
+  flex: 1;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.wh-inline-field label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted, rgba(255, 255, 255, 0.55));
+}
+
+.wh-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 960px) {
+  .wh-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.wh-toggle-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.wh-toggle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-soft, rgba(255, 255, 255, 0.05));
+  font-size: 13px;
+  color: var(--fg, #ffffff);
+}
+
+.wh-toggle-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.wh-toggle-row:first-child {
+  padding-top: 0;
+}
+
+.wh-sub-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.wh-divider {
+  height: 1px;
+  background: var(--border-soft, rgba(255, 255, 255, 0.06));
+  margin: 2px 0;
+}
+
+.wh-ep-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--bg-2, rgba(255, 255, 255, 0.025));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+
+.webhook-input,
+.webhook-select {
+  background: var(--bg-2, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--fg, #ffffff);
+  font-size: 12.5px;
+  outline: none;
+  box-sizing: border-box;
+  height: 34px;
+}
+
+.webhook-input:focus,
+.webhook-select:focus {
+  border-color: var(--primary, #4f8ef7);
+}
+
+.webhook-cat-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-soft);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  text-transform: capitalize;
+}
+
+.webhook-cat-badge.cat-launch {
+  background: rgba(87, 242, 135, 0.12);
+  color: #57F287;
+  border-color: rgba(87, 242, 135, 0.28);
+}
+
+.webhook-cat-badge.cat-rejoin {
+  background: rgba(254, 231, 92, 0.12);
+  color: #FEE75C;
+  border-color: rgba(254, 231, 92, 0.28);
+}
+
+.webhook-cat-badge.cat-crash,
+.webhook-cat-badge.cat-log,
+.webhook-cat-badge.cat-account_status {
+  background: rgba(237, 66, 69, 0.12);
+  color: #ED4245;
+  border-color: rgba(237, 66, 69, 0.28);
+}
+
+.webhook-cat-badge.cat-screenshot,
+.webhook-cat-badge.cat-preview {
+  background: rgba(235, 69, 158, 0.12);
+  color: #EB459E;
+  border-color: rgba(235, 69, 158, 0.28);
+}
+
+.webhook-cat-badge.cat-instances,
+.webhook-cat-badge.cat-test,
+.webhook-cat-badge.cat-custom,
+.webhook-cat-badge.cat-group_relaunch,
+.webhook-cat-badge.cat-automation {
+  background: rgba(88, 101, 242, 0.12);
+  color: #7983F5;
+  border-color: rgba(88, 101, 242, 0.28);
+}
+

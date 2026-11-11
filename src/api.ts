@@ -960,12 +960,13 @@ class ApiService {
     return this.request<{ success: boolean; count?: number; savedMb?: number; message?: string; error?: string }>('/instances/trim-all', 'POST');
   }
 
-  async sendWindowPreview(params?: { pid?: number; username?: string; placeId?: string; placeName?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
+  async sendWindowPreview(params?: { pid?: number; username?: string; placeId?: string; placeName?: string; webhookUrl?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
     return this.request<{ success: boolean; message?: string; error?: string }>('/webhook/preview-window', 'POST', {
       pid: params?.pid,
       username: params?.username,
       place_id: params?.placeId,
-      place_name: params?.placeName
+      place_name: params?.placeName,
+      webhook_url: params?.webhookUrl
     });
   }
 
@@ -1181,24 +1182,40 @@ class ApiService {
     return this.request('/system/last-error');
   }
 
-  async getWebhookConfig(): Promise<{ success: boolean; config?: any; history?: any[]; error?: string }> {
+  async getWebhookConfig(): Promise<{ success: boolean; config?: any; history?: any[]; stats?: any; instances?: any[]; error?: string }> {
     return this.request('/webhook/config');
   }
 
-  async saveWebhookConfig(config: any): Promise<{ success: boolean; config?: any; message?: string; error?: string }> {
+  async saveWebhookConfig(config: any): Promise<{ success: boolean; config?: any; stats?: any; message?: string; error?: string }> {
     return this.request('/webhook/config', 'POST', config);
+  }
+
+  async clearWebhookHistory(): Promise<{ success: boolean; history?: any[]; stats?: any; message?: string; error?: string }> {
+    return this.request('/webhook/clear-history', 'POST');
+  }
+
+  async retryWebhookItem(id: string): Promise<{ success: boolean; message?: string; history?: any[]; stats?: any; error?: string }> {
+    return this.request('/webhook/retry', 'POST', { id });
+  }
+
+  async resetWebhookLiveBoard(): Promise<{ success: boolean; config?: any; stats?: any; message?: string; error?: string }> {
+    return this.request('/webhook/reset-live-board', 'POST');
+  }
+
+  async sendCustomWebhook(payload: { title: string; description: string; color?: string; webhook_url?: string }): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request('/webhook/send', 'POST', payload);
   }
 
   async testWebhook(webhook_url?: string): Promise<{ success: boolean; message?: string; error?: string }> {
     return this.request('/webhook/test', 'POST', { webhook_url });
   }
 
-  async testWebhookScreenshot(webhook_url?: string, all_monitors?: boolean): Promise<{ success: boolean; message?: string; error?: string }> {
-    return this.request('/webhook/test-screenshot', 'POST', { webhook_url, all_monitors });
+  async testWebhookScreenshot(webhook_url?: string, all_monitors?: boolean, mode?: string, pid?: number | null): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request('/webhook/test-screenshot', 'POST', { webhook_url, all_monitors, mode, pid: pid ?? null });
   }
 
-  async testWebhookInstances(webhook_url?: string): Promise<{ success: boolean; message?: string; error?: string }> {
-    return this.request('/webhook/test-instances', 'POST', { webhook_url });
+  async testWebhookInstances(webhook_url?: string, force_new_message?: boolean): Promise<{ success: boolean; message?: string; error?: string }> {
+    return this.request('/webhook/test-instances', 'POST', { webhook_url, force_new_message });
   }
 
   async getExtensions(): Promise<ExtensionsResponse> {

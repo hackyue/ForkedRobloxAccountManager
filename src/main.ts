@@ -11150,7 +11150,7 @@ function renderAll(): void {
   }
 
   if (state.view === 'webhooks') {
-    fetchWebhookConfig();
+    renderWebhooksView();
     return;
   }
 
@@ -18284,167 +18284,17 @@ function initApp(): void {
 
         <!-- webhooks view -->
         <div class="view" id="webhooks-view">
-          <div class="webhooks-headerbar" style="padding:16px 20px; border-bottom:1px solid var(--border-soft); display:flex; justify-content:space-between; align-items:center; background:var(--card);">
-            <div class="webhooks-title-wrap">
-              <h2 style="font-size:18px; font-weight:700; color:var(--text-bright); margin:0;">Discord Webhook Manager</h2>
-              <span style="font-size:12px; color:var(--text-muted);">Real-time notifications, instance logs, monitor screenshots, and automated status reports</span>
+          <div class="instances-headerbar" id="webhooks-headerbar">
+            <div class="instances-title-wrap">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <h2 style="font-size:18px; font-weight:700; color:var(--text-bright); margin:0;">Webhook Manager</h2>
+                <span class="status-badge" id="wh-header-status-badge">Disabled</span>
+              </div>
+              <span style="font-size:12px; color:var(--text-muted);">Discord notifications, live instance status, and screen captures</span>
             </div>
-            <div class="webhooks-header-actions" style="display:flex; gap:10px; align-items:center;">
-              <button class="btn btn-secondary btn-sm" id="btn-webhook-test">Test Embed</button>
-              <button class="btn btn-secondary btn-sm" id="btn-webhook-test-screenshot">Test Screenshot</button>
-              <button class="btn btn-primary btn-sm" id="btn-webhook-save">Save Settings</button>
-            </div>
+            <div class="instances-header-actions" id="webhooks-header-actions" style="display:flex; gap:8px; align-items:center;"></div>
           </div>
-
-          <div class="webhooks-content" style="padding:20px; overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:20px;">
-            <div class="webhooks-grid" style="display:grid; grid-template-columns: repeat(2, 1fr); gap:20px;">
-              
-              <!-- Webhook Connection Card -->
-              <div class="card" style="padding:20px; display:flex; flex-direction:column; gap:16px; background:var(--card); border:1px solid var(--border); border-radius:8px;">
-                <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-soft); padding-bottom:12px;">
-                  <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Webhook Connection</h3>
-                  <label class="toggle-switch" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                    <input type="checkbox" id="webhook-enable-toggle">
-                    <span style="font-size:13px; font-weight:600; color:var(--muted);" id="webhook-status-label">Disabled</span>
-                  </label>
-                </div>
-
-                <div class="form-group" style="display:flex; flex-direction:column; gap:6px;">
-                  <label style="font-size:12px; font-weight:600; color:var(--muted);">Discord Webhook URL</label>
-                  <div style="display:flex; gap:8px;">
-                    <input type="password" id="webhook-url-input" class="form-control" placeholder="https://discord.com/api/webhooks/..." style="flex:1; background:var(--bg-2); border:1px solid var(--border); padding:8px 12px; border-radius:6px; color:var(--fg); font-size:13px;">
-                    <button class="btn btn-secondary" id="btn-toggle-webhook-visibility" title="Show/Hide URL" style="padding:8px 12px;">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                    </button>
-                  </div>
-                </div>
-
-                <div class="form-group" style="display:flex; flex-direction:column; gap:6px;">
-                  <label style="font-size:12px; font-weight:600; color:var(--muted);">Ping User ID (Optional)</label>
-                  <input type="text" id="webhook-ping-user-input" class="form-control" placeholder="e.g. 123456789012345678" style="background:var(--bg-2); border:1px solid var(--border); padding:8px 12px; border-radius:6px; color:var(--fg); font-size:13px; width:100%;">
-                  <span style="font-size:11px; color:var(--muted);">Mention specific Discord user ID when alerts trigger</span>
-                </div>
-              </div>
-
-              <!-- Event Notification Triggers Card -->
-              <div class="card" style="padding:20px; display:flex; flex-direction:column; gap:16px; background:var(--card); border:1px solid var(--border); border-radius:8px;">
-                <div style="border-bottom:1px solid var(--border-soft); padding-bottom:12px;">
-                  <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Event Notification Triggers</h3>
-                </div>
-
-                <div style="display:flex; flex-direction:column; gap:12px;">
-                  <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
-                    <div>
-                      <b style="font-size:13px; display:block; color:var(--text-bright);">Account Launch Alerts</b>
-                      <span style="font-size:11px; color:var(--muted);">Send notifications when accounts launch Roblox instances</span>
-                    </div>
-                    <input type="checkbox" id="webhook-trigger-launches" checked>
-                  </label>
-
-                  <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
-                    <div>
-                      <b style="font-size:13px; display:block; color:var(--text-bright);">Auto-Rejoin Event Alerts</b>
-                      <span style="font-size:11px; color:var(--muted);">Notify when auto-rejoin monitor triggers reconnects</span>
-                    </div>
-                    <input type="checkbox" id="webhook-trigger-rejoins" checked>
-                  </label>
-
-                  <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
-                    <div>
-                      <b style="font-size:13px; display:block; color:var(--text-bright);">Console Error Logs</b>
-                      <span style="font-size:11px; color:var(--muted);">Mirror critical application errors to Discord</span>
-                    </div>
-                    <input type="checkbox" id="webhook-trigger-logs" checked>
-                  </label>
-
-                  <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
-                    <div>
-                      <b style="font-size:13px; display:block; color:var(--text-bright);">Redact Sensitive Data</b>
-                      <span style="font-size:11px; color:var(--muted);">Automatically strip cookies & tokens from webhooks</span>
-                    </div>
-                    <input type="checkbox" id="webhook-redact-sensitive" checked>
-                  </label>
-                </div>
-              </div>
-
-              <!-- Monitor Screenshots Card -->
-              <div class="card" style="padding:20px; display:flex; flex-direction:column; gap:16px; background:var(--card); border:1px solid var(--border); border-radius:8px;">
-                <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-soft); padding-bottom:12px;">
-                  <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Monitor Screenshots</h3>
-                  <label class="toggle-switch" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                    <input type="checkbox" id="webhook-screenshot-enable-toggle">
-                    <span style="font-size:13px; font-weight:600; color:var(--muted);" id="webhook-screenshot-status-label">Disabled</span>
-                  </label>
-                </div>
-
-                <div style="display:flex; flex-direction:column; gap:12px;">
-                  <div class="form-group" style="display:flex; flex-direction:column; gap:6px;">
-                    <label style="font-size:12px; font-weight:600; color:var(--muted);">Automated Screenshot Interval</label>
-                    <div style="display:flex; align-items:center; gap:8px;">
-                      <input type="number" id="webhook-screenshot-interval" class="form-control" min="1" max="1440" placeholder="15" style="width:100px; background:var(--bg-2); border:1px solid var(--border); padding:8px 12px; border-radius:6px; color:var(--fg); font-size:13px;">
-                      <span style="font-size:12px; color:var(--muted);">minutes (default: 15)</span>
-                    </div>
-                  </div>
-
-                  <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
-                    <div>
-                      <b style="font-size:13px; display:block; color:var(--text-bright);">Capture All Monitors</b>
-                      <span style="font-size:11px; color:var(--muted);">Capture multi-monitor setup instead of primary display</span>
-                    </div>
-                    <input type="checkbox" id="webhook-screenshot-all-monitors">
-                  </label>
-
-                  <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
-                    <div>
-                      <b style="font-size:13px; display:block; color:var(--text-bright);">Window Preview Only</b>
-                      <span style="font-size:11px; color:var(--muted);">Capture only active Roblox client window (privacy friendly)</span>
-                    </div>
-                    <input type="checkbox" id="webhook-screenshot-window-only">
-                  </label>
-
-                  <div style="padding-top:4px; display:flex; gap:8px; flex-wrap:wrap;">
-                    <button class="btn btn-secondary btn-sm" id="btn-send-instant-screenshot">Capture & Send Screenshot Now</button>
-                    <button class="btn btn-secondary btn-sm" id="btn-send-instant-window-preview" style="color:rgb(139,92,246); border-color:rgba(139,92,246,0.3);">Send Window Preview Now</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Roblox Instance Summary Reports Card -->
-              <div class="card" style="padding:20px; display:flex; flex-direction:column; gap:16px; background:var(--card); border:1px solid var(--border); border-radius:8px;">
-                <div style="display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border-soft); padding-bottom:12px;">
-                  <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Roblox Instance Reports</h3>
-                  <label class="toggle-switch" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                    <input type="checkbox" id="webhook-instance-summary-toggle">
-                    <span style="font-size:13px; font-weight:600; color:var(--muted);" id="webhook-instance-status-label">Disabled</span>
-                  </label>
-                </div>
-
-                <div style="display:flex; flex-direction:column; gap:12px;">
-                  <div class="form-group" style="display:flex; flex-direction:column; gap:6px;">
-                    <label style="font-size:12px; font-weight:600; color:var(--muted);">Report Interval</label>
-                    <div style="display:flex; align-items:center; gap:8px;">
-                      <input type="number" id="webhook-instance-summary-interval" class="form-control" min="1" max="1440" placeholder="15" style="width:100px; background:var(--bg-2); border:1px solid var(--border); padding:8px 12px; border-radius:6px; color:var(--fg); font-size:13px;">
-                      <span style="font-size:12px; color:var(--muted);">minutes (default: 15)</span>
-                    </div>
-                  </div>
-
-                  <div style="padding-top:4px;">
-                    <button class="btn btn-secondary btn-sm" id="btn-send-instant-instances">Send Instance Status Report Now</button>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-
-            <!-- Recent Webhook Event History Card -->
-            <div class="card" style="padding:20px; display:flex; flex-direction:column; gap:12px; background:var(--card); border:1px solid var(--border); border-radius:8px;">
-              <h3 style="font-size:15px; font-weight:600; margin:0; color:var(--text-bright);">Recent Webhook Event Activity</h3>
-              <div id="webhook-history-container" style="max-height:220px; overflow-y:auto; font-family:monospace; font-size:12px; background:var(--bg-2); border-radius:6px; padding:10px 14px; border:1px solid var(--border);">
-                <span style="color:var(--muted);">No webhook events recorded yet.</span>
-              </div>
-            </div>
-
-          </div>
+          <div class="webhook-app-body" id="webhooks-app-body"></div>
         </div>
 
         <!-- extensions view -->
@@ -19293,6 +19143,9 @@ function initApp(): void {
   if (btnWebhooks) {
     btnWebhooks.addEventListener('click', () => {
       state.revealed = {};
+      if (state.view !== 'webhooks') {
+        state.previousView = state.view;
+      }
       state.view = state.view === 'webhooks' ? 'accounts' : 'webhooks';
       renderAll();
     });
@@ -19405,71 +19258,6 @@ function initApp(): void {
         extInstallConfirm.removeAttribute('disabled');
         extInstallConfirm.textContent = 'Install Extension';
       }
-    });
-  }
-
-  const btnWebhookSave = document.getElementById('btn-webhook-save');
-  if (btnWebhookSave) {
-    btnWebhookSave.addEventListener('click', () => saveWebhookConfig());
-  }
-
-  const btnWebhookTest = document.getElementById('btn-webhook-test');
-  if (btnWebhookTest) {
-    btnWebhookTest.addEventListener('click', () => testWebhook());
-  }
-
-  const btnWebhookTestScreenshot = document.getElementById('btn-webhook-test-screenshot');
-  if (btnWebhookTestScreenshot) {
-    btnWebhookTestScreenshot.addEventListener('click', () => testWebhookScreenshot());
-  }
-
-  const btnSendInstantScreenshot = document.getElementById('btn-send-instant-screenshot');
-  if (btnSendInstantScreenshot) {
-    btnSendInstantScreenshot.addEventListener('click', () => testWebhookScreenshot());
-  }
-
-  const btnSendInstantWindowPreview = document.getElementById('btn-send-instant-window-preview');
-  if (btnSendInstantWindowPreview) {
-    btnSendInstantWindowPreview.addEventListener('click', () => testWebhookWindowPreview());
-  }
-
-  const btnSendInstantInstances = document.getElementById('btn-send-instant-instances');
-  if (btnSendInstantInstances) {
-    btnSendInstantInstances.addEventListener('click', () => testWebhookInstances());
-  }
-
-  const webhookScreenshotToggle = document.getElementById('webhook-screenshot-enable-toggle') as HTMLInputElement | null;
-  const webhookScreenshotStatusLabel = document.getElementById('webhook-screenshot-status-label');
-  if (webhookScreenshotToggle && webhookScreenshotStatusLabel) {
-    webhookScreenshotToggle.addEventListener('change', () => {
-      webhookScreenshotStatusLabel.textContent = webhookScreenshotToggle.checked ? 'Enabled' : 'Disabled';
-      webhookScreenshotStatusLabel.style.color = webhookScreenshotToggle.checked ? 'var(--green)' : 'var(--muted)';
-    });
-  }
-
-  const webhookEnableToggle = document.getElementById('webhook-enable-toggle') as HTMLInputElement | null;
-  const webhookStatusLabel = document.getElementById('webhook-status-label');
-  if (webhookEnableToggle && webhookStatusLabel) {
-    webhookEnableToggle.addEventListener('change', () => {
-      webhookStatusLabel.textContent = webhookEnableToggle.checked ? 'Enabled' : 'Disabled';
-      webhookStatusLabel.style.color = webhookEnableToggle.checked ? 'var(--green)' : 'var(--muted)';
-    });
-  }
-
-  const webhookInstanceToggle = document.getElementById('webhook-instance-summary-toggle') as HTMLInputElement | null;
-  const webhookInstanceStatusLabel = document.getElementById('webhook-instance-status-label');
-  if (webhookInstanceToggle && webhookInstanceStatusLabel) {
-    webhookInstanceToggle.addEventListener('change', () => {
-      webhookInstanceStatusLabel.textContent = webhookInstanceToggle.checked ? 'Enabled' : 'Disabled';
-      webhookInstanceStatusLabel.style.color = webhookInstanceToggle.checked ? 'var(--green)' : 'var(--muted)';
-    });
-  }
-
-  const btnToggleWebhookVis = document.getElementById('btn-toggle-webhook-visibility');
-  const webhookUrlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
-  if (btnToggleWebhookVis && webhookUrlInput) {
-    btnToggleWebhookVis.addEventListener('click', () => {
-      webhookUrlInput.type = webhookUrlInput.type === 'password' ? 'text' : 'password';
     });
   }
 
@@ -20083,56 +19871,77 @@ function renderUnlockScreen(): void {
   setTimeout(() => pwdInput.focus(), 100);
 }
 
-async function fetchWebhookConfig() {
+let webhookConfigState: any = null;
+let webhookHistoryState: any[] = [];
+let webhookInstancesState: any[] = [];
+let webhookUrlRevealed = false;
+let webhookNewEndpointDraft = {
+  name: '',
+  url: '',
+  events: ['launch', 'rejoin', 'crash', 'account_status', 'group_relaunch', 'screenshot', 'instances', 'log']
+};
+
+const WEBHOOK_EVENT_DEFS = [
+  { id: 'launch', label: 'Launches' },
+  { id: 'rejoin', label: 'Rejoins' },
+  { id: 'crash', label: 'Crashes' },
+  { id: 'account_status', label: 'Cookies' },
+  { id: 'group_relaunch', label: 'Group Relaunch' },
+  { id: 'screenshot', label: 'Captures' },
+  { id: 'instances', label: 'Instances' },
+  { id: 'log', label: 'Logs' }
+];
+
+function getWebhookThemeColorHex(): string {
+  const cssPrimary = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
+  if (cssPrimary.startsWith('#')) return cssPrimary;
+  if (state.settings.accentColor && state.settings.accentColor.startsWith('#')) return state.settings.accentColor;
+  return getCurrentTheme().colors.primary || '#4f8ef7';
+}
+
+function isValidDiscordWebhookUrl(url: string): boolean {
+  const trimmed = (url || '').trim();
+  if (!trimmed) return false;
+  return /^https:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_.-]+\/?$/i.test(trimmed);
+}
+
+async function fetchWebhookConfig(forceRender = true): Promise<void> {
   try {
     const data = await apiService.getWebhookConfig();
     if (data.success && data.config) {
-      const cfg = data.config;
-      const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
-      const enableToggle = document.getElementById('webhook-enable-toggle') as HTMLInputElement | null;
-      const pingInput = document.getElementById('webhook-ping-user-input') as HTMLInputElement | null;
-      const launchesToggle = document.getElementById('webhook-trigger-launches') as HTMLInputElement | null;
-      const rejoinsToggle = document.getElementById('webhook-trigger-rejoins') as HTMLInputElement | null;
-      const logsToggle = document.getElementById('webhook-trigger-logs') as HTMLInputElement | null;
-      const redactToggle = document.getElementById('webhook-redact-sensitive') as HTMLInputElement | null;
-      const screenshotEnableToggle = document.getElementById('webhook-screenshot-enable-toggle') as HTMLInputElement | null;
-      const screenshotIntervalInput = document.getElementById('webhook-screenshot-interval') as HTMLInputElement | null;
-      const screenshotAllMonitorsToggle = document.getElementById('webhook-screenshot-all-monitors') as HTMLInputElement | null;
-      const screenshotWindowOnlyToggle = document.getElementById('webhook-screenshot-window-only') as HTMLInputElement | null;
-      const screenshotStatusLabel = document.getElementById('webhook-screenshot-status-label');
-      const instanceSummaryToggle = document.getElementById('webhook-instance-summary-toggle') as HTMLInputElement | null;
-      const instanceSummaryIntervalInput = document.getElementById('webhook-instance-summary-interval') as HTMLInputElement | null;
-      const instanceStatusLabel = document.getElementById('webhook-instance-status-label');
-      const statusLabel = document.getElementById('webhook-status-label');
-
-      if (urlInput) urlInput.value = cfg.webhook_url || '';
-      if (enableToggle) enableToggle.checked = Boolean(cfg.enabled);
-      if (pingInput) pingInput.value = cfg.ping_user_id || '';
-      if (launchesToggle) launchesToggle.checked = cfg.send_launches !== false;
-      if (rejoinsToggle) rejoinsToggle.checked = cfg.send_rejoins !== false;
-      if (logsToggle) logsToggle.checked = cfg.send_logs !== false;
-      if (redactToggle) redactToggle.checked = cfg.redact_sensitive !== false;
-      if (screenshotEnableToggle) screenshotEnableToggle.checked = Boolean(cfg.screenshot_enabled);
-      if (screenshotIntervalInput) screenshotIntervalInput.value = String(cfg.screenshot_interval_minutes || 15);
-      if (screenshotAllMonitorsToggle) screenshotAllMonitorsToggle.checked = Boolean(cfg.screenshot_all_monitors);
-      if (screenshotWindowOnlyToggle) screenshotWindowOnlyToggle.checked = Boolean(cfg.screenshot_window_only);
-      if (screenshotStatusLabel) {
-        screenshotStatusLabel.textContent = cfg.screenshot_enabled ? 'Enabled' : 'Disabled';
-        screenshotStatusLabel.style.color = cfg.screenshot_enabled ? 'var(--green)' : 'var(--muted)';
-      }
-      if (instanceSummaryToggle) instanceSummaryToggle.checked = Boolean(cfg.instance_summary_enabled);
-      if (instanceSummaryIntervalInput) instanceSummaryIntervalInput.value = String(cfg.instance_summary_interval_minutes || 15);
-      if (instanceStatusLabel) {
-        instanceStatusLabel.textContent = cfg.instance_summary_enabled ? 'Enabled' : 'Disabled';
-        instanceStatusLabel.style.color = cfg.instance_summary_enabled ? 'var(--green)' : 'var(--muted)';
-      }
-      if (statusLabel) {
-        statusLabel.textContent = cfg.enabled ? 'Enabled' : 'Disabled';
-        statusLabel.style.color = cfg.enabled ? 'var(--green)' : 'var(--muted)';
-      }
-
-      if (data.history && Array.isArray(data.history)) {
-        renderWebhookHistory(data.history);
+      webhookConfigState = {
+        enabled: false,
+        webhook_url: '',
+        bot_username: 'FRAM Webhook',
+        bot_avatar_url: '',
+        embed_color: getWebhookThemeColorHex(),
+        send_logs: true,
+        send_launches: true,
+        send_rejoins: true,
+        send_crashes: true,
+        send_account_status: true,
+        send_group_relaunch: true,
+        send_automation: false,
+        ping_user_id: '',
+        ping_only_alerts: false,
+        redact_sensitive: true,
+        screenshot_enabled: false,
+        screenshot_interval_minutes: 15,
+        screenshot_mode: 'client_grid',
+        screenshot_target_pid: null,
+        screenshot_all_monitors: false,
+        screenshot_window_only: false,
+        screenshot_on_alert: false,
+        instance_summary_enabled: false,
+        instance_summary_interval_minutes: 15,
+        instance_summary_mode: 'new_message',
+        endpoints: [],
+        ...data.config
+      };
+      webhookHistoryState = Array.isArray(data.history) ? data.history : [];
+      webhookInstancesState = Array.isArray(data.instances) ? data.instances : [];
+      if (forceRender && state.view === 'webhooks') {
+        renderWebhooksView(true);
       }
     }
   } catch (err) {
@@ -20140,62 +19949,23 @@ async function fetchWebhookConfig() {
   }
 }
 
-function renderWebhookHistory(history: any[]) {
-  const container = document.getElementById('webhook-history-container');
-  if (!container) return;
-  if (!history || history.length === 0) {
-    container.innerHTML = `<span style="color:var(--muted);">No webhook events recorded yet.</span>`;
-    return;
+async function saveWebhookConfigPatch(patch: Record<string, any>, showToast = false): Promise<void> {
+  if (!webhookConfigState) {
+    await fetchWebhookConfig(false);
   }
-  container.innerHTML = history.map(item => {
-    const isOk = item.status === 'Success';
-    const badgeColor = isOk ? 'var(--green)' : 'var(--red)';
-    return `<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.05);">
-      <div>
-        <span style="color:var(--muted); margin-right:8px;">[${item.timestamp}]</span>
-        <b style="color:var(--text-bright);">${item.event}</b>
-      </div>
-      <span style="color:${badgeColor}; font-weight:600;">${item.status}</span>
-    </div>`;
-  }).join('');
-}
-
-async function saveWebhookConfig() {
-  const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
-  const enableToggle = document.getElementById('webhook-enable-toggle') as HTMLInputElement | null;
-  const pingInput = document.getElementById('webhook-ping-user-input') as HTMLInputElement | null;
-  const launchesToggle = document.getElementById('webhook-trigger-launches') as HTMLInputElement | null;
-  const rejoinsToggle = document.getElementById('webhook-trigger-rejoins') as HTMLInputElement | null;
-  const logsToggle = document.getElementById('webhook-trigger-logs') as HTMLInputElement | null;
-  const redactToggle = document.getElementById('webhook-redact-sensitive') as HTMLInputElement | null;
-  const screenshotEnableToggle = document.getElementById('webhook-screenshot-enable-toggle') as HTMLInputElement | null;
-  const screenshotIntervalInput = document.getElementById('webhook-screenshot-interval') as HTMLInputElement | null;
-  const screenshotAllMonitorsToggle = document.getElementById('webhook-screenshot-all-monitors') as HTMLInputElement | null;
-  const screenshotWindowOnlyToggle = document.getElementById('webhook-screenshot-window-only') as HTMLInputElement | null;
-  const instanceSummaryToggle = document.getElementById('webhook-instance-summary-toggle') as HTMLInputElement | null;
-  const instanceSummaryIntervalInput = document.getElementById('webhook-instance-summary-interval') as HTMLInputElement | null;
-
-  const payload = {
-    webhook_url: urlInput?.value.trim() || '',
-    enabled: enableToggle?.checked || false,
-    ping_user_id: pingInput?.value.trim() || '',
-    send_launches: launchesToggle?.checked || false,
-    send_rejoins: rejoinsToggle?.checked || false,
-    send_logs: logsToggle?.checked || false,
-    redact_sensitive: redactToggle?.checked || false,
-    screenshot_enabled: screenshotEnableToggle?.checked || false,
-    screenshot_interval_minutes: parseInt(screenshotIntervalInput?.value || '15', 10) || 15,
-    screenshot_all_monitors: screenshotAllMonitorsToggle?.checked || false,
-    screenshot_window_only: screenshotWindowOnlyToggle?.checked || false,
-    instance_summary_enabled: instanceSummaryToggle?.checked || false,
-    instance_summary_interval_minutes: parseInt(instanceSummaryIntervalInput?.value || '15', 10) || 15
+  webhookConfigState = {
+    ...(webhookConfigState || {}),
+    embed_color: getWebhookThemeColorHex(),
+    ...patch
   };
-
   try {
-    const data = await apiService.saveWebhookConfig(payload);
+    const data = await apiService.saveWebhookConfig(webhookConfigState);
     if (data.success) {
-      toast('Webhook settings saved successfully!', 'success');
-      fetchWebhookConfig();
+      if (data.config) webhookConfigState = { ...webhookConfigState, ...data.config };
+      if (showToast) toast('Webhook settings saved', 'success');
+      if (state.view === 'webhooks') {
+        renderWebhooksView(true);
+      }
     } else {
       toast(data.error || 'Failed to save webhook settings', 'error');
     }
@@ -20204,19 +19974,509 @@ async function saveWebhookConfig() {
   }
 }
 
-async function testWebhook() {
-  const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
-  const url = urlInput?.value.trim();
-  if (!url) {
-    toast('Please enter a Discord Webhook URL first.', 'info');
-    return;
+function collectWebhookFormOverlay(): Record<string, any> {
+  const cfg = webhookConfigState || {};
+  const urlEl = document.getElementById('webhook-url-input') as HTMLInputElement | null;
+  const pingEl = document.getElementById('webhook-ping-user-input') as HTMLInputElement | null;
+  const botNameEl = document.getElementById('webhook-bot-username-input') as HTMLInputElement | null;
+  return {
+    webhook_url: urlEl ? urlEl.value.trim() : (cfg.webhook_url || ''),
+    ping_user_id: pingEl ? pingEl.value.trim() : (cfg.ping_user_id || ''),
+    bot_username: botNameEl ? (botNameEl.value.trim() || 'FRAM Webhook') : (cfg.bot_username || 'FRAM Webhook'),
+    embed_color: getWebhookThemeColorHex()
+  };
+}
+
+async function renderWebhooksView(skipFetch = false): Promise<void> {
+  const appBody = document.getElementById('webhooks-app-body');
+  const headerActions = document.getElementById('webhooks-header-actions');
+  const headerStatusBadge = document.getElementById('wh-header-status-badge');
+
+  if (!webhookConfigState && !skipFetch) {
+    if (appBody) {
+      appBody.innerHTML = `
+        <div style="padding:40px 0; text-align:center; color:var(--muted); font-size:13px;">
+          Loading...
+        </div>
+      `;
+    }
+    await fetchWebhookConfig(false);
+  } else if (!skipFetch) {
+    fetchWebhookConfig(true);
   }
+
+  if (!appBody) return;
+  const cfg = webhookConfigState || {};
+  const extraEndpoints: any[] = Array.isArray(cfg.endpoints) ? cfg.endpoints : [];
+  const urlValid = isValidDiscordWebhookUrl(cfg.webhook_url || '');
+  const activeExtraCount = extraEndpoints.filter(ep => ep.enabled !== false && isValidDiscordWebhookUrl(ep.url)).length;
+  const isOnline = Boolean(cfg.enabled) && ((urlValid ? 1 : 0) + activeExtraCount) > 0;
+
+  if (headerStatusBadge) {
+    headerStatusBadge.className = `status-badge ${isOnline ? 'valid' : (cfg.enabled ? 'expired' : '')}`;
+    headerStatusBadge.textContent = isOnline ? 'Enabled' : (cfg.enabled ? 'No URL' : 'Disabled');
+    headerStatusBadge.setAttribute(
+      'style',
+      !isOnline && !cfg.enabled ? 'background:var(--card-alt); color:var(--muted); border:1px solid var(--border);' : ''
+    );
+  }
+
+  if (headerActions) {
+    headerActions.innerHTML = `
+      <button class="btn btn-secondary" id="btn-wh-header-toggle" type="button" style="font-size:12px;">
+        Webhooks: <b style="color:${cfg.enabled ? 'var(--green)' : 'var(--muted)'};">${cfg.enabled ? 'ON' : 'OFF'}</b>
+      </button>
+      <button class="btn btn-secondary" id="btn-wh-header-test" type="button" style="font-size:12px;">
+        Test Webhook
+      </button>
+      <button class="btn btn-primary" id="btn-wh-header-save" type="button" style="font-size:12px;">
+        Save
+      </button>
+    `;
+
+    document.getElementById('btn-wh-header-toggle')?.addEventListener('click', () => {
+      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), enabled: !cfg.enabled }, true);
+    });
+    document.getElementById('btn-wh-header-test')?.addEventListener('click', async () => {
+      const overlay = collectWebhookFormOverlay();
+      await saveWebhookConfigPatch(overlay, false);
+      await testWebhook(overlay.webhook_url);
+    });
+    document.getElementById('btn-wh-header-save')?.addEventListener('click', () => {
+      saveWebhookConfigPatch(collectWebhookFormOverlay(), true);
+    });
+  }
+
+  const summaryMode = cfg.instance_summary_mode || 'new_message';
+  const instInterval = Number(cfg.instance_summary_interval_minutes || 15);
+  const shotInterval = Number(cfg.screenshot_interval_minutes || 15);
+  const currentShotMode = cfg.screenshot_mode || (cfg.screenshot_window_only ? 'window_only' : (cfg.screenshot_all_monitors ? 'all_monitors' : 'primary'));
+
+  const triggers = [
+    { key: 'send_launches', label: 'Account Launches', enabled: cfg.send_launches !== false },
+    { key: 'send_rejoins', label: 'Auto-Rejoins', enabled: cfg.send_rejoins !== false },
+    { key: 'send_crashes', label: 'Crashes & Disconnects', enabled: cfg.send_crashes !== false },
+    { key: 'send_account_status', label: 'Expired / Banned Cookies', enabled: cfg.send_account_status !== false },
+    { key: 'send_group_relaunch', label: 'Group Auto-Relaunch', enabled: cfg.send_group_relaunch !== false },
+    { key: 'send_logs', label: 'Console Error Logs', enabled: cfg.send_logs !== false },
+    { key: 'ping_only_alerts', label: 'Ping Only on Alerts', enabled: Boolean(cfg.ping_only_alerts) }
+  ];
+
+  const recentItems = (Array.isArray(webhookHistoryState) ? webhookHistoryState : []).slice(0, 20);
+
+  appBody.innerHTML = `
+    <!-- Primary Endpoint Card -->
+    <div class="wh-card">
+      <div class="wh-card-title">Discord Webhook</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input
+          type="${webhookUrlRevealed ? 'text' : 'password'}"
+          id="webhook-url-input"
+          class="webhook-input"
+          value="${escapeHtml(cfg.webhook_url || '')}"
+          placeholder="https://discord.com/api/webhooks/..."
+          autocomplete="off"
+          style="flex:1; font-family:monospace;"
+        />
+        <button class="btn btn-secondary btn-sm" id="btn-webhook-toggle-url" type="button" style="height:34px; padding:0 12px;">
+          ${webhookUrlRevealed ? 'Hide' : 'Show'}
+        </button>
+        <button class="btn btn-secondary btn-sm" id="btn-webhook-paste-url" type="button" style="height:34px; padding:0 12px;">
+          Paste
+        </button>
+      </div>
+
+      <div class="wh-inline-fields">
+        <div class="wh-inline-field">
+          <label>Bot Name</label>
+          <input type="text" id="webhook-bot-username-input" class="webhook-input" value="${escapeHtml(cfg.bot_username || 'FRAM Webhook')}" placeholder="FRAM Webhook" />
+        </div>
+        <div class="wh-inline-field">
+          <label>Ping User / Role ID</label>
+          <input type="text" id="webhook-ping-user-input" class="webhook-input" value="${escapeHtml(cfg.ping_user_id || '')}" placeholder="Optional Discord ID" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Two-Column Grid: Events & Scheduled Tasks -->
+    <div class="wh-two-col">
+      <!-- Left: Event Toggles -->
+      <div class="wh-card">
+        <div class="wh-card-title">Notifications</div>
+        <div class="wh-toggle-list">
+          ${triggers.map(t => `
+            <div class="wh-toggle-row">
+              <span>${escapeHtml(t.label)}</span>
+              <button type="button" class="switch ${t.enabled ? 'on' : ''} sw-wh-trigger" data-key="${t.key}">
+                <div class="knob"></div>
+              </button>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Right: Scheduled Updates & Captures -->
+      <div class="wh-card">
+        <div class="wh-card-title">Status Board &amp; Captures</div>
+
+        <div class="wh-sub-block">
+          <div class="wh-toggle-row" style="border:none; padding:0;">
+            <div>
+              <div style="font-weight:600; color:var(--fg);">Instance Status Board</div>
+              <div style="font-size:11.5px; color:var(--muted);">Report active accounts, games, CPU, and RAM</div>
+            </div>
+            <button type="button" class="switch ${cfg.instance_summary_enabled ? 'on' : ''}" id="sw-webhook-instance-summary">
+              <div class="knob"></div>
+            </button>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+            <select id="webhook-instance-mode-select" class="webhook-select" style="flex:1;">
+              <option value="edit_live_board" ${summaryMode === 'edit_live_board' ? 'selected' : ''}>Update Single Message</option>
+              <option value="new_message" ${summaryMode === 'new_message' ? 'selected' : ''}>Post New Message</option>
+            </select>
+            <input type="number" id="webhook-instance-summary-interval" class="webhook-input" min="1" max="1440" value="${instInterval}" style="width:68px;" title="Interval in minutes" />
+            <span style="font-size:12px; color:var(--muted);">min</span>
+            <button class="btn btn-secondary btn-sm" id="btn-webhook-instances-now" type="button" style="height:34px; padding:0 12px;">Send Now</button>
+          </div>
+        </div>
+
+        <div class="wh-divider"></div>
+
+        <div class="wh-sub-block">
+          <div class="wh-toggle-row" style="border:none; padding:0;">
+            <div>
+              <div style="font-weight:600; color:var(--fg);">Screen Captures</div>
+              <div style="font-size:11.5px; color:var(--muted);">Multi-instance Roblox grid, per-instance windows, or full display</div>
+            </div>
+            <button type="button" class="switch ${cfg.screenshot_enabled ? 'on' : ''}" id="sw-webhook-screenshot-enabled">
+              <div class="knob"></div>
+            </button>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap;">
+            <select id="webhook-screenshot-mode-select" class="webhook-select" style="flex:1; min-width:165px;">
+              <option value="client_grid" ${currentShotMode === 'client_grid' ? 'selected' : ''}>Multi-Instance Grid</option>
+              <option value="all_instances" ${currentShotMode === 'all_instances' ? 'selected' : ''}>Each Instance Separately</option>
+              <option value="window_only" ${currentShotMode === 'window_only' ? 'selected' : ''}>Single Roblox Instance</option>
+              <option value="primary" ${currentShotMode === 'primary' ? 'selected' : ''}>Primary Monitor</option>
+              <option value="all_monitors" ${currentShotMode === 'all_monitors' ? 'selected' : ''}>All Monitors</option>
+            </select>
+            ${currentShotMode === 'window_only' ? `
+              <select id="webhook-screenshot-pid-select" class="webhook-select" style="flex:1; min-width:140px;">
+                <option value="">Active Roblox Window</option>
+                ${webhookInstancesState.map(inst => {
+                  const pidVal = Number(inst.pid || 0);
+                  const label = inst.username ? `@${inst.username} (PID ${pidVal})` : `PID ${pidVal}`;
+                  return `<option value="${pidVal}" ${Number(cfg.screenshot_target_pid) === pidVal ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+                }).join('')}
+              </select>
+            ` : ''}
+            <input type="number" id="webhook-screenshot-interval" class="webhook-input" min="1" max="1440" value="${shotInterval}" style="width:68px;" title="Interval in minutes" />
+            <span style="font-size:12px; color:var(--muted);">min</span>
+            <button class="btn btn-secondary btn-sm" id="btn-webhook-shot-now" type="button" style="height:34px; padding:0 12px;">Capture</button>
+          </div>
+        </div>
+
+        <div class="wh-divider"></div>
+
+        <div class="wh-toggle-row" style="border:none; padding:0;">
+          <span>Attach Screenshot on Crash / Rejoin</span>
+          <button type="button" class="switch ${cfg.screenshot_on_alert ? 'on' : ''}" id="sw-webhook-shot-on-alert">
+            <div class="knob"></div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Optional Secondary Channel Routing -->
+    <div class="wh-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+        <div class="wh-card-title" style="margin:0;">Additional Channels</div>
+        <span style="font-size:11.5px; color:var(--muted);">Route specific events to separate Discord webhooks</span>
+      </div>
+
+      <div style="display:flex; gap:8px; align-items:center;">
+        <input
+          type="text"
+          id="webhook-new-ep-name"
+          class="webhook-input"
+          value="${escapeHtml(webhookNewEndpointDraft.name)}"
+          placeholder="Label (e.g. Alerts)"
+          style="width:170px;"
+        />
+        <input
+          type="password"
+          id="webhook-new-ep-url"
+          class="webhook-input"
+          value="${escapeHtml(webhookNewEndpointDraft.url)}"
+          placeholder="https://discord.com/api/webhooks/..."
+          style="flex:1; font-family:monospace;"
+        />
+        <button class="btn btn-secondary btn-sm" id="btn-webhook-add-ep" type="button" style="height:34px; padding:0 14px;">Add</button>
+      </div>
+
+      ${extraEndpoints.length > 0 ? `
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:4px;">
+          ${extraEndpoints.map((ep, idx) => {
+            const epEvents: string[] = Array.isArray(ep.events) ? ep.events : [];
+            return `
+              <div class="wh-ep-row">
+                <div style="display:flex; align-items:center; gap:8px; min-width:140px;">
+                  <button type="button" class="switch ${ep.enabled !== false ? 'on' : ''} sw-ep-toggle" data-idx="${idx}">
+                    <div class="knob"></div>
+                  </button>
+                  <b style="font-size:12.5px; color:var(--fg);">${escapeHtml(ep.name || `Channel ${idx + 1}`)}</b>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:4px; flex:1;">
+                  ${WEBHOOK_EVENT_DEFS.map(ev => {
+                    const active = epEvents.includes(ev.id) || epEvents.includes('all');
+                    return `<button type="button" class="pill btn-ep-event ${active ? 'active' : ''}" data-idx="${idx}" data-ev="${ev.id}" style="padding:2px 8px; font-size:11px;">${ev.label}</button>`;
+                  }).join('')}
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn btn-secondary btn-sm btn-ep-test" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Test</button>
+                  <button class="btn btn-danger btn-sm btn-ep-delete" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Remove</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : ''}
+    </div>
+
+    <!-- Recent Activity Table -->
+    <div class="wh-card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div class="wh-card-title" style="margin:0;">Recent Activity</div>
+        <button class="btn btn-secondary btn-sm" id="btn-webhook-clear-history" type="button" style="padding:3px 10px; font-size:11px;" ${recentItems.length === 0 ? 'disabled' : ''}>Clear</button>
+      </div>
+
+      <div class="instances-table-wrap">
+        <table class="instances-table">
+          <thead>
+            <tr>
+              <th style="width:150px; text-align:left;">Time</th>
+              <th style="width:110px;">Type</th>
+              <th style="text-align:left;">Event</th>
+              <th style="width:110px;">Status</th>
+              <th style="width:80px;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recentItems.length === 0 ? `
+              <tr>
+                <td colspan="5" style="padding:20px; text-align:center; color:var(--muted);">No webhook events sent yet.</td>
+              </tr>
+            ` : recentItems.map(item => {
+              const isOk = item.ok !== undefined ? Boolean(item.ok) : item.status === 'Success';
+              return `
+                <tr>
+                  <td style="text-align:left; font-family:monospace; font-size:11.5px; color:var(--muted);">${escapeHtml(item.timestamp || '')}</td>
+                  <td><span class="webhook-cat-badge cat-${escapeHtml(String(item.category || 'general').toLowerCase())}">${escapeHtml(String(item.category || 'general'))}</span></td>
+                  <td style="text-align:left; color:var(--fg);">${escapeHtml(item.event || '')}</td>
+                  <td><span class="status-badge ${isOk ? 'valid' : 'expired'}">${isOk ? 'Sent' : 'Failed'}</span></td>
+                  <td>
+                    ${item.id ? `<button type="button" class="btn btn-secondary btn-sm btn-webhook-retry" data-id="${escapeHtml(item.id)}" style="padding:2px 8px; font-size:11px;">Resend</button>` : '—'}
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('btn-webhook-toggle-url')?.addEventListener('click', () => {
+    webhookConfigState = { ...cfg, ...collectWebhookFormOverlay() };
+    webhookUrlRevealed = !webhookUrlRevealed;
+    renderWebhooksView(true);
+  });
+
+  document.getElementById('btn-webhook-paste-url')?.addEventListener('click', async () => {
+    try {
+      const clip = await navigator.clipboard.readText();
+      if (clip) {
+        const urlEl = document.getElementById('webhook-url-input') as HTMLInputElement | null;
+        if (urlEl) {
+          urlEl.value = clip.trim();
+        }
+      }
+    } catch {
+      toast('Could not read from clipboard', 'error');
+    }
+  });
+
+  appBody.querySelectorAll('.sw-wh-trigger').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = (btn as HTMLElement).dataset.key;
+      if (!key) return;
+      const currentVal = key === 'ping_only_alerts' ? Boolean(cfg[key]) : (cfg[key] !== false);
+      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), [key]: !currentVal });
+    });
+  });
+
+  document.getElementById('sw-webhook-instance-summary')?.addEventListener('click', () => {
+    saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), instance_summary_enabled: !cfg.instance_summary_enabled });
+  });
+
+  const instModeSel = document.getElementById('webhook-instance-mode-select') as HTMLSelectElement | null;
+  instModeSel?.addEventListener('change', () => {
+    saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), instance_summary_mode: instModeSel.value });
+  });
+
+  const instIntervalInput = document.getElementById('webhook-instance-summary-interval') as HTMLInputElement | null;
+  instIntervalInput?.addEventListener('change', () => {
+    const mins = Math.max(1, Math.min(1440, parseInt(instIntervalInput.value || '15', 10) || 15));
+    saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), instance_summary_interval_minutes: mins });
+  });
+
+  document.getElementById('btn-webhook-instances-now')?.addEventListener('click', () => testWebhookInstances(false));
+
+  document.getElementById('sw-webhook-screenshot-enabled')?.addEventListener('click', () => {
+    saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), screenshot_enabled: !cfg.screenshot_enabled });
+  });
+
+  const shotModeSel = document.getElementById('webhook-screenshot-mode-select') as HTMLSelectElement | null;
+  shotModeSel?.addEventListener('change', () => {
+    const m = shotModeSel.value;
+    saveWebhookConfigPatch({
+      ...collectWebhookFormOverlay(),
+      screenshot_mode: m,
+      screenshot_all_monitors: m === 'all_monitors',
+      screenshot_window_only: m === 'window_only'
+    });
+  });
+
+  const shotPidSel = document.getElementById('webhook-screenshot-pid-select') as HTMLSelectElement | null;
+  shotPidSel?.addEventListener('change', () => {
+    const pidVal = shotPidSel.value ? parseInt(shotPidSel.value, 10) : null;
+    saveWebhookConfigPatch({
+      ...collectWebhookFormOverlay(),
+      screenshot_target_pid: pidVal
+    });
+  });
+
+  const shotIntervalInput = document.getElementById('webhook-screenshot-interval') as HTMLInputElement | null;
+  shotIntervalInput?.addEventListener('change', () => {
+    const mins = Math.max(1, Math.min(1440, parseInt(shotIntervalInput.value || '15', 10) || 15));
+    saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), screenshot_interval_minutes: mins });
+  });
+
+  document.getElementById('btn-webhook-shot-now')?.addEventListener('click', () => {
+    const m = shotModeSel?.value || currentShotMode;
+    const pidVal = shotPidSel?.value ? parseInt(shotPidSel.value, 10) : (cfg.screenshot_target_pid || null);
+    testWebhookScreenshot(m, m === 'window_only' ? pidVal : null);
+  });
+
+  document.getElementById('sw-webhook-shot-on-alert')?.addEventListener('click', () => {
+    saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), screenshot_on_alert: !cfg.screenshot_on_alert });
+  });
+
+  const newEpNameEl = document.getElementById('webhook-new-ep-name') as HTMLInputElement | null;
+  const newEpUrlEl = document.getElementById('webhook-new-ep-url') as HTMLInputElement | null;
+  newEpNameEl?.addEventListener('input', () => { webhookNewEndpointDraft.name = newEpNameEl.value; });
+  newEpUrlEl?.addEventListener('input', () => { webhookNewEndpointDraft.url = newEpUrlEl.value; });
+
+  document.getElementById('btn-webhook-add-ep')?.addEventListener('click', () => {
+    const name = (newEpNameEl?.value || '').trim() || `Channel ${extraEndpoints.length + 1}`;
+    const url = (newEpUrlEl?.value || '').trim();
+    if (!isValidDiscordWebhookUrl(url)) {
+      toast('Enter a valid Discord Webhook URL', 'error');
+      return;
+    }
+    const nextEndpoints = [
+      ...extraEndpoints,
+      {
+        id: Math.random().toString(36).slice(2, 10),
+        name,
+        url,
+        enabled: true,
+        events: ['launch', 'rejoin', 'crash', 'account_status', 'group_relaunch', 'screenshot', 'instances', 'log']
+      }
+    ];
+    webhookNewEndpointDraft = { name: '', url: '', events: [...webhookNewEndpointDraft.events] };
+    saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), endpoints: nextEndpoints }, true);
+  });
+
+  appBody.querySelectorAll('.sw-ep-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+      const next = extraEndpoints.map((ep, i) => i === idx ? { ...ep, enabled: ep.enabled === false } : ep);
+      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), endpoints: next });
+    });
+  });
+
+  appBody.querySelectorAll('.btn-ep-delete').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+      const next = extraEndpoints.filter((_, i) => i !== idx);
+      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), endpoints: next }, true);
+    });
+  });
+
+  appBody.querySelectorAll('.btn-ep-test').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+      const ep = extraEndpoints[idx];
+      if (ep?.url) testWebhook(ep.url);
+    });
+  });
+
+  appBody.querySelectorAll('.btn-ep-event').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+      const evId = (btn as HTMLElement).dataset.ev || '';
+      const ep = extraEndpoints[idx];
+      if (!ep || !evId) return;
+      const currentEvents: string[] = Array.isArray(ep.events) ? [...ep.events] : WEBHOOK_EVENT_DEFS.map(d => d.id);
+      const nextEvents = currentEvents.includes(evId)
+        ? currentEvents.filter(x => x !== evId && x !== 'all')
+        : [...currentEvents, evId];
+      const next = extraEndpoints.map((item, i) => i === idx ? { ...item, events: nextEvents } : item);
+      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), endpoints: next });
+    });
+  });
+
+  appBody.querySelectorAll('.btn-webhook-retry').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = (btn as HTMLElement).dataset.id;
+      if (!id) return;
+      try {
+        const res = await apiService.retryWebhookItem(id);
+        if (res.success) {
+          toast('Webhook re-sent', 'success');
+          await fetchWebhookConfig(true);
+        } else {
+          toast(res.error || 'Failed to resend', 'error');
+        }
+      } catch {
+        toast('Failed to resend', 'error');
+      }
+    });
+  });
+
+  document.getElementById('btn-webhook-clear-history')?.addEventListener('click', async () => {
+    try {
+      const res = await apiService.clearWebhookHistory();
+      if (res.success) {
+        webhookHistoryState = [];
+        renderWebhooksView(true);
+      }
+    } catch {
+      toast('Failed to clear history', 'error');
+    }
+  });
+}
+
+async function testWebhook(overrideUrl?: string) {
+  const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
+  const url = (overrideUrl ?? urlInput?.value ?? webhookConfigState?.webhook_url ?? '').trim();
   toast('Sending test webhook to Discord...', 'info');
   try {
-    const data = await apiService.testWebhook(url);
+    const data = await apiService.testWebhook(url || undefined);
     if (data.success) {
       toast('Test webhook delivered successfully!', 'success');
-      fetchWebhookConfig();
+      fetchWebhookConfig(true);
     } else {
       toast(data.error || 'Test webhook failed.', 'error');
     }
@@ -20225,63 +20485,37 @@ async function testWebhook() {
   }
 }
 
-async function testWebhookScreenshot() {
-  const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
-  const allMonitorsToggle = document.getElementById('webhook-screenshot-all-monitors') as HTMLInputElement | null;
-  const url = urlInput?.value.trim();
-  if (!url) {
-    toast('Please enter a Discord Webhook URL first.', 'info');
-    return;
-  }
-  const allMonitors = allMonitorsToggle ? allMonitorsToggle.checked : false;
-  toast(`Capturing and sending screenshot (${allMonitors ? 'All Monitors' : 'Primary Monitor'})...`, 'info');
+async function testWebhookScreenshot(modeOverride?: string, targetPid?: number | null) {
+  const mode = modeOverride || webhookConfigState?.screenshot_mode || 'client_grid';
+  const allMonitors = mode === 'all_monitors';
+  const modeNames: Record<string, string> = {
+    client_grid: 'Multi-Instance Grid',
+    all_instances: 'All Roblox Instances',
+    window_only: 'Roblox Instance Window',
+    primary: 'Primary Monitor',
+    all_monitors: 'All Monitors'
+  };
+  toast(`Capturing and sending ${modeNames[mode] || 'screenshot'}...`, 'info');
   try {
-    const data = await apiService.testWebhookScreenshot(url, allMonitors);
+    const data = await apiService.testWebhookScreenshot(undefined, allMonitors, mode, targetPid);
     if (data.success) {
-      toast('Monitor screenshot delivered successfully to Discord!', 'success');
-      fetchWebhookConfig();
+      toast(data.message || 'Capture delivered to Discord!', 'success');
+      fetchWebhookConfig(true);
     } else {
       toast(data.error || 'Screenshot delivery failed.', 'error');
     }
   } catch (err) {
-    toast('Failed to send monitor screenshot.', 'error');
+    toast('Failed to send capture.', 'error');
   }
 }
 
-async function testWebhookWindowPreview() {
-  const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
-  const url = urlInput?.value.trim();
-  if (!url) {
-    toast('Please enter a Discord Webhook URL first.', 'info');
-    return;
-  }
-  toast('Capturing and sending Roblox client window preview...', 'info');
+async function testWebhookInstances(forceNew = false) {
+  toast(forceNew ? 'Posting fresh instance status report...' : 'Updating Roblox instance status board...', 'info');
   try {
-    const data = await apiService.sendWindowPreview();
+    const data = await apiService.testWebhookInstances(undefined, forceNew);
     if (data.success) {
-      toast('Window preview delivered successfully to Discord!', 'success');
-      fetchWebhookConfig();
-    } else {
-      toast(data.error || 'Window preview delivery failed.', 'error');
-    }
-  } catch (err) {
-    toast('Failed to send window preview.', 'error');
-  }
-}
-
-async function testWebhookInstances() {
-  const urlInput = document.getElementById('webhook-url-input') as HTMLInputElement | null;
-  const url = urlInput?.value.trim();
-  if (!url) {
-    toast('Please enter a Discord Webhook URL first.', 'info');
-    return;
-  }
-  toast('Sending Roblox instance status report to Discord...', 'info');
-  try {
-    const data = await apiService.testWebhookInstances(url);
-    if (data.success) {
-      toast('Instance status report delivered successfully to Discord!', 'success');
-      fetchWebhookConfig();
+      toast(data.message || 'Instance status report delivered!', 'success');
+      fetchWebhookConfig(true);
     } else {
       toast(data.error || 'Instance report delivery failed.', 'error');
     }

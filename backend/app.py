@@ -50,7 +50,7 @@ from utils.paths import get_data_folder
 from utils.cleanup import cleanup_temp_files
 from utils.error_detector import error_detector, log_detailed_error
 
-webhook_manager = WebhookManager()
+webhook_manager = WebhookManager(get_data_folder())
 pid_cpu_trackers = {}
 pid_cpu_trackers_lock = threading.Lock()
 auto_arranger = AutoArranger(settings_getter=lambda: load_data().get('settings', {}))
@@ -173,6 +173,11 @@ def add_backend_log(message: str, level: str = 'info', category: str = 'system',
             'category': category,
             'source': source
         })
+    if level in ('error', 'fatal', 'critical') and source != 'webhook_manager':
+        try:
+            webhook_manager.notify_log(level, message)
+        except Exception:
+            pass
 
 import logging
 
@@ -494,6 +499,19 @@ def _rejoin_presence_lookup(cookie, user_ids, session=None):
     except Exception:
         return {"ok": False}
 
+def _auto_rejoin_log_hook(msg: str):
+    print(msg)
+    try:
+        m = re.match(r"^\[AUTO REJOIN\]\s+([^:]+):\s+(.+)$", str(msg or ""))
+        if m:
+            uname = m.group(1).strip()
+            detail = m.group(2).strip()
+            detail_lower = detail.lower()
+            if "disconnect detected" in detail_lower or "max rejoin attempts reached" in detail_lower:
+                webhook_manager.notify_crash(uname, reason=detail)
+    except Exception:
+        pass
+
 def init_auto_rejoin_monitor(manager):
     if not manager:
         return None
@@ -504,7 +522,7 @@ def init_auto_rejoin_monitor(manager):
         monitor = AutoRejoinMonitor(
             launch_callback=_rejoin_launch_callback,
             presence_lookup=_rejoin_presence_lookup,
-            log_callback=lambda msg: print(msg)
+            log_callback=_auto_rejoin_log_hook
         )
         manager.set_auto_rejoin_monitor(monitor)
         monitor.start()
@@ -1009,10 +1027,12 @@ def update_account_status(username: str, new_status: str) -> bool:
         norm_status = "expired"
 
     updated_any = False
+    old_status = None
     manager = get_account_manager()
     if manager and hasattr(manager, "accounts") and isinstance(manager.accounts, dict):
         for acc_key in list(manager.accounts.keys()):
             if acc_key.lower() == username.lower():
+                old_status = manager.accounts[acc_key].get("status")
                 manager.accounts[acc_key]["status"] = norm_status
                 try:
                     manager.save_accounts()
@@ -1026,6 +1046,8 @@ def update_account_status(username: str, new_status: str) -> bool:
             data = txn.data or {}
             for acc in data.get("accounts", []):
                 if isinstance(acc, dict) and str(acc.get("username", "")).strip().lower() == username.strip().lower():
+                    if old_status is None:
+                        old_status = acc.get("status")
                     acc["status"] = norm_status
                     updated_any = True
                     break
@@ -1035,6 +1057,11 @@ def update_account_status(username: str, new_status: str) -> bool:
         print(f"Error saving account status via transaction: {txn_err}")
 
     invalidate_data_cache()
+    if updated_any and norm_status in ("expired", "banned"):
+        try:
+            webhook_manager.notify_account_status_change(username, norm_status, old_status=old_status)
+        except Exception:
+            pass
     return updated_any
 
 @app.route('/api/accounts', methods=['GET'])
@@ -2851,6 +2878,15 @@ def run_group_auto_relaunch():
         summary = f"Relaunched {success_count}/{len(matching_accounts)} accounts in group '{group}'"
         group_auto_relaunch_state['last_relaunch_summary'] = summary
         print(f"[INFO] Group auto-relaunch completed: {summary}")
+        try:
+            webhook_manager.notify_group_relaunch(
+                group_name=group,
+                success_count=success_count,
+                total_count=len(matching_accounts),
+                accounts_list=[acc.get('username') for acc in matching_accounts if acc.get('username')]
+            )
+        except Exception:
+            pass
     finally:
         with group_auto_relaunch_lock:
             group_auto_relaunch_state['in_progress'] = False
@@ -6269,6 +6305,99 @@ def reset_roblox_fastflags():
         log_detailed_error("Failed to restore FastFlags", exc=e)
         return jsonify({'success': False, 'error': 'Failed to restore FastFlags'}), 500
 
+def _webhook_lookup_account(username: str) -> Dict[str, Any]:
+    if not username:
+        return {}
+    try:
+        uname_lower = str(username).strip().lower()
+        data = load_data()
+        for acc in data.get('accounts', []):
+            if str(acc.get('username', '')).strip().lower() == uname_lower:
+                return acc
+        mgr = get_account_manager()
+        if mgr and hasattr(mgr, 'accounts') and isinstance(mgr.accounts, dict):
+            for k, v in mgr.accounts.items():
+                if str(k).lower() == uname_lower and isinstance(v, dict):
+                    return v
+    except Exception:
+        pass
+    return {}
+
+def _webhook_resolve_instances() -> List[Dict[str, Any]]:
+    try:
+        with _INSTANCES_CACHE_LOCK:
+            cached = _INSTANCES_CACHE
+        if cached and isinstance(cached.get('instances'), list):
+            enriched = []
+            for inst in cached['instances']:
+                item = dict(inst)
+                pid_place = item.get('place_id')
+                if pid_place and not item.get('place_name'):
+                    item['place_name'] = get_place_name(pid_place) or str(pid_place)
+                up_s = int(item.get('uptime_sec') or 0)
+                if up_s > 0:
+                    m, s = divmod(up_s, 60)
+                    h, m = divmod(m, 60)
+                    item['uptime_str'] = f"{h}h {m}m" if h > 0 else f"{m}m {s}s"
+                enriched.append(item)
+            return enriched
+    except Exception:
+        pass
+
+    results: List[Dict[str, Any]] = []
+    try:
+        app_data = load_data()
+        accounts_by_user = {}
+        accounts_by_id = {}
+        for acc in app_data.get('accounts', []):
+            uname = acc.get('username', '')
+            if uname:
+                accounts_by_user[uname.lower()] = acc
+                uid = str(acc.get('user_id') or '').strip()
+                if uid:
+                    accounts_by_id[uid] = acc
+
+        now = time.time()
+        for proc in psutil.process_iter(['pid', 'name', 'memory_info', 'create_time']):
+            try:
+                pname = str(proc.info.get('name') or '')
+                if not re.search(r'robloxplayer(?:beta)?(?:\.exe)?$', pname, re.IGNORECASE):
+                    continue
+                pid = int(proc.info['pid'])
+                mem_info = proc.info.get('memory_info')
+                mem_mb = round((mem_info.rss if mem_info else 0) / (1024 * 1024), 1)
+                create_t = proc.info.get('create_time') or now
+                up_s = max(0, int(now - create_t))
+                m, s = divmod(up_s, 60)
+                h, m = divmod(m, 60)
+                uptime_str = f"{h}h {m}m" if h > 0 else f"{m}m {s}s"
+
+                acc_info = resolve_pid_account(pid, create_t, accounts_by_user, accounts_by_id) or {}
+                place_id = str(acc_info.get('place_id') or resolve_pid_place_id(pid, acc_info) or '')
+                place_name = get_place_name(place_id) if place_id else 'Roblox Client'
+                results.append({
+                    'pid': pid,
+                    'name': pname,
+                    'username': acc_info.get('username'),
+                    'display_name': acc_info.get('display_name'),
+                    'user_id': acc_info.get('user_id'),
+                    'avatar_url': acc_info.get('avatar_url'),
+                    'place_id': place_id,
+                    'place_name': place_name,
+                    'memory_mb': mem_mb,
+                    'cpu_percent': 0.0,
+                    'uptime_sec': up_s,
+                    'uptime_str': uptime_str,
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return results
+
+webhook_manager.set_account_lookup(_webhook_lookup_account)
+webhook_manager.set_instances_provider(_webhook_resolve_instances)
+
 @app.route('/api/webhook/config', methods=['GET', 'OPTIONS'])
 def get_webhook_config():
     if request.method == 'OPTIONS':
@@ -6277,11 +6406,13 @@ def get_webhook_config():
         return jsonify({
             'success': True,
             'config': webhook_manager.config,
-            'history': webhook_manager.get_history()
+            'history': webhook_manager.get_history(),
+            'stats': webhook_manager.get_stats(),
+            'instances': _webhook_resolve_instances()
         })
     except Exception as e:
-        log_detailed_error("Failed to reset FastFlags", exc=e)
-        return jsonify({'success': False, 'error': 'Failed to reset FastFlags'}), 500
+        log_detailed_error("Failed to get webhook configuration", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to get webhook configuration'}), 500
 
 @app.route('/api/webhook/config', methods=['POST', 'OPTIONS'])
 def save_webhook_config():
@@ -6293,36 +6424,70 @@ def save_webhook_config():
         return jsonify({
             'success': True,
             'config': updated,
+            'stats': webhook_manager.get_stats(),
             'message': 'Webhook settings saved successfully.'
         })
     except Exception as e:
-        log_detailed_error("Failed to get webhook configuration", exc=e)
-        return jsonify({'success': False, 'error': 'Failed to get webhook configuration'}), 500
+        log_detailed_error("Failed to save webhook configuration", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to save webhook configuration'}), 500
+
+@app.route('/api/webhook/clear-history', methods=['POST', 'OPTIONS'])
+def clear_webhook_history():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        webhook_manager.clear_history()
+        return jsonify({
+            'success': True,
+            'history': [],
+            'stats': webhook_manager.get_stats(),
+            'message': 'Webhook activity history cleared.'
+        })
+    except Exception as e:
+        log_detailed_error("Failed to clear webhook history", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to clear webhook history'}), 500
+
+@app.route('/api/webhook/retry', methods=['POST', 'OPTIONS'])
+def retry_webhook_history_item():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = request.get_json(silent=True) or {}
+        item_id = str(data.get('id') or '').strip()
+        if not item_id:
+            return jsonify({'success': False, 'error': 'Missing history item ID'}), 400
+        ok, msg = webhook_manager.retry_history_item(item_id)
+        if ok:
+            return jsonify({'success': True, 'message': msg, 'history': webhook_manager.get_history(), 'stats': webhook_manager.get_stats()})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        log_detailed_error("Failed to retry webhook item", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to retry webhook item'}), 500
+
+@app.route('/api/webhook/reset-live-board', methods=['POST', 'OPTIONS'])
+def reset_webhook_live_board():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        cfg = webhook_manager.reset_live_board()
+        return jsonify({
+            'success': True,
+            'config': cfg,
+            'stats': webhook_manager.get_stats(),
+            'message': 'Live board message state reset. Next report will post a new Discord message.'
+        })
+    except Exception as e:
+        log_detailed_error("Failed to reset live board", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to reset live board'}), 500
 
 @app.route('/api/webhook/test', methods=['POST', 'OPTIONS'])
 def test_webhook():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        ok, msg = webhook_manager.send_test_webhook()
-        if ok:
-            return jsonify({'success': True, 'message': msg})
-        return jsonify({'success': False, 'error': msg}), 400
-    except Exception as e:
-        log_detailed_error("Failed to save webhook configuration", exc=e)
-        return jsonify({'success': False, 'error': 'Failed to save webhook configuration'}), 500
-
-@app.route('/api/webhook/send', methods=['POST', 'OPTIONS'])
-def send_webhook_custom():
-    if request.method == 'OPTIONS':
-        return '', 200
-    try:
-        data = request.get_json() or {}
-        title = data.get('title', 'Notification')
-        description = data.get('description', '')
-        fields = data.get('fields', [])
-        color = data.get('color', 0x6366F1)
-        ok, msg = webhook_manager.post_embed(title, description, fields, color)
+        data = request.get_json(silent=True) or {}
+        custom_url = (data.get('webhook_url') or '').strip() or None
+        ok, msg = webhook_manager.send_test_webhook(url=custom_url)
         if ok:
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
@@ -6330,27 +6495,43 @@ def send_webhook_custom():
         log_detailed_error("Failed to test webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to test webhook'}), 500
 
+@app.route('/api/webhook/send', methods=['POST', 'OPTIONS'])
+def send_webhook_custom():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = request.get_json(silent=True) or {}
+        title = data.get('title', 'Notification')
+        description = data.get('description', '')
+        fields = data.get('fields', [])
+        color = data.get('color')
+        custom_url = (data.get('webhook_url') or '').strip() or None
+        ok, msg = webhook_manager.post_embed(
+            title=title,
+            description=description,
+            fields=fields,
+            color=color,
+            url=custom_url,
+            category='custom'
+        )
+        if ok:
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        log_detailed_error("Failed to send custom webhook", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to send custom webhook'}), 500
+
 @app.route('/api/webhook/test-screenshot', methods=['POST', 'OPTIONS'])
 def test_webhook_screenshot():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         all_monitors = data.get('all_monitors')
-        ok, msg = webhook_manager.post_screenshot(all_monitors=all_monitors)
-        if ok:
-            return jsonify({'success': True, 'message': msg})
-        return jsonify({'success': False, 'error': msg}), 400
-    except Exception as e:
-        log_detailed_error("Failed to send webhook", exc=e)
-        return jsonify({'success': False, 'error': 'Failed to send webhook'}), 500
-
-@app.route('/api/webhook/test-instances', methods=['POST', 'OPTIONS'])
-def test_webhook_instances():
-    if request.method == 'OPTIONS':
-        return '', 200
-    try:
-        ok, msg = webhook_manager.post_instance_summary()
+        mode = data.get('mode')
+        pid = data.get('pid')
+        custom_url = (data.get('webhook_url') or '').strip() or None
+        ok, msg = webhook_manager.post_screenshot(url=custom_url, all_monitors=all_monitors, mode=mode, target_pid=pid)
         if ok:
             return jsonify({'success': True, 'message': msg})
         return jsonify({'success': False, 'error': msg}), 400
@@ -6358,16 +6539,33 @@ def test_webhook_instances():
         log_detailed_error("Failed to send screenshot webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to send screenshot webhook'}), 500
 
+@app.route('/api/webhook/test-instances', methods=['POST', 'OPTIONS'])
+def test_webhook_instances():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        data = request.get_json(silent=True) or {}
+        custom_url = (data.get('webhook_url') or '').strip() or None
+        force_new = bool(data.get('force_new_message', False))
+        ok, msg = webhook_manager.post_instance_summary(url=custom_url, force_new_message=force_new)
+        if ok:
+            return jsonify({'success': True, 'message': msg})
+        return jsonify({'success': False, 'error': msg}), 400
+    except Exception as e:
+        log_detailed_error("Failed to send instances webhook", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to send instances webhook'}), 500
+
 @app.route('/api/webhook/preview-window', methods=['POST', 'OPTIONS'])
 def send_webhook_window_preview():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {}
         pid = data.get('pid')
         username = data.get('username')
         place_id = data.get('place_id')
         place_name = data.get('place_name') or (get_place_name(place_id) if place_id else None)
+        custom_url = (data.get('webhook_url') or '').strip() or None
         
         memory_mb = None
         cpu_percent = None
@@ -6396,7 +6594,8 @@ def send_webhook_window_preview():
             place_name=place_name,
             memory_mb=memory_mb,
             cpu_percent=cpu_percent,
-            uptime_str=uptime_str
+            uptime_str=uptime_str,
+            url=custom_url
         )
         if ok:
             return jsonify({'success': True, 'message': msg})
