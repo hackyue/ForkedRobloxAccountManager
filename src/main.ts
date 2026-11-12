@@ -19981,7 +19981,7 @@ let webhookUrlRevealed = false;
 let webhookNewEndpointDraft = {
   name: '',
   url: '',
-  events: ['launch', 'rejoin', 'crash', 'account_status', 'group_relaunch', 'screenshot', 'instances', 'log']
+  events: ['launch', 'rejoin', 'crash', 'account_status', 'group_relaunch', 'screenshot', 'preview', 'instances', 'automation', 'log']
 };
 
 const WEBHOOK_EVENT_DEFS = [
@@ -19991,7 +19991,9 @@ const WEBHOOK_EVENT_DEFS = [
   { id: 'account_status', label: 'Cookies' },
   { id: 'group_relaunch', label: 'Group Relaunch' },
   { id: 'screenshot', label: 'Captures' },
+  { id: 'preview', label: 'Previews' },
   { id: 'instances', label: 'Instances' },
+  { id: 'automation', label: 'Automation' },
   { id: 'log', label: 'Logs' }
 ];
 
@@ -20038,6 +20040,7 @@ async function fetchWebhookConfig(forceRender = true): Promise<void> {
         instance_summary_enabled: false,
         instance_summary_interval_minutes: 15,
         instance_summary_mode: 'new_message',
+        primary_events: ['all'],
         endpoints: [],
         ...data.config
       };
@@ -20199,6 +20202,17 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
           <input type="text" id="webhook-ping-user-input" class="webhook-input" value="${escapeHtml(cfg.ping_user_id || '')}" placeholder="Optional Discord ID" />
         </div>
       </div>
+
+      <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px;">
+        <span style="font-size:11px; color:var(--muted);">Primary Channel Events (uncheck events you want rerouted elsewhere)</span>
+        <div style="display:flex; flex-wrap:wrap; gap:4px;">
+          ${WEBHOOK_EVENT_DEFS.map(ev => {
+            const pEvents: string[] = Array.isArray(cfg.primary_events) ? cfg.primary_events : ['all'];
+            const active = pEvents.includes(ev.id) || pEvents.includes('all');
+            return `<button type="button" class="pill btn-primary-event ${active ? 'active' : ''}" data-ev="${ev.id}" style="padding:2px 8px; font-size:11px;">${ev.label}</button>`;
+          }).join('')}
+        </div>
+      </div>
     </div>
 
     <!-- Two-Column Grid: Events & Scheduled Tasks -->
@@ -20335,7 +20349,8 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
                     return `<button type="button" class="pill btn-ep-event ${active ? 'active' : ''}" data-idx="${idx}" data-ev="${ev.id}" style="padding:2px 8px; font-size:11px;">${ev.label}</button>`;
                   }).join('')}
                 </div>
-                <div style="display:flex; gap:6px;">
+                <div style="display:flex; gap:6px; align-items:center;">
+                  <button type="button" class="pill btn-ep-exclusive ${ep.exclusive ? 'active' : ''}" data-idx="${idx}" title="When enabled, these events are rerouted here and excluded from the Primary Webhook" style="padding:2px 8px; font-size:11px;">Only Here</button>
                   <button class="btn btn-secondary btn-sm btn-ep-test" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Test</button>
                   <button class="btn btn-danger btn-sm btn-ep-delete" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Remove</button>
                 </div>
@@ -20494,7 +20509,8 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
         name,
         url,
         enabled: true,
-        events: ['launch', 'rejoin', 'crash', 'account_status', 'group_relaunch', 'screenshot', 'instances', 'log']
+        exclusive: false,
+        events: [...WEBHOOK_EVENT_DEFS.map(d => d.id)]
       }
     ];
     webhookNewEndpointDraft = { name: '', url: '', events: [...webhookNewEndpointDraft.events] };
@@ -20522,6 +20538,28 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
       const ep = extraEndpoints[idx];
       if (ep?.url) testWebhook(ep.url);
+    });
+  });
+
+  appBody.querySelectorAll('.btn-primary-event').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const evId = (btn as HTMLElement).dataset.ev || '';
+      if (!evId) return;
+      const allIds = WEBHOOK_EVENT_DEFS.map(d => d.id);
+      const rawEvents: string[] = Array.isArray(cfg.primary_events) ? [...cfg.primary_events] : ['all'];
+      const expanded = rawEvents.includes('all') ? [...allIds] : rawEvents;
+      const nextEvents = expanded.includes(evId)
+        ? expanded.filter(x => x !== evId)
+        : [...expanded, evId];
+      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), primary_events: nextEvents });
+    });
+  });
+
+  appBody.querySelectorAll('.btn-ep-exclusive').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+      const next = extraEndpoints.map((ep, i) => i === idx ? { ...ep, exclusive: !ep.exclusive } : ep);
+      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), endpoints: next });
     });
   });
 

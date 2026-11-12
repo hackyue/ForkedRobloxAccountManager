@@ -71,6 +71,7 @@ class WebhookManager:
         "instance_summary_mode": "new_message",  # 'new_message' | 'edit_live_board'
         "instance_summary_include_screenshot": False,
         "live_board_message_ids": {},
+        "primary_events": ["all"],
         "endpoints": [],
     }
 
@@ -143,6 +144,8 @@ class WebhookManager:
         )
         if not isinstance(self.config.get("live_board_message_ids"), dict):
             self.config["live_board_message_ids"] = {}
+        if not isinstance(self.config.get("primary_events"), list):
+            self.config["primary_events"] = ["all"]
         if not isinstance(self.config.get("endpoints"), list):
             self.config["endpoints"] = []
 
@@ -178,6 +181,8 @@ class WebhookManager:
                     if raw_wh:
                         canon = self.canonicalize_webhook_url(raw_wh)
                         new_config["webhook_url"] = canon if canon else ""
+                if "primary_events" in new_config and isinstance(new_config["primary_events"], list):
+                    new_config["primary_events"] = [str(ev).strip() for ev in new_config["primary_events"] if str(ev).strip()]
                 if "endpoints" in new_config and isinstance(new_config["endpoints"], list):
                     clean_eps = []
                     for ep in new_config["endpoints"]:
@@ -187,6 +192,10 @@ class WebhookManager:
                             if raw_url:
                                 ep_canon = self.canonicalize_webhook_url(raw_url)
                                 ep_copy["url"] = ep_canon or ""
+                            ep_copy["enabled"] = bool(ep_copy.get("enabled", True))
+                            ep_copy["exclusive"] = bool(ep_copy.get("exclusive", False))
+                            if isinstance(ep_copy.get("events"), list):
+                                ep_copy["events"] = [str(ev).strip() for ev in ep_copy["events"] if str(ev).strip()]
                             clean_eps.append(ep_copy)
                     new_config["endpoints"] = clean_eps
                 for k, v in new_config.items():
@@ -389,6 +398,20 @@ class WebhookManager:
         if bot_avatar and (bot_avatar.startswith("https://") or bot_avatar.startswith("http://")):
             payload["avatar_url"] = bot_avatar
 
+    @staticmethod
+    def _category_matches_events(category: str, events: Any) -> bool:
+        if category in ("test", "custom", "general"):
+            return True
+        if not isinstance(events, list):
+            return True
+        if "all" in events:
+            return True
+        if category in events:
+            return True
+        if category == "preview" and "screenshot" in events:
+            return True
+        return False
+
     def _get_target_endpoints_for_category(
         self,
         category: str,
@@ -409,8 +432,37 @@ class WebhookManager:
         seen_urls = set()
 
         with self.lock:
+            secondary_targets: List[Dict[str, Any]] = []
+            rerouted_exclusively = False
+
+            for ep in self.config.get("endpoints", []):
+                if not isinstance(ep, dict) or not ep.get("enabled", True):
+                    continue
+                ep_url = self.canonicalize_webhook_url(ep.get("url", ""))
+                if not ep_url:
+                    continue
+                if not self._category_matches_events(category, ep.get("events")):
+                    continue
+                if ep.get("exclusive") and category not in ("test", "custom", "general"):
+                    rerouted_exclusively = True
+                if ep_url in seen_urls:
+                    continue
+                seen_urls.add(ep_url)
+                secondary_targets.append({
+                    "name": str(ep.get("name") or "Secondary Webhook")[:40],
+                    "url": ep_url,
+                    "ping_user_id": ep.get("ping_user_id") or self.config.get("ping_user_id", ""),
+                    "ping_only_alerts": ep.get("ping_only_alerts", self.config.get("ping_only_alerts", False)),
+                })
+
             primary_url = self.canonicalize_webhook_url(self.config.get("webhook_url", ""))
-            if primary_url:
+            primary_events = self.config.get("primary_events", ["all"])
+            if (
+                primary_url
+                and primary_url not in seen_urls
+                and not rerouted_exclusively
+                and self._category_matches_events(category, primary_events)
+            ):
                 seen_urls.add(primary_url)
                 targets.append({
                     "name": "Primary Webhook",
@@ -419,23 +471,7 @@ class WebhookManager:
                     "ping_only_alerts": self.config.get("ping_only_alerts", False),
                 })
 
-            for ep in self.config.get("endpoints", []):
-                if not isinstance(ep, dict) or not ep.get("enabled", True):
-                    continue
-                ep_url = self.canonicalize_webhook_url(ep.get("url", ""))
-                if not ep_url or ep_url in seen_urls:
-                    continue
-                ep_events = ep.get("events")
-                if isinstance(ep_events, list) and category not in ("test", "custom", "general"):
-                    if category not in ep_events and "all" not in ep_events:
-                        continue
-                seen_urls.add(ep_url)
-                targets.append({
-                    "name": str(ep.get("name") or "Secondary Webhook")[:40],
-                    "url": ep_url,
-                    "ping_user_id": ep.get("ping_user_id") or self.config.get("ping_user_id", ""),
-                    "ping_only_alerts": ep.get("ping_only_alerts", self.config.get("ping_only_alerts", False)),
-                })
+            targets.extend(secondary_targets)
 
         return targets
 
