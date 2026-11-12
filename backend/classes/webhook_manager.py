@@ -1311,11 +1311,15 @@ class WebhookManager:
             }
             mode_str = mode_labels.get(active_mode, "Multi-Instance Grid")
             instances = self._get_resolved_instances()
+            active_instances = [
+                inst for inst in instances
+                if str(inst.get("status", "")).lower() in ("running", "") and inst.get("pid")
+            ]
             unix_now = int(time.time())
             embed_fields: List[Dict[str, Any]] = []
-            if active_mode == "client_grid" and instances:
+            if active_mode == "client_grid" and active_instances:
                 summary_lines = []
-                for idx, inst in enumerate(instances[:12]):
+                for idx, inst in enumerate(active_instances[:12]):
                     uname = inst.get("username") or inst.get("account")
                     pid_val = inst.get("pid", "N/A")
                     place = inst.get("place_name") or inst.get("place") or "Roblox"
@@ -1325,16 +1329,16 @@ class WebhookManager:
                     summary_lines.append(f"**#{idx + 1}** {who} ({place}){mem_str}")
                 if summary_lines:
                     embed_fields.append({
-                        "name": f"Captured Instances ({len(instances)})",
+                        "name": f"Captured Instances ({len(active_instances)})",
                         "value": "\n".join(summary_lines)[:1020],
                         "inline": False,
                     })
 
             embed_obj: Dict[str, Any] = {
-                "title": "Roblox Multi-Instance Capture" if active_mode == "client_grid" and len(instances) > 1 else "Display Capture",
+                "title": "Roblox Multi-Instance Capture" if active_mode == "client_grid" and len(active_instances) > 1 else "Display Capture",
                 "description": (
                     f"Capture Mode: **{mode_str}** - Captured <t:{unix_now}:R>\n"
-                    f"Active Roblox Clients: **{len(instances)}**"
+                    f"Active Roblox Clients: **{len(active_instances)}**"
                 ),
                 "color": self._parse_embed_color(),
                 "image": {"url": "attachment://fram_display.png"},
@@ -1472,6 +1476,7 @@ class WebhookManager:
                     instances_data.append({
                         "pid": pid,
                         "name": name,
+                        "status": "Running",
                         "memory_mb": mem_mb,
                         "cpu_percent": 0.0,
                         "uptime_str": uptime_str,
@@ -1489,16 +1494,62 @@ class WebhookManager:
         if instances_data is None:
             instances_data = self._get_resolved_instances()
 
+        # Build OS process liveness set to ensure terminated/crashed processes are never reported as running
+        live_pids = None
+        try:
+            import psutil
+            live_pids = set()
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    pname = str(proc.info.get("name") or "").lower()
+                    if "roblox" in pname and "crashhandler" not in pname:
+                        live_pids.add(proc.info["pid"])
+                except Exception:
+                    continue
+        except Exception:
+            live_pids = None
+
+        running_instances: List[Dict[str, Any]] = []
+        inactive_instances: List[Dict[str, Any]] = []
+
+        for inst in instances_data:
+            st = str(inst.get("status") or "").strip().lower()
+            pid = inst.get("pid")
+            pid_int = None
+            if pid is not None:
+                try:
+                    pid_int = int(pid)
+                except Exception:
+                    pid_int = None
+
+            is_alive = True
+            if live_pids is not None and pid_int is not None:
+                is_alive = pid_int in live_pids
+
+            if not is_alive or st in ("closed", "crashed", "inactive", "disconnected", "exited", "terminated"):
+                copy_inst = dict(inst)
+                if not is_alive and st not in ("closed", "crashed"):
+                    copy_inst["status"] = "Closed"
+                    copy_inst["exit_reason"] = copy_inst.get("exit_reason") or "Client Process Closed / Disconnected"
+                copy_inst["memory_mb"] = 0.0
+                copy_inst["cpu_percent"] = 0.0
+                inactive_instances.append(copy_inst)
+            else:
+                running_instances.append(inst)
+
+        active_count = len(running_instances)
+        crashed_count = sum(1 for inst in inactive_instances if str(inst.get("status", "")).lower() == "crashed")
+        closed_count = sum(1 for inst in inactive_instances if str(inst.get("status", "")).lower() != "crashed")
+
         total_mem_mb = 0.0
         total_cpu = 0.0
-        for inst in instances_data:
+        for inst in running_instances:
             try:
                 total_mem_mb += float(inst.get("memory_mb", 0) or 0)
                 total_cpu += float(inst.get("cpu_percent", 0) or 0)
             except Exception:
                 pass
 
-        count = len(instances_data)
         unix_now = int(time.time())
         is_live_board = (
             not force_new_message
@@ -1506,19 +1557,31 @@ class WebhookManager:
         )
 
         fields = [
-            {"name": "Active Clients", "value": f"**{count}** running", "inline": True},
+            {"name": "Active Clients", "value": f"**{active_count}** running", "inline": True},
             {"name": "Total RAM", "value": f"`{round(total_mem_mb, 1)} MB`", "inline": True},
             {"name": "Total CPU", "value": f"`{round(total_cpu, 1)}%`", "inline": True},
         ]
 
-        if count == 0:
+        if inactive_instances:
+            status_parts = []
+            if closed_count > 0:
+                status_parts.append(f"{closed_count} closed")
+            if crashed_count > 0:
+                status_parts.append(f"{crashed_count} crashed")
             fields.append({
-                "name": "Process List",
+                "name": "Inactive / Closed",
+                "value": f"**{', '.join(status_parts)}**",
+                "inline": True,
+            })
+
+        if active_count == 0:
+            fields.append({
+                "name": "Active Processes",
                 "value": "No active Roblox client processes are currently running.",
                 "inline": False,
             })
         else:
-            for idx, inst in enumerate(instances_data[:15]):
+            for idx, inst in enumerate(running_instances[:15]):
                 pid = inst.get("pid", "N/A")
                 uname = inst.get("username") or inst.get("account")
                 dname = inst.get("display_name")
@@ -1537,7 +1600,7 @@ class WebhookManager:
                     if place_id
                     else f"`{place_name}`"
                 )
-                parts = [f"PID: `{pid}`", f"RAM: `{mem}`", f"CPU: `{cpu}`"]
+                parts = ["🟢 Running", f"PID: `{pid}`", f"RAM: `{mem}`", f"CPU: `{cpu}`"]
                 if uptime:
                     parts.append(f"Up: `{uptime}`")
                 parts.append(f"Game: {place_display}")
@@ -1546,17 +1609,44 @@ class WebhookManager:
                     "value": " | ".join(parts),
                     "inline": False,
                 })
-            if count > 15:
+            if active_count > 15:
                 fields.append({
-                    "name": "Additional Instances",
-                    "value": f"... and **{count - 15}** more running instances.",
+                    "name": "Additional Active Instances",
+                    "value": f"... and **{active_count - 15}** more running instances.",
                     "inline": False,
                 })
+
+        if inactive_instances:
+            closed_lines = []
+            for inst in inactive_instances[:6]:
+                pid = inst.get("pid", "N/A")
+                uname = inst.get("username") or inst.get("account") or f"PID {pid}"
+                dname = inst.get("display_name")
+                header = f"{dname} (@{uname})" if (dname and uname and dname.lower() != uname.lower()) else f"@{uname}"
+                st_label = str(inst.get("status") or "Closed")
+                st_icon = "⚠️" if st_label.lower() == "crashed" else "🔴"
+                reason = inst.get("exit_reason") or "Closed / Disconnected"
+                closed_at = inst.get("closed_at")
+                time_str = f" <t:{int(closed_at)}:R>" if closed_at else ""
+                uptime = inst.get("uptime_str") or ""
+                up_text = f" (ran `{uptime}`)" if uptime else ""
+                closed_lines.append(f"{st_icon} **{header}** (PID `{pid}`): `{st_label}` - *{reason}*{time_str}{up_text}")
+
+            if len(inactive_instances) > 6:
+                closed_lines.append(f"... and **{len(inactive_instances) - 6}** more inactive instance(s).")
+
+            fields.append({
+                "name": "Recently Closed / Crashed Clients",
+                "value": "\n".join(closed_lines)[:1020],
+                "inline": False,
+            })
 
         title = "FRAM Live Instance Status Board" if is_live_board else "Roblox Instance Status Report"
         desc = (
             f"Live status dashboard - Updated <t:{unix_now}:R> (<t:{unix_now}:T>)\n"
-            f"Monitoring **{count}** active Roblox client session(s)."
+            f"Monitoring **{active_count}** active running Roblox client session(s)"
+            + (f" (**{len(inactive_instances)}** inactive/closed)" if inactive_instances else "")
+            + "."
         )
 
         return self.post_embed(
@@ -1621,6 +1711,7 @@ class WebhookManager:
             active_triggers.append("Error Logs")
 
         instances = self._get_resolved_instances()
+        active_count = sum(1 for inst in instances if str(inst.get("status", "")).lower() in ("running", ""))
         unix_now = int(time.time())
 
         return self.post_embed(
@@ -1631,7 +1722,7 @@ class WebhookManager:
             ),
             fields=[
                 {"name": "Connection", "value": "Verified & Online", "inline": True},
-                {"name": "Running Clients", "value": f"`{len(instances)} active`", "inline": True},
+                {"name": "Running Clients", "value": f"`{active_count} active`", "inline": True},
                 {"name": "Enabled Triggers", "value": ", ".join(active_triggers) if active_triggers else "None", "inline": False},
             ],
             color=None,

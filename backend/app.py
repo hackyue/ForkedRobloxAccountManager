@@ -7178,6 +7178,14 @@ def _webhook_resolve_instances() -> List[Dict[str, Any]]:
             enriched = []
             for inst in cached['instances']:
                 item = dict(inst)
+                pid = item.get('pid')
+                if pid is not None and str(item.get('status', '')).lower() == 'running':
+                    if not _is_roblox_pid(pid):
+                        item['status'] = 'Closed'
+                        item['memory_mb'] = 0.0
+                        item['cpu_percent'] = 0.0
+                        if not item.get('exit_reason'):
+                            item['exit_reason'] = 'Client Process Closed / Disconnected'
                 pid_place = item.get('place_id')
                 if pid_place and not item.get('place_name'):
                     item['place_name'] = get_place_name(pid_place) or str(pid_place)
@@ -7238,6 +7246,7 @@ def _webhook_resolve_instances() -> List[Dict[str, Any]]:
                 results.append({
                     'pid': pid,
                     'name': pname,
+                    'status': 'Running',
                     'username': acc_info.get('username'),
                     'display_name': acc_info.get('display_name'),
                     'user_id': acc_info.get('user_id'),
@@ -7251,6 +7260,10 @@ def _webhook_resolve_instances() -> List[Dict[str, Any]]:
                 })
             except Exception:
                 continue
+
+        with _INSTANCES_TRACKER_LOCK:
+            for inactive in _CLOSED_OR_CRASHED_INSTANCES.values():
+                results.append(dict(inactive))
     except Exception:
         pass
     return results
