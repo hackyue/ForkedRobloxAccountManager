@@ -20203,24 +20203,6 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
         </div>
       </div>
 
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:2px;">
-        ${(() => {
-          const reroutedIds = new Set<string>();
-          extraEndpoints.forEach(ep => {
-            if (ep.enabled === false || !ep.url) return;
-            const evs: string[] = Array.isArray(ep.events) ? ep.events : [];
-            if (evs.includes('all')) {
-              WEBHOOK_EVENT_DEFS.forEach(d => reroutedIds.add(d.id));
-            } else {
-              evs.forEach(id => reroutedIds.add(id));
-            }
-          });
-          const reroutedLabels = WEBHOOK_EVENT_DEFS.filter(d => reroutedIds.has(d.id)).map(d => d.label);
-          return reroutedLabels.length > 0
-            ? `<span style="font-size:11px; color:var(--muted);">Uses all enabled Notifications &amp; Scheduled Tasks, except rerouted: <b style="color:var(--fg);">${reroutedLabels.join(', ')}</b></span>`
-            : `<span style="font-size:11px; color:var(--muted);">Uses all enabled Notifications &amp; Scheduled Tasks by default (unless assigned to an Additional Channel below).</span>`;
-        })()}
-      </div>
     </div>
 
     <!-- Two-Column Grid: Events & Scheduled Tasks -->
