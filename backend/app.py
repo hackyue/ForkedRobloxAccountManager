@@ -644,6 +644,7 @@ def _load_data_unlocked(force_reload: bool = False) -> Dict[str, Any]:
             'activeIndicator': True,
             'disableSuccessPopups': False,
             'confirmBeforeLaunch': True,
+            'autoRenameInstances': False,
             'compactRows': False,
             'accentIndex': 0,
             'selectedTheme': 'default-dark',
@@ -2189,6 +2190,8 @@ def update_settings():
             txn.data['settings'][key] = value
         txn.save()
         result_settings = txn.data['settings']
+    if settings_data.get('autoRenameInstances'):
+        threading.Thread(target=sync_roblox_instance_window_titles, daemon=True, name="rename-instances-on-toggle").start()
     return jsonify(result_settings)
 
 def bloxgen_api_request(endpoint, method='GET', params=None, body_data=None):
@@ -4566,12 +4569,100 @@ def _detect_and_update_instance_exits():
         except Exception as e:
             print(f"[WARN] Failed to send webhook for {status} PID {pid}: {e}")
 
+def sync_roblox_instance_window_titles():
+    """Rename Roblox client windows to the username of the account tied to each instance when enabled."""
+    if platform.system() != "Windows":
+        return
+
+    try:
+        settings = load_data().get('settings', {})
+        if not settings.get('autoRenameInstances', False):
+            return
+    except Exception:
+        return
+
+    pid_ctime_list: List[Tuple[int, Optional[float]]] = []
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+            try:
+                pname = str(proc.info.get('name') or '').lower()
+                if pname not in ('robloxplayerbeta.exe', 'robloxplayerbeta', 'robloxplayer', 'robloxplayer.exe'):
+                    continue
+                pid_ctime_list.append((int(proc.info['pid']), proc.info.get('create_time')))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception:
+        return
+
+    if not pid_ctime_list:
+        return
+
+    try:
+        resolved_map = resolve_active_pids_accounts(pid_ctime_list)
+    except Exception:
+        return
+
+    pid_to_username: Dict[int, str] = {}
+    for pid, info in (resolved_map or {}).items():
+        if isinstance(info, dict):
+            uname = str(info.get('username') or '').strip()
+            if uname:
+                pid_to_username[int(pid)] = uname
+
+    if not pid_to_username:
+        return
+
+    try:
+        import ctypes.wintypes as wintypes
+        user32 = ctypes.windll.user32
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+        def enum_cb(hwnd, _lparam):
+            try:
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                target_username = pid_to_username.get(int(pid.value))
+                if not target_username:
+                    return True
+
+                cls_buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cls_buf, 256)
+                cls_name = cls_buf.value or ""
+
+                is_visible = bool(user32.IsWindowVisible(hwnd))
+                if not is_visible and cls_name != "WINDOWSCLIENT":
+                    return True
+
+                length = user32.GetWindowTextLengthW(hwnd)
+                title_buf = ctypes.create_unicode_buffer(max(1, length + 1))
+                if length > 0:
+                    user32.GetWindowTextW(hwnd, title_buf, length + 1)
+                current_title = title_buf.value or ""
+
+                if not current_title and cls_name != "WINDOWSCLIENT":
+                    return True
+
+                lower_title = current_title.lower()
+                if any(kw in lower_title for kw in ("bloxstrap", "fishstrap", "voidstrap", "froststrap", "exploitstrap", "installer", "crash handler")):
+                    return True
+
+                if current_title != target_username:
+                    user32.SetWindowTextW(hwnd, target_username)
+            except Exception:
+                pass
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+    except Exception:
+        pass
+
 def background_instance_tracker_worker():
     """Background worker to continuously track running instances and detect crashes or unexpected closures."""
     while True:
         try:
             time.sleep(2.5)
             _detect_and_update_instance_exits()
+            sync_roblox_instance_window_titles()
         except Exception as e:
             print(f"[ERROR] background_instance_tracker_worker error: {e}")
 
@@ -5865,6 +5956,7 @@ def clear_all_data():
         'activeIndicator': True,
         'disableSuccessPopups': False,
         'confirmBeforeLaunch': True,
+        'autoRenameInstances': False,
         'compactRows': False,
         'accentIndex': 0,
         'selectedTheme': 'default-dark',

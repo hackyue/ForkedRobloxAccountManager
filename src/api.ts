@@ -171,6 +171,7 @@ export interface Settings {
   disableSuccessPopups: boolean;
   confirmBeforeLaunch: boolean;
   autoCloseCrashHandlers?: boolean;
+  autoRenameInstances?: boolean;
   compactRows: boolean;
   showTableAvatars?: boolean;
   downloadAvatarIcons?: boolean;
