@@ -20203,22 +20203,22 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
         </div>
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:2px;">
         ${(() => {
-          const pEvents: string[] = Array.isArray(cfg.primary_events) ? cfg.primary_events : ['all'];
-          const pActiveCount = WEBHOOK_EVENT_DEFS.filter(ev => pEvents.includes(ev.id) || pEvents.includes('all')).length;
-          return `
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-              <span style="font-size:11px; color:var(--muted);">Primary Channel Events (disable events you want rerouted elsewhere)</span>
-              <span class="wh-ep-count">${pActiveCount}/${WEBHOOK_EVENT_DEFS.length} enabled</span>
-            </div>
-            <div style="display:flex; flex-wrap:wrap; gap:4px;">
-              ${WEBHOOK_EVENT_DEFS.map(ev => {
-                const active = pEvents.includes(ev.id) || pEvents.includes('all');
-                return `<button type="button" class="pill wh-ev-pill btn-primary-event ${active ? 'active' : ''}" data-ev="${ev.id}" aria-pressed="${active}"><span class="wh-ev-indicator">${active ? '✓' : '○'}</span><span>${ev.label}</span></button>`;
-              }).join('')}
-            </div>
-          `;
+          const reroutedIds = new Set<string>();
+          extraEndpoints.forEach(ep => {
+            if (ep.enabled === false || !ep.url) return;
+            const evs: string[] = Array.isArray(ep.events) ? ep.events : [];
+            if (evs.includes('all')) {
+              WEBHOOK_EVENT_DEFS.forEach(d => reroutedIds.add(d.id));
+            } else {
+              evs.forEach(id => reroutedIds.add(id));
+            }
+          });
+          const reroutedLabels = WEBHOOK_EVENT_DEFS.filter(d => reroutedIds.has(d.id)).map(d => d.label);
+          return reroutedLabels.length > 0
+            ? `<span style="font-size:11px; color:var(--muted);">Uses all enabled Notifications &amp; Scheduled Tasks, except rerouted: <b style="color:var(--fg);">${reroutedLabels.join(', ')}</b></span>`
+            : `<span style="font-size:11px; color:var(--muted);">Uses all enabled Notifications &amp; Scheduled Tasks by default (unless assigned to an Additional Channel below).</span>`;
         })()}
       </div>
     </div>
@@ -20316,7 +20316,7 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
     <div class="wh-card">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
         <div class="wh-card-title" style="margin:0;">Additional Channels</div>
-        <span style="font-size:11.5px; color:var(--muted);">Route specific events to separate Discord webhooks</span>
+        <span style="font-size:11.5px; color:var(--muted);">Events enabled on an active channel below are rerouted there instead of the Primary Channel</span>
       </div>
 
       <div style="display:flex; gap:8px; align-items:center;">
@@ -20344,7 +20344,6 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
           ${extraEndpoints.map((ep, idx) => {
             const epEvents: string[] = Array.isArray(ep.events) ? ep.events : [];
             const epActiveCount = WEBHOOK_EVENT_DEFS.filter(ev => epEvents.includes(ev.id) || epEvents.includes('all')).length;
-            const exclusive = Boolean(ep.exclusive);
             return `
               <div class="wh-ep-row">
                 <div style="display:flex; align-items:center; gap:8px; min-width:165px;">
@@ -20363,7 +20362,6 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
                   }).join('')}
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">
-                  <button type="button" class="pill wh-ev-pill btn-ep-exclusive ${exclusive ? 'active' : ''}" data-idx="${idx}" aria-pressed="${exclusive}" title="When enabled, these events are rerouted here and excluded from the Primary Webhook"><span class="wh-ev-indicator">${exclusive ? '✓' : '○'}</span><span>Only Here</span></button>
                   <button class="btn btn-secondary btn-sm btn-ep-test" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Test</button>
                   <button class="btn btn-danger btn-sm btn-ep-delete" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Remove</button>
                 </div>
@@ -20522,8 +20520,7 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
         name,
         url,
         enabled: true,
-        exclusive: false,
-        events: [...WEBHOOK_EVENT_DEFS.map(d => d.id)]
+        events: []
       }
     ];
     webhookNewEndpointDraft = { name: '', url: '', events: [...webhookNewEndpointDraft.events] };
@@ -20551,28 +20548,6 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
       const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
       const ep = extraEndpoints[idx];
       if (ep?.url) testWebhook(ep.url);
-    });
-  });
-
-  appBody.querySelectorAll('.btn-primary-event').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const evId = (btn as HTMLElement).dataset.ev || '';
-      if (!evId) return;
-      const allIds = WEBHOOK_EVENT_DEFS.map(d => d.id);
-      const rawEvents: string[] = Array.isArray(cfg.primary_events) ? [...cfg.primary_events] : ['all'];
-      const expanded = rawEvents.includes('all') ? [...allIds] : rawEvents;
-      const nextEvents = expanded.includes(evId)
-        ? expanded.filter(x => x !== evId)
-        : [...expanded, evId];
-      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), primary_events: nextEvents });
-    });
-  });
-
-  appBody.querySelectorAll('.btn-ep-exclusive').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
-      const next = extraEndpoints.map((ep, i) => i === idx ? { ...ep, exclusive: !ep.exclusive } : ep);
-      saveWebhookConfigPatch({ ...collectWebhookFormOverlay(), endpoints: next });
     });
   });
 

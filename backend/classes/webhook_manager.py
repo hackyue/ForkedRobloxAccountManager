@@ -433,7 +433,6 @@ class WebhookManager:
 
         with self.lock:
             secondary_targets: List[Dict[str, Any]] = []
-            rerouted_exclusively = False
 
             for ep in self.config.get("endpoints", []):
                 if not isinstance(ep, dict) or not ep.get("enabled", True):
@@ -443,8 +442,6 @@ class WebhookManager:
                     continue
                 if not self._category_matches_events(category, ep.get("events")):
                     continue
-                if ep.get("exclusive") and category not in ("test", "custom", "general"):
-                    rerouted_exclusively = True
                 if ep_url in seen_urls:
                     continue
                 seen_urls.add(ep_url)
@@ -455,13 +452,12 @@ class WebhookManager:
                     "ping_only_alerts": ep.get("ping_only_alerts", self.config.get("ping_only_alerts", False)),
                 })
 
+            rerouted_to_secondary = bool(secondary_targets) and category not in ("test", "custom", "general")
             primary_url = self.canonicalize_webhook_url(self.config.get("webhook_url", ""))
-            primary_events = self.config.get("primary_events", ["all"])
             if (
                 primary_url
                 and primary_url not in seen_urls
-                and not rerouted_exclusively
-                and self._category_matches_events(category, primary_events)
+                and not rerouted_to_secondary
             ):
                 seen_urls.add(primary_url)
                 targets.append({

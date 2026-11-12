@@ -10270,13 +10270,6 @@ textarea {
   opacity: 0.9;
 }
 
-.btn-ep-exclusive.active {
-  border-color: var(--warning, #f59e0b);
-  background: rgba(245, 158, 11, 0.16);
-  color: var(--warning, #fbbf24);
-  box-shadow: 0 0 8px rgba(245, 158, 11, 0.18);
-}
-
 .webhook-input,
 .webhook-select {
   background: var(--bg-2, rgba(0, 0, 0, 0.25));
