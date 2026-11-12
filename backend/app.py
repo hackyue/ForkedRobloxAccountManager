@@ -7278,6 +7278,27 @@ def save_webhook_config():
         return '', 200
     try:
         data = request.get_json() or {}
+        if isinstance(data, dict):
+            if "webhook_url" in data:
+                raw_wh = str(data.get("webhook_url") or "").strip()
+                if raw_wh:
+                    canon_wh = webhook_manager.canonicalize_webhook_url(raw_wh)
+                    if not canon_wh:
+                        return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
+                    data["webhook_url"] = canon_wh
+                else:
+                    data["webhook_url"] = ""
+            if "endpoints" in data and isinstance(data["endpoints"], list):
+                for ep in data["endpoints"]:
+                    if isinstance(ep, dict):
+                        raw_ep = str(ep.get("url") or "").strip()
+                        if raw_ep:
+                            canon_ep = webhook_manager.canonicalize_webhook_url(raw_ep)
+                            if not canon_ep:
+                                return jsonify({'success': False, 'error': f"Invalid Discord webhook URL in endpoint: {ep.get('name', 'Endpoint')}"}), 400
+                            ep["url"] = canon_ep
+                        else:
+                            ep["url"] = ""
         updated = webhook_manager.save_config(data)
         return jsonify({
             'success': True,
@@ -7345,8 +7366,10 @@ def test_webhook():
     try:
         data = request.get_json(silent=True) or {}
         custom_url = (data.get('webhook_url') or '').strip() or None
-        if custom_url and not webhook_manager.is_valid_url(custom_url):
-            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
+        if custom_url:
+            custom_url = webhook_manager.canonicalize_webhook_url(custom_url)
+            if not custom_url:
+                return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         ok, msg = webhook_manager.send_test_webhook(url=custom_url)
         if ok:
             return jsonify({'success': True, 'message': msg})
@@ -7366,8 +7389,10 @@ def send_webhook_custom():
         fields = data.get('fields', [])
         color = data.get('color')
         custom_url = (data.get('webhook_url') or '').strip() or None
-        if custom_url and not webhook_manager.is_valid_url(custom_url):
-            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
+        if custom_url:
+            custom_url = webhook_manager.canonicalize_webhook_url(custom_url)
+            if not custom_url:
+                return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         ok, msg = webhook_manager.post_embed(
             title=title,
             description=description,
@@ -7393,8 +7418,10 @@ def test_webhook_screenshot():
         mode = data.get('mode')
         pid = data.get('pid')
         custom_url = (data.get('webhook_url') or '').strip() or None
-        if custom_url and not webhook_manager.is_valid_url(custom_url):
-            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
+        if custom_url:
+            custom_url = webhook_manager.canonicalize_webhook_url(custom_url)
+            if not custom_url:
+                return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         ok, msg = webhook_manager.post_screenshot(url=custom_url, all_monitors=all_monitors, mode=mode, target_pid=pid)
         if ok:
             return jsonify({'success': True, 'message': msg})
@@ -7410,8 +7437,10 @@ def test_webhook_instances():
     try:
         data = request.get_json(silent=True) or {}
         custom_url = (data.get('webhook_url') or '').strip() or None
-        if custom_url and not webhook_manager.is_valid_url(custom_url):
-            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
+        if custom_url:
+            custom_url = webhook_manager.canonicalize_webhook_url(custom_url)
+            if not custom_url:
+                return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         force_new = bool(data.get('force_new_message', False))
         ok, msg = webhook_manager.post_instance_summary(url=custom_url, force_new_message=force_new)
         if ok:
@@ -7432,8 +7461,10 @@ def send_webhook_window_preview():
         place_id = data.get('place_id')
         place_name = data.get('place_name') or (get_place_name(place_id) if place_id else None)
         custom_url = (data.get('webhook_url') or '').strip() or None
-        if custom_url and not webhook_manager.is_valid_url(custom_url):
-            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
+        if custom_url:
+            custom_url = webhook_manager.canonicalize_webhook_url(custom_url)
+            if not custom_url:
+                return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         
         memory_mb = None
         cpu_percent = None

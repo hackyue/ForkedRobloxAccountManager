@@ -172,6 +172,22 @@ class WebhookManager:
                         new_config["screenshot_mode"] = "all_monitors"
                     elif "screenshot_window_only" in new_config or "screenshot_all_monitors" in new_config:
                         new_config["screenshot_mode"] = "primary"
+                if "webhook_url" in new_config:
+                    raw_wh = str(new_config.get("webhook_url") or "").strip()
+                    if raw_wh:
+                        canon = self.canonicalize_webhook_url(raw_wh)
+                        new_config["webhook_url"] = canon if canon else ""
+                if "endpoints" in new_config and isinstance(new_config["endpoints"], list):
+                    clean_eps = []
+                    for ep in new_config["endpoints"]:
+                        if isinstance(ep, dict):
+                            ep_copy = dict(ep)
+                            raw_url = str(ep_copy.get("url") or "").strip()
+                            if raw_url:
+                                ep_canon = self.canonicalize_webhook_url(raw_url)
+                                ep_copy["url"] = ep_canon or ""
+                            clean_eps.append(ep_copy)
+                    new_config["endpoints"] = clean_eps
                 for k, v in new_config.items():
                     if k in self.DEFAULT_CONFIG or k in self.config:
                         self.config[k] = v
@@ -223,19 +239,45 @@ class WebhookManager:
             return None
         try:
             parts = urllib.parse.urlsplit(raw)
-            if (parts.scheme or "").lower() != "https":
+            if (parts.scheme or "").lower() != "https" or parts.port is not None or parts.username or parts.password:
                 return None
             hostname = (parts.hostname or "").lower()
-            if hostname not in self.ALLOWED_DISCORD_HOSTS:
+
+            base_prefix = None
+            if hostname == "discord.com":
+                base_prefix = "https://discord.com/api/webhooks/"
+            elif hostname == "discordapp.com":
+                base_prefix = "https://discordapp.com/api/webhooks/"
+            elif hostname == "canary.discord.com":
+                base_prefix = "https://canary.discord.com/api/webhooks/"
+            elif hostname == "ptb.discord.com":
+                base_prefix = "https://ptb.discord.com/api/webhooks/"
+            elif hostname == "canary.discordapp.com":
+                base_prefix = "https://canary.discordapp.com/api/webhooks/"
+            elif hostname == "ptb.discordapp.com":
+                base_prefix = "https://ptb.discordapp.com/api/webhooks/"
+            else:
                 return None
+
             if parts.query or parts.fragment:
                 return None
             path = parts.path or ""
-            path_pattern = r"^/api/webhooks/\d+/[A-Za-z0-9_.-]+/?$"
-            if not re.fullmatch(path_pattern, path):
+            match = re.fullmatch(r"^/api/webhooks/(\d+)/([A-Za-z0-9_.-]+)/?$", path)
+            if not match:
                 return None
-            clean_path = path.rstrip("/")
-            return f"https://{hostname}{clean_path}"
+            webhook_id = int(match.group(1))
+            token = match.group(2)
+            if (
+                not isinstance(token, str)
+                or not (16 <= len(token) <= 128)
+                or ".." in token
+                or "/" in token
+                or "\\" in token
+                or "%" in token
+                or not re.fullmatch(r"^[A-Za-z0-9_.-]+$", token)
+            ):
+                return None
+            return f"{base_prefix}{webhook_id}/{token}"
         except Exception:
             return None
 
@@ -408,19 +450,63 @@ class WebhookManager:
             return False, "Missing destination URL", 400, None
 
         parsed = urllib.parse.urlsplit(str(request_url).strip())
+        if (parsed.scheme or "").lower() != "https" or parsed.port is not None or parsed.username or parsed.password:
+            return False, "Invalid or untrusted destination URL", 400, None
+
         hostname = (parsed.hostname or "").lower()
-        if (parsed.scheme or "").lower() != "https" or hostname not in ALLOWED_DISCORD_HOSTS:
+        base_prefix = None
+        if hostname == "discord.com":
+            base_prefix = "https://discord.com/api/webhooks/"
+        elif hostname == "discordapp.com":
+            base_prefix = "https://discordapp.com/api/webhooks/"
+        elif hostname == "canary.discord.com":
+            base_prefix = "https://canary.discord.com/api/webhooks/"
+        elif hostname == "ptb.discord.com":
+            base_prefix = "https://ptb.discord.com/api/webhooks/"
+        elif hostname == "canary.discordapp.com":
+            base_prefix = "https://canary.discordapp.com/api/webhooks/"
+        elif hostname == "ptb.discordapp.com":
+            base_prefix = "https://ptb.discordapp.com/api/webhooks/"
+        else:
             return False, "Invalid or untrusted destination URL", 400, None
 
         path = parsed.path or ""
-        if not re.fullmatch(r"^/api/webhooks/\d+/[A-Za-z0-9_.-]+(?:/messages/\d+)?$", path):
+        match = re.fullmatch(r"^/api/webhooks/(\d+)/([A-Za-z0-9_.-]+)(?:/messages/(\d+))?/?$", path)
+        if not match:
             return False, "Invalid webhook endpoint path", 400, None
+
+        webhook_id = int(match.group(1))
+        token = match.group(2)
+        if (
+            not isinstance(token, str)
+            or not (16 <= len(token) <= 128)
+            or ".." in token
+            or "/" in token
+            or "\\" in token
+            or "%" in token
+            or not re.fullmatch(r"^[A-Za-z0-9_.-]+$", token)
+        ):
+            return False, "Invalid webhook token format", 400, None
+
+        message_id = int(match.group(3)) if match.group(3) else None
 
         query = parsed.query or ""
         if query and query != "wait=true":
             return False, "Invalid webhook query parameters", 400, None
 
-        safe_url = f"https://{hostname}{path}" + (f"?{query}" if query else "")
+        safe_url = f"{base_prefix}{webhook_id}/{token}"
+        if message_id is not None:
+            safe_url = f"{safe_url}/messages/{message_id}"
+        if query == "wait=true":
+            safe_url = f"{safe_url}?wait=true"
+
+        parsed_final = urllib.parse.urlsplit(safe_url)
+        if (
+            parsed_final.scheme != "https"
+            or parsed_final.hostname not in ALLOWED_DISCORD_HOSTS
+            or parsed_final.port is not None
+        ):
+            return False, "Sanitized URL validation failed", 400, None
 
         attempt = 0
         last_err = "Delivery failed"
