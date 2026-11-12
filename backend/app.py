@@ -1570,10 +1570,11 @@ def launch_account():
 
         if launched:
             record_launch_event(username)
+            target_pid = req_data.get('pid')
             with _INSTANCES_TRACKER_LOCK:
-                if pid:
+                if target_pid:
                     try:
-                        _CLOSED_OR_CRASHED_INSTANCES.pop(int(pid), None)
+                        _CLOSED_OR_CRASHED_INSTANCES.pop(int(target_pid), None)
                     except Exception:
                         pass
                 if username:
@@ -4768,10 +4769,11 @@ def relaunch_specific_instance():
 
         if launched:
             record_launch_event(username)
+            target_pid = req_data.get('pid')
             with _INSTANCES_TRACKER_LOCK:
-                if pid:
+                if target_pid:
                     try:
-                        _CLOSED_OR_CRASHED_INSTANCES.pop(int(pid), None)
+                        _CLOSED_OR_CRASHED_INSTANCES.pop(int(target_pid), None)
                     except Exception:
                         pass
                 if username:
