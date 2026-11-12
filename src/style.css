@@ -1606,6 +1606,28 @@ body {
   color: var(--accent);
 }
 
+.dropdown-menu .menu-item.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dropdown-menu .menu-item.disabled:hover {
+  background: transparent;
+}
+
+.dropdown-menu .menu-item.disabled:hover .menu-item-icon-box {
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  border-color: rgba(255, 255, 255, 0.1);
+  transform: none;
+}
+
+.dropdown-menu .menu-item.disabled:hover .menu-item-arrow {
+  opacity: 0.4;
+  transform: none;
+  color: inherit;
+}
+
 .menu-item-icon-box {
   width: 30px;
   height: 30px;
