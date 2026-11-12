@@ -11949,17 +11949,25 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
     }
     lastInstancesDataJson = currentJson;
 
-    const gameInstances = data.instances || [];
+    const allInstances = data.instances || [];
+    const activeInstances = allInstances.filter(inst => inst.status !== 'Crashed' && inst.status !== 'Closed');
+    const inactiveInstances = allInstances.filter(inst => inst.status === 'Crashed' || inst.status === 'Closed');
     const crashHandlers = data.crashHandlers || [];
 
-    if (statCount) statCount.textContent = `${gameInstances.length}`;
+    if (statCount) {
+      if (inactiveInstances.length > 0) {
+        statCount.textContent = `${activeInstances.length} Active (${inactiveInstances.length} Inactive)`;
+      } else {
+        statCount.textContent = `${activeInstances.length}`;
+      }
+    }
 
     let totalMem = 0;
     let totalCpu = data.totalCpuPercent ?? 0;
-    if (Array.isArray(gameInstances)) {
-      totalMem += gameInstances.reduce((acc, inst) => acc + (inst.memory_mb || 0), 0);
+    if (Array.isArray(activeInstances)) {
+      totalMem += activeInstances.reduce((acc, inst) => acc + (inst.memory_mb || 0), 0);
       if (totalCpu === 0) {
-        totalCpu += gameInstances.reduce((acc, inst) => acc + (inst.cpu_percent || 0), 0);
+        totalCpu += activeInstances.reduce((acc, inst) => acc + (inst.cpu_percent || 0), 0);
       }
     }
     if (Array.isArray(crashHandlers)) {
@@ -12007,7 +12015,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
     if (container) {
       let mainContentHtml = '';
 
-      if (gameInstances.length === 0 && crashHandlers.length === 0) {
+      if (allInstances.length === 0 && crashHandlers.length === 0) {
         mainContentHtml = `
           <div class="empty-state" style="padding: 40px; text-align: center;">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:48px;height:48px;opacity:0.4;margin-bottom:12px;"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
@@ -12016,7 +12024,24 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
           </div>
         `;
       } else {
-        if (gameInstances.length === 0) {
+        if (inactiveInstances.length > 0) {
+          mainContentHtml += `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; padding:10px 14px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:8px;">
+              <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text-bright);">
+                <span style="display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:50%; background:rgba(245,158,11,0.18); color:#f59e0b;">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                </span>
+                <span><b>${inactiveInstances.length}</b> instance(s) closed or crashed unexpectedly.</span>
+              </div>
+              <button class="btn btn-secondary btn-sm btn-clear-inactive-instances" style="font-size:11.5px; padding:4px 10px; display:inline-flex; align-items:center; gap:5px;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Clear Inactive
+              </button>
+            </div>
+          `;
+        }
+
+        if (allInstances.length === 0) {
           mainContentHtml += `
             <div class="empty-state" style="padding: 30px; text-align: center; margin-bottom: 16px;">
               <div style="font-size:14px; font-weight:600; margin-bottom:2px;">No Active Roblox Game Clients</div>
@@ -12024,7 +12049,10 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
             </div>
           `;
         } else {
-          let rowsHtml = gameInstances.map(inst => {
+          let rowsHtml = allInstances.map(inst => {
+            const isInactive = inst.status === 'Crashed' || inst.status === 'Closed';
+            const isCrashed = inst.status === 'Crashed';
+
             let accountHtml = `<span style="font-size:12px; color:var(--text-muted); font-style:italic;">Unassigned / External</span>`;
             if (inst.username) {
               const avatarSrc = inst.avatar_url || '/icon.ico';
@@ -12042,10 +12070,11 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
             let placeHtml = `<span style="font-size:12px; color:var(--text-muted); font-style:italic;">None</span>`;
             if (inst.place_id) {
               const matchedGame = (state.games || []).find(g => String(g.placeId) === String(inst.place_id));
-              if (matchedGame && matchedGame.name) {
+              const placeName = (matchedGame && matchedGame.name) || inst.place_name;
+              if (placeName) {
                 placeHtml = `
                   <div style="display:inline-flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.2;">
-                    <span style="font-weight:600; color:var(--text-bright); font-size:12px; max-width:145px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${matchedGame.name}">${matchedGame.name}</span>
+                    <span style="font-weight:600; color:var(--text-bright); font-size:12px; max-width:145px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${placeName}">${placeName}</span>
                     <code class="pid-badge" style="background:rgba(99,102,241,0.12); color:rgb(99,102,241); border-color:rgba(99,102,241,0.25); font-size:10.5px; padding:1px 5px; margin-top:2px;" title="Place ID: ${inst.place_id}">${inst.place_id}</code>
                   </div>
                 `;
@@ -12057,7 +12086,13 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
             }
 
             let uptimeHtml = `<span style="font-size:11.5px; color:var(--text-muted);">-</span>`;
-            if (typeof inst.uptime_sec === 'number' && inst.uptime_sec >= 0) {
+            if (inst.uptime_str) {
+              uptimeHtml = `
+                <span class="pid-badge" style="background:rgba(255,255,255,0.04); color:${isInactive ? 'var(--text-muted)' : 'var(--text)'}; font-size:11px; padding:2px 6px;" title="Session Duration: ${inst.uptime_str}">
+                  ${inst.uptime_str}
+                </span>
+              `;
+            } else if (typeof inst.uptime_sec === 'number' && inst.uptime_sec >= 0) {
               const up = inst.uptime_sec;
               const m = Math.floor(up / 60);
               const s = up % 60;
@@ -12065,7 +12100,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
               const mRemainder = m % 60;
               const formatted = h > 0 ? `${h}h ${mRemainder}m` : (m > 0 ? `${m}m ${s}s` : `${s}s`);
               uptimeHtml = `
-                <span class="pid-badge" style="background:rgba(255,255,255,0.04); color:var(--text); font-size:11px; padding:2px 6px;" title="Process Uptime: ${formatted}">
+                <span class="pid-badge" style="background:rgba(255,255,255,0.04); color:${isInactive ? 'var(--text-muted)' : 'var(--text)'}; font-size:11px; padding:2px 6px;" title="Process Uptime: ${formatted}">
                   ${formatted}
                 </span>
               `;
@@ -12081,68 +12116,95 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
 
             const isMuted = Boolean(inst.is_muted);
 
+            let statusHtml = '';
+            if (isCrashed) {
+              statusHtml = `<span class="status-badge crashed" title="${escapeHtml(inst.exit_reason || 'Crash handler detected')}"><span class="dot"></span>Crashed</span>`;
+            } else if (isInactive) {
+              statusHtml = `<span class="status-badge closed" title="${escapeHtml(inst.exit_reason || 'Client closed / disconnected')}"><span class="dot"></span>Closed</span>`;
+            } else {
+              statusHtml = `
+                <div style="display:inline-flex; flex-direction:column; align-items:center; gap:3px;">
+                  ${inst.is_hidden
+                    ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:rgb(148,163,184); border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:rgb(148,163,184);"></span>Hidden</span>`
+                    : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
+                  }
+                  ${isMuted
+                    ? `<span class="status-badge" style="background:rgba(239,68,68,0.12); color:rgb(239,68,68); border:1px solid rgba(239,68,68,0.25);" title="Client audio is muted">Muted</span>`
+                    : ''
+                  }
+                </div>
+              `;
+            }
+
+            const cpuHtml = isInactive
+              ? `<span class="status-badge" style="background:rgba(255,255,255,0.03); color:var(--text-muted); border:1px solid transparent; font-size:11px; padding:2px 6px;">-</span>`
+              : `<span class="status-badge" style="background:${cpuBg}; color:${cpuColor}; border:1px solid transparent; font-size:11px; padding:2px 6px; font-weight:700;">${cpuVal.toFixed(1)}%</span>`;
+
+            const memHtml = isInactive
+              ? `<span class="status-badge" style="background:rgba(255,255,255,0.03); color:var(--text-muted); border:1px solid transparent; font-size:11px; padding:2px 6px;">-</span>`
+              : `<span class="status-badge" style="background:${memBg}; color:${memColor}; border:1px solid transparent; font-size:11px; padding:2px 6px; font-weight:600;">${memVal.toFixed(1)} MB</span>`;
+
+            let actionsHtml = '';
+            if (isInactive) {
+              actionsHtml = `
+                <div style="display:inline-flex; align-items:center; justify-content:center; gap:6px;">
+                  <button class="btn btn-primary btn-sm btn-relaunch-pid" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" style="padding:4px 10px; font-size:11.5px; display:inline-flex; align-items:center; gap:4px;" title="Relaunch this account">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Relaunch
+                  </button>
+                  <button class="btn btn-secondary btn-sm btn-dismiss-instance" data-pid="${inst.pid}" style="padding:4px 8px; font-size:11.5px; color:var(--text-muted); display:inline-flex; align-items:center; gap:4px;" title="Dismiss from list">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Dismiss
+                  </button>
+                </div>
+              `;
+            } else {
+              actionsHtml = `
+                <div style="display:inline-flex; align-items:center; justify-content:center; gap:4px;">
+                  <button class="btn btn-secondary btn-sm btn-quick-focus" data-pid="${inst.pid}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="Bring window to front">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
+                  </button>
+                  <button class="btn btn-secondary btn-sm btn-quick-toggle-hide" data-pid="${inst.pid}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="${inst.is_hidden ? 'Unhide window' : 'Hide window'}">
+                    ${inst.is_hidden
+                      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`
+                      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
+                    }
+                  </button>
+                  <button class="btn btn-secondary btn-sm btn-quick-toggle-mute" data-pid="${inst.pid}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; ${isMuted ? 'color:var(--red); border-color:rgba(239,68,68,0.3);' : ''}" title="${isMuted ? 'Unmute Client Audio' : 'Mute Client Audio'}">
+                    ${isMuted
+                      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`
+                      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
+                    }
+                  </button>
+                  ${isMacOS() ? '' : `
+                    <button class="btn btn-secondary btn-sm btn-quick-trim" data-pid="${inst.pid}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="Trim RAM working set">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+                    </button>
+                  `}
+                  <button class="btn btn-secondary btn-sm btn-quick-preview" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; color:rgb(139,92,246);" title="Send Discord Window Preview">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                  </button>
+                  <button class="btn btn-secondary btn-sm btn-instance-actions" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 8px; font-size:11.5px; display:inline-flex; align-items:center; gap:3px;" title="Instance Actions Menu">
+                    More
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:9px;height:9px;"><path d="m6 9 6 6 6-6"/></svg>
+                  </button>
+                  <button class="btn btn-secondary btn-sm btn-kill-pid" data-pid="${inst.pid}" data-username="${inst.username || ''}" style="color:var(--red); padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border-color:rgba(239,68,68,0.3);" title="Terminate process">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+                  </button>
+                </div>
+              `;
+            }
+
             return `
-              <tr>
+              <tr ${isInactive ? 'class="inactive-instance-row"' : ''}>
                 <td style="text-align:center;"><code class="pid-badge">${inst.pid}</code></td>
                 <td style="text-align:center;">${accountHtml}</td>
                 <td style="text-align:center;">${placeHtml}</td>
                 <td style="text-align:center;">${uptimeHtml}</td>
-                <td style="text-align:center;">
-                  <div style="display:inline-flex; flex-direction:column; align-items:center; gap:3px;">
-                    ${inst.is_hidden
-                      ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:rgb(148,163,184); border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:rgb(148,163,184);"></span>Hidden</span>`
-                      : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
-                    }
-                    ${isMuted
-                      ? `<span class="status-badge" style="background:rgba(239,68,68,0.12); color:rgb(239,68,68); border:1px solid rgba(239,68,68,0.25);" title="Client audio is muted">Muted</span>`
-                      : ''
-                    }
-                  </div>
-                </td>
-                <td style="text-align:center;">
-                  <span class="status-badge" style="background:${cpuBg}; color:${cpuColor}; border:1px solid transparent; font-size:11px; padding:2px 6px; font-weight:700;">
-                    ${cpuVal.toFixed(1)}%
-                  </span>
-                </td>
-                <td style="text-align:center;">
-                  <span class="status-badge" style="background:${memBg}; color:${memColor}; border:1px solid transparent; font-size:11px; padding:2px 6px; font-weight:600;">
-                    ${memVal.toFixed(1)} MB
-                  </span>
-                </td>
-                <td style="text-align:center; white-space:nowrap;">
-                  <div style="display:inline-flex; align-items:center; justify-content:center; gap:4px;">
-                    <button class="btn btn-secondary btn-sm btn-quick-focus" data-pid="${inst.pid}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="Bring window to front">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
-                    </button>
-                    <button class="btn btn-secondary btn-sm btn-quick-toggle-hide" data-pid="${inst.pid}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="${inst.is_hidden ? 'Unhide window' : 'Hide window'}">
-                      ${inst.is_hidden
-                        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`
-                        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
-                      }
-                    </button>
-                    <button class="btn btn-secondary btn-sm btn-quick-toggle-mute" data-pid="${inst.pid}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; ${isMuted ? 'color:var(--red); border-color:rgba(239,68,68,0.3);' : ''}" title="${isMuted ? 'Unmute Client Audio' : 'Mute Client Audio'}">
-                      ${isMuted
-                        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`
-                        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
-                      }
-                    </button>
-                    ${isMacOS() ? '' : `
-                      <button class="btn btn-secondary btn-sm btn-quick-trim" data-pid="${inst.pid}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="Trim RAM working set">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
-                      </button>
-                    `}
-                    <button class="btn btn-secondary btn-sm btn-quick-preview" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; color:rgb(139,92,246);" title="Send Discord Window Preview">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-                    </button>
-                    <button class="btn btn-secondary btn-sm btn-instance-actions" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 8px; font-size:11.5px; display:inline-flex; align-items:center; gap:3px;" title="Instance Actions Menu">
-                      More
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:9px;height:9px;"><path d="m6 9 6 6 6-6"/></svg>
-                    </button>
-                    <button class="btn btn-secondary btn-sm btn-kill-pid" data-pid="${inst.pid}" data-username="${inst.username || ''}" style="color:var(--red); padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; border-color:rgba(239,68,68,0.3);" title="Terminate process">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-                    </button>
-                  </div>
-                </td>
+                <td style="text-align:center;">${statusHtml}</td>
+                <td style="text-align:center;">${cpuHtml}</td>
+                <td style="text-align:center;">${memHtml}</td>
+                <td style="text-align:center; white-space:nowrap;">${actionsHtml}</td>
               </tr>
             `;
           }).join('');
@@ -12399,6 +12461,9 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
             if (res.success) {
               toast(res.message || `Relaunched instance for @${username}`, 'success');
               addLog(`Relaunched Roblox instance for @${username} (PID: ${pid || 'N/A'}, Place ID: ${placeId || 'None'})`, 'info');
+              if (pid) {
+                apiService.dismissInstance({ pid }).catch(() => {});
+              }
               setTimeout(() => {
                 renderInstancesView();
               }, 1500);
@@ -12464,6 +12529,42 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
               renderInstancesView();
             } else {
               toast(res.error || 'Failed to kill process', 'error');
+            }
+          } catch (err: any) {
+            toast(`Error: ${err.message || err}`, 'error');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-dismiss-instance').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const target = e.currentTarget as HTMLElement;
+          const pidAttr = target.getAttribute('data-pid');
+          if (!pidAttr) return;
+          const pid = parseInt(pidAttr, 10);
+          try {
+            const res = await apiService.dismissInstance({ pid });
+            if (res.success) {
+              toast(`Dismissed inactive instance (PID ${pid})`, 'info');
+              renderInstancesView(true);
+            } else {
+              toast(res.error || 'Failed to dismiss instance', 'error');
+            }
+          } catch (err: any) {
+            toast(`Error: ${err.message || err}`, 'error');
+          }
+        });
+      });
+
+      container.querySelectorAll('.btn-clear-inactive-instances').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          try {
+            const res = await apiService.dismissInstance({ all: true });
+            if (res.success) {
+              toast(`Cleared ${res.count || 0} inactive instance(s)`, 'info');
+              renderInstancesView(true);
+            } else {
+              toast(res.error || 'Failed to clear inactive instances', 'error');
             }
           } catch (err: any) {
             toast(`Error: ${err.message || err}`, 'error');

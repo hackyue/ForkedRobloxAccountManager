@@ -1570,6 +1570,17 @@ def launch_account():
 
         if launched:
             record_launch_event(username)
+            with _INSTANCES_TRACKER_LOCK:
+                if pid:
+                    try:
+                        _CLOSED_OR_CRASHED_INSTANCES.pop(int(pid), None)
+                    except Exception:
+                        pass
+                if username:
+                    u_norm = str(username).strip().lower()
+                    for opid, odata in list(_CLOSED_OR_CRASHED_INSTANCES.items()):
+                        if str(odata.get('username') or '').strip().lower() == u_norm:
+                            _CLOSED_OR_CRASHED_INSTANCES.pop(opid, None)
             acc_meta = manager.accounts.get(username, {}) if manager and hasattr(manager, 'accounts') else {}
             p_name = get_place_name(place_id)
             webhook_manager.notify_launch(
@@ -1614,6 +1625,26 @@ last_manual_kill_timestamp = 0.0
 last_launch_times = {}
 last_launch_info = {}
 
+_TRACKED_ACTIVE_GAME_INSTANCES: Dict[int, Dict[str, Any]] = {}
+_CLOSED_OR_CRASHED_INSTANCES: Dict[int, Dict[str, Any]] = {}
+_MANUALLY_KILLED_PIDS: Dict[int, float] = {}
+_INSTANCES_TRACKER_LOCK = threading.RLock()
+_LAST_NOTIFIED_EXIT_PIDS: Dict[int, float] = {}
+
+def resolve_place_name(place_id: Any) -> Optional[str]:
+    """Look up friendly game/place name from saved games by place ID."""
+    if not place_id:
+        return None
+    try:
+        p_str = str(place_id).strip()
+        data = load_data()
+        for g in data.get('games', []):
+            if str(g.get('placeId') or g.get('place_id') or '').strip() == p_str:
+                return g.get('name')
+    except Exception:
+        pass
+    return None
+
 @app.route('/api/roblox/kill', methods=['POST', 'OPTIONS'])
 def kill_roblox_processes():
     global last_manual_kill_timestamp
@@ -1621,6 +1652,10 @@ def kill_roblox_processes():
         return '', 200
     try:
         last_manual_kill_timestamp = time.time()
+        with _INSTANCES_TRACKER_LOCK:
+            _CLOSED_OR_CRASHED_INSTANCES.clear()
+            _TRACKED_ACTIVE_GAME_INSTANCES.clear()
+        invalidate_instances_cache()
         killed_count = 0
         target_executables = ["RobloxPlayerBeta.exe", "RobloxPlayerLauncher.exe", "Bloxstrap.exe", "Fishstrap.exe", "Voidstrap.exe", "FrostStrap.exe", "ExploitStrap.exe"]
 
@@ -3969,6 +4004,9 @@ def get_running_instances():
                         if resolved_place:
                             inst_obj["place_id"] = str(resolved_place)
 
+                    if inst_obj.get("place_id") and not inst_obj.get("place_name"):
+                        inst_obj["place_name"] = resolve_place_name(inst_obj["place_id"])
+
                     is_hidden = False
                     if platform.system() == "Darwin":
                         is_hidden = pid in headless_manager.hidden_hwnds
@@ -4008,13 +4046,38 @@ def get_running_instances():
         except Exception:
             pass
 
+        # Update tracked active instances and merge with inactive (crashed/closed) instances
+        with _INSTANCES_TRACKER_LOCK:
+            for inst in game_instances:
+                ipid = inst["pid"]
+                _TRACKED_ACTIVE_GAME_INSTANCES[ipid] = inst.copy()
+                _CLOSED_OR_CRASHED_INSTANCES.pop(ipid, None)
+                if inst.get("username"):
+                    u_norm = str(inst["username"]).strip().lower()
+                    for opid, odata in list(_CLOSED_OR_CRASHED_INSTANCES.items()):
+                        if str(odata.get("username") or "").strip().lower() == u_norm:
+                            _CLOSED_OR_CRASHED_INSTANCES.pop(opid, None)
+
+            inactive_instances = sorted(
+                _CLOSED_OR_CRASHED_INSTANCES.values(),
+                key=lambda x: x.get('closed_at', 0),
+                reverse=True
+            )
+
+        crashed_count = sum(1 for inst in inactive_instances if inst.get('status') == 'Crashed')
+        closed_count = sum(1 for inst in inactive_instances if inst.get('status') == 'Closed')
+        all_game_instances = list(game_instances) + inactive_instances
+
         is_mutex_active = bool(multi_instance_controller.is_enabled) if platform.system() != "Windows" else (len(multi_instance_controller.mutex_handles) > 0)
         result_payload = {
             'success': True,
-            'instances': game_instances,
+            'instances': all_game_instances,
+            'activeCount': len(game_instances),
+            'crashedCount': crashed_count,
+            'closedCount': closed_count,
             'crashHandlers': crash_handlers,
             'otherInstances': other_instances,
-            'count': len(game_instances),
+            'count': len(all_game_instances),
             'crashHandlerCount': len(crash_handlers),
             'totalCpuPercent': total_roblox_cpu,
             'systemCpuPercent': system_cpu,
@@ -4297,7 +4360,10 @@ ALLOWED_PROCESS_NAMES = {
     'robloxcrashhandler'
 }
 
+_LAST_CRASH_HANDLER_DETECTED_TIME: float = 0.0
+
 def terminate_crash_handlers(log_if_killed: bool = True):
+    global _LAST_CRASH_HANDLER_DETECTED_TIME
     if platform.system() == "Windows":
         try:
             killed = 0
@@ -4309,8 +4375,10 @@ def terminate_crash_handlers(log_if_killed: bool = True):
                         killed += 1
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
-            if killed > 0 and log_if_killed:
-                add_backend_log(f"Terminated {killed} RobloxCrashHandler process(es)", level='info', category='system')
+            if killed > 0:
+                _LAST_CRASH_HANDLER_DETECTED_TIME = time.time()
+                if log_if_killed:
+                    add_backend_log(f"Terminated {killed} RobloxCrashHandler process(es)", level='info', category='system')
             return killed
         except Exception as e:
             print(f"[ERROR] terminate_crash_handlers error: {e}")
@@ -4328,6 +4396,175 @@ def background_auto_crash_handler_killer_worker():
                 terminate_crash_handlers(log_if_killed=True)
         except Exception as e:
             print(f"[ERROR] background_auto_crash_handler_killer_worker error: {e}")
+
+def _detect_and_update_instance_exits():
+    """Detect terminated Roblox instances, classify exit as crashed vs closed, update inactive tracking, and dispatch webhooks."""
+    global last_manual_kill_timestamp, _TRACKED_ACTIVE_GAME_INSTANCES, _CLOSED_OR_CRASHED_INSTANCES, _MANUALLY_KILLED_PIDS, _LAST_NOTIFIED_EXIT_PIDS, _LAST_CRASH_HANDLER_DETECTED_TIME
+    now_ts = time.time()
+
+    # If the user performed a "kill all" recently (within 15 seconds), ignore all exits and clear inactive instances
+    if (now_ts - last_manual_kill_timestamp) < 15.0:
+        with _INSTANCES_TRACKER_LOCK:
+            _CLOSED_OR_CRASHED_INSTANCES.clear()
+            _TRACKED_ACTIVE_GAME_INSTANCES.clear()
+        return
+
+    # Clean up _MANUALLY_KILLED_PIDS older than 60s
+    with _INSTANCES_TRACKER_LOCK:
+        _MANUALLY_KILLED_PIDS = {k: v for k, v in _MANUALLY_KILLED_PIDS.items() if (now_ts - v) < 60.0}
+
+    # Discover live game PIDs and active crash handlers
+    running_game_pids = set()
+    crash_handler_running = False
+    crash_handler_target_pids = set()
+
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'ppid']):
+            try:
+                pname = str(proc.info.get('name') or '').lower()
+                pid = proc.info['pid']
+                if 'crashhandler' in pname:
+                    crash_handler_running = True
+                    _LAST_CRASH_HANDLER_DETECTED_TIME = now_ts
+                    ppid = proc.info.get('ppid')
+                    if ppid:
+                        crash_handler_target_pids.add(ppid)
+                    cmdline = proc.info.get('cmdline') or []
+                    cmd_str = ' '.join(cmdline)
+                    m = re.search(r'PID=(\d+)', cmd_str, re.IGNORECASE)
+                    if m:
+                        crash_handler_target_pids.add(int(m.group(1)))
+                elif re.search(r'robloxplayer(?:beta)?(?:\.exe)?$', pname, re.IGNORECASE):
+                    running_game_pids.add(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception:
+        pass
+
+    exited_instances_to_notify = []
+
+    with _INSTANCES_TRACKER_LOCK:
+        # Check all tracked active instances to see if any have exited
+        for pid, inst_data in list(_TRACKED_ACTIVE_GAME_INSTANCES.items()):
+            if pid not in running_game_pids:
+                # Process has exited!
+                _TRACKED_ACTIVE_GAME_INSTANCES.pop(pid, None)
+
+                # Skip if killed as part of manual kill all
+                if (now_ts - last_manual_kill_timestamp) < 15.0:
+                    continue
+
+                # Skip if manually killed by user for this PID
+                if pid in _MANUALLY_KILLED_PIDS or (now_ts - _MANUALLY_KILLED_PIDS.get(pid, 0.0) < 60.0):
+                    continue
+
+                # Determine whether it crashed or closed
+                is_crash = (pid in crash_handler_target_pids) or crash_handler_running or ((now_ts - _LAST_CRASH_HANDLER_DETECTED_TIME) < 10.0)
+                status = "Crashed" if is_crash else "Closed"
+                exit_reason = "RobloxCrashHandler detected" if is_crash else "Client Process Closed / Disconnected"
+
+                # Calculate final uptime
+                uptime_sec = inst_data.get('uptime_sec', 0)
+                created_at = inst_data.get('created_at')
+                if created_at:
+                    try:
+                        ctime = float(created_at)
+                        if ctime > 0:
+                            uptime_sec = max(0, int(now_ts - ctime))
+                    except Exception:
+                        pass
+
+                m, s = divmod(uptime_sec, 60)
+                h, m = divmod(m, 60)
+                uptime_str = f"{h}h {m}m" if h > 0 else (f"{m}m {s}s" if m > 0 else f"{s}s")
+
+                inactive_record = dict(inst_data)
+                inactive_record['status'] = status
+                inactive_record['memory_mb'] = 0.0
+                inactive_record['cpu_percent'] = 0.0
+                inactive_record['uptime_sec'] = uptime_sec
+                inactive_record['uptime_str'] = uptime_str
+                inactive_record['closed_at'] = now_ts
+                inactive_record['exit_reason'] = exit_reason
+
+                _CLOSED_OR_CRASHED_INSTANCES[pid] = inactive_record
+
+                # Prune inactive instances so map doesn't exceed 50 entries
+                if len(_CLOSED_OR_CRASHED_INSTANCES) > 50:
+                    oldest_pids = sorted(_CLOSED_OR_CRASHED_INSTANCES.keys(), key=lambda k: _CLOSED_OR_CRASHED_INSTANCES[k].get('closed_at', 0))[:-50]
+                    for opid in oldest_pids:
+                        _CLOSED_OR_CRASHED_INSTANCES.pop(opid, None)
+
+                exited_instances_to_notify.append(inactive_record)
+
+        # Clean up any inactive record whose account is currently running
+        for pid in running_game_pids:
+            active_info = _TRACKED_ACTIVE_GAME_INSTANCES.get(pid)
+            if active_info and active_info.get('username'):
+                u_norm = str(active_info['username']).strip().lower()
+                for old_pid, old_record in list(_CLOSED_OR_CRASHED_INSTANCES.items()):
+                    if str(old_record.get('username') or '').strip().lower() == u_norm:
+                        _CLOSED_OR_CRASHED_INSTANCES.pop(old_pid, None)
+
+    # Invalidate cache if any instance exited
+    if exited_instances_to_notify:
+        invalidate_instances_cache()
+
+    # Dispatch webhooks outside the lock
+    for inst in exited_instances_to_notify:
+        pid = inst.get('pid')
+        username = inst.get('username') or ''
+        status = inst.get('status')
+        exit_reason = inst.get('exit_reason')
+        disp_name = inst.get('display_name')
+        uid = inst.get('user_id')
+        av_url = inst.get('avatar_url')
+        place_id = inst.get('place_id')
+        place_name = inst.get('place_name') or resolve_place_name(place_id)
+        uptime_str = inst.get('uptime_str')
+
+        add_backend_log(
+            f"Roblox process PID {pid} ({disp_name or username or 'Unassigned'}) {status.lower()}: {exit_reason}",
+            level='warn' if status == 'Crashed' else 'info',
+            category='instances'
+        )
+
+        try:
+            if status == "Crashed":
+                webhook_manager.notify_crash(
+                    username=username,
+                    pid=pid,
+                    reason=exit_reason,
+                    display_name=disp_name,
+                    user_id=uid,
+                    avatar_url=av_url,
+                    place_id=place_id,
+                    place_name=place_name,
+                    uptime_str=uptime_str,
+                )
+            else:
+                webhook_manager.notify_closed(
+                    username=username,
+                    pid=pid,
+                    reason=exit_reason,
+                    display_name=disp_name,
+                    user_id=uid,
+                    avatar_url=av_url,
+                    place_id=place_id,
+                    place_name=place_name,
+                    uptime_str=uptime_str,
+                )
+        except Exception as e:
+            print(f"[WARN] Failed to send webhook for {status} PID {pid}: {e}")
+
+def background_instance_tracker_worker():
+    """Background worker to continuously track running instances and detect crashes or unexpected closures."""
+    while True:
+        try:
+            time.sleep(2.5)
+            _detect_and_update_instance_exits()
+        except Exception as e:
+            print(f"[ERROR] background_instance_tracker_worker error: {e}")
 
 @app.route('/api/instances/kill-crash-handlers', methods=['POST', 'OPTIONS'])
 def kill_all_crash_handlers():
@@ -4367,6 +4604,11 @@ def kill_specific_instance():
 
         if not _is_roblox_pid(pid):
             return jsonify({'success': False, 'error': 'PID does not belong to a Roblox process'}), 403
+
+        with _INSTANCES_TRACKER_LOCK:
+            _MANUALLY_KILLED_PIDS[pid] = time.time()
+            _TRACKED_ACTIVE_GAME_INSTANCES.pop(pid, None)
+            _CLOSED_OR_CRASHED_INSTANCES.pop(pid, None)
 
         manager = get_account_manager()
         resolved_username = str(username or '').strip()
@@ -4526,6 +4768,17 @@ def relaunch_specific_instance():
 
         if launched:
             record_launch_event(username)
+            with _INSTANCES_TRACKER_LOCK:
+                if pid:
+                    try:
+                        _CLOSED_OR_CRASHED_INSTANCES.pop(int(pid), None)
+                    except Exception:
+                        pass
+                if username:
+                    u_norm = str(username).strip().lower()
+                    for opid, odata in list(_CLOSED_OR_CRASHED_INSTANCES.items()):
+                        if str(odata.get('username') or '').strip().lower() == u_norm:
+                            _CLOSED_OR_CRASHED_INSTANCES.pop(opid, None)
             acc_meta = manager.accounts.get(username, {}) if manager and hasattr(manager, 'accounts') else {}
             p_name = get_place_name(place_id)
             webhook_manager.notify_launch(
@@ -4567,6 +4820,36 @@ def relaunch_specific_instance():
     except Exception as e:
         print(f"[ERROR] Relaunch instance failed: {e}")
         return jsonify({'success': False, 'error': 'An internal error occurred'}), 500
+
+@app.route('/api/instances/dismiss', methods=['POST', 'OPTIONS'])
+def dismiss_instance():
+    """Dismiss inactive crashed or closed instances from the Instance Manager view."""
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        req_data = request.json or {}
+        dismiss_all = bool(req_data.get('all', False))
+        pid = req_data.get('pid')
+
+        with _INSTANCES_TRACKER_LOCK:
+            if dismiss_all:
+                count = len(_CLOSED_OR_CRASHED_INSTANCES)
+                _CLOSED_OR_CRASHED_INSTANCES.clear()
+                invalidate_instances_cache()
+                return jsonify({'success': True, 'count': count, 'message': f'Dismissed {count} inactive instance(s)'})
+            elif pid is not None:
+                try:
+                    pid_int = int(pid)
+                    removed = _CLOSED_OR_CRASHED_INSTANCES.pop(pid_int, None)
+                    invalidate_instances_cache()
+                    return jsonify({'success': True, 'found': bool(removed), 'message': f'Dismissed instance PID {pid}'})
+                except (ValueError, TypeError):
+                    return jsonify({'success': False, 'error': 'Invalid PID'}), 400
+            else:
+                return jsonify({'success': False, 'error': 'PID or all=True is required'}), 400
+    except Exception as e:
+        log_detailed_error("Failed to dismiss instance", exc=e)
+        return jsonify({'success': False, 'error': 'Failed to dismiss instance'}), 500
 
 def focus_instance(pid: int) -> Tuple[bool, str]:
     if platform.system() == "Darwin":
@@ -6579,6 +6862,7 @@ def start_background_services():
     threading.Thread(target=background_group_auto_relaunch_worker, daemon=True, name="group-relaunch-worker").start()
     threading.Thread(target=background_auto_memory_trim_worker, daemon=True, name="memory-trim-worker").start()
     threading.Thread(target=background_auto_crash_handler_killer_worker, daemon=True, name="crash-killer-worker").start()
+    threading.Thread(target=background_instance_tracker_worker, daemon=True, name="instance-exit-tracker").start()
 
 def _signal_handler(signum, frame):
     perform_graceful_shutdown()

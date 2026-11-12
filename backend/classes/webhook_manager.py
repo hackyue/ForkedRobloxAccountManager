@@ -85,6 +85,7 @@ class WebhookManager:
         self._last_instance_time = 0.0
         self._recent_log_hashes: Dict[str, float] = {}
         self._recent_status_alerts: Dict[str, float] = {}
+        self._recent_exit_alerts: Dict[str, float] = {}
         self._delivery_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=250)
         self._instances_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None
         self._account_lookup: Optional[Callable[[str], Dict[str, Any]]] = None
@@ -1504,7 +1505,7 @@ class WebhookManager:
         if self.config.get("send_rejoins", True):
             active_triggers.append("Auto-Rejoins")
         if self.config.get("send_crashes", True):
-            active_triggers.append("Crashes")
+            active_triggers.append("Crashes & Disconnects")
         if self.config.get("send_account_status", True):
             active_triggers.append("Cookie/Ban Alerts")
         if self.config.get("send_group_relaunch", True):
@@ -1671,9 +1672,22 @@ class WebhookManager:
         display_name: Optional[str] = None,
         user_id: Optional[Any] = None,
         avatar_url: Optional[str] = None,
+        place_id: Optional[Any] = None,
+        place_name: Optional[str] = None,
+        uptime_str: Optional[str] = None,
     ):
         if not self.config.get("enabled") or not self.config.get("send_crashes", True):
             return
+
+        dedup_key = f"crash:{username or ''}:{pid or ''}"
+        now_ts = time.time()
+        with self.lock:
+            # Clean up deduplication cache older than 300s
+            self._recent_exit_alerts = {k: v for k, v in self._recent_exit_alerts.items() if (now_ts - v) < 300}
+            if now_ts - self._recent_exit_alerts.get(dedup_key, 0.0) < 60:
+                return
+            self._recent_exit_alerts[dedup_key] = now_ts
+
         meta = self._resolve_account_meta(username)
         display_name = display_name or meta.get("display_name")
         user_id = user_id or meta.get("user_id")
@@ -1688,8 +1702,14 @@ class WebhookManager:
         ]
         if pid:
             fields.append({"name": "Process PID", "value": f"`{pid}`", "inline": True})
+        fields.append({"name": "Status", "value": "🚨 **Crashed**", "inline": True})
+        if place_id:
+            place_val = f"**{place_name}** (`{place_id}`)" if place_name else f"`{place_id}`"
+            fields.append({"name": "Place", "value": place_val, "inline": True})
+        if uptime_str:
+            fields.append({"name": "Session Duration", "value": f"`{uptime_str}`", "inline": True})
         if reason:
-            fields.append({"name": "Diagnostic Detail", "value": str(reason), "inline": False})
+            fields.append({"name": "Crash Diagnostic Detail", "value": str(reason), "inline": False})
 
         thumb = avatar_url or (
             f"https://www.roblox.com/headshot-thumbnail/image?userId={user_id}&width=150&height=150&format=png"
@@ -1704,10 +1724,82 @@ class WebhookManager:
 
         self._enqueue(
             self.post_embed,
-            "Client Disconnect / Crash Alert",
-            f"Roblox session for **{display_name or username}** disconnected or terminated unexpectedly (<t:{unix_now}:R>).",
+            "Client Crash Alert",
+            f"Roblox process for **{display_name or username}** crashed or terminated unexpectedly (<t:{unix_now}:R>).",
             fields,
             0xEF4444,
+            thumbnail_url=thumb,
+            author=author,
+            category="crash",
+            is_alert=True,
+        )
+        if self.config.get("screenshot_on_alert"):
+            self._enqueue(self.post_screenshot)
+
+    def notify_closed(
+        self,
+        username: str,
+        pid: Optional[int] = None,
+        reason: Optional[str] = None,
+        display_name: Optional[str] = None,
+        user_id: Optional[Any] = None,
+        avatar_url: Optional[str] = None,
+        place_id: Optional[Any] = None,
+        place_name: Optional[str] = None,
+        uptime_str: Optional[str] = None,
+    ):
+        if not self.config.get("enabled") or not self.config.get("send_crashes", True):
+            return
+
+        dedup_key = f"closed:{username or ''}:{pid or ''}"
+        now_ts = time.time()
+        with self.lock:
+            # Clean up deduplication cache older than 300s
+            self._recent_exit_alerts = {k: v for k, v in self._recent_exit_alerts.items() if (now_ts - v) < 300}
+            if now_ts - self._recent_exit_alerts.get(dedup_key, 0.0) < 60:
+                return
+            self._recent_exit_alerts[dedup_key] = now_ts
+
+        meta = self._resolve_account_meta(username)
+        display_name = display_name or meta.get("display_name")
+        user_id = user_id or meta.get("user_id")
+        avatar_url = avatar_url or meta.get("avatar_url")
+
+        fields = [
+            {
+                "name": "Account",
+                "value": f"**{display_name}** (`@{username}`)" if display_name else f"**@{username}**",
+                "inline": True,
+            }
+        ]
+        if pid:
+            fields.append({"name": "Process PID", "value": f"`{pid}`", "inline": True})
+        fields.append({"name": "Status", "value": "⚠️ **Closed**", "inline": True})
+        if place_id:
+            place_val = f"**{place_name}** (`{place_id}`)" if place_name else f"`{place_id}`"
+            fields.append({"name": "Place", "value": place_val, "inline": True})
+        if uptime_str:
+            fields.append({"name": "Session Duration", "value": f"`{uptime_str}`", "inline": True})
+        if reason:
+            fields.append({"name": "Exit Detail", "value": str(reason), "inline": False})
+
+        thumb = avatar_url or (
+            f"https://www.roblox.com/headshot-thumbnail/image?userId={user_id}&width=150&height=150&format=png"
+            if user_id
+            else None
+        )
+        author = {
+            "name": f"{display_name} (@{username})" if display_name else f"@{username}",
+            "icon_url": thumb or "https://www.roblox.com/favicon.ico",
+        }
+        unix_now = int(time.time())
+
+        self._enqueue(
+            self.post_embed,
+            "Client Closed / Disconnected Alert",
+            f"Roblox session for **{display_name or username}** closed or disconnected (<t:{unix_now}:R>).",
+            fields,
+            0xF59E0B,
             thumbnail_url=thumb,
             author=author,
             category="crash",

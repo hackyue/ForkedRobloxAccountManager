@@ -6412,6 +6412,30 @@ kbd {
   border: 1px solid rgba(239, 68, 68, 0.4);
 }
 
+.status-badge.crashed {
+  background: rgba(239, 68, 68, 0.16);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  font-weight: 600;
+}
+
+.status-badge.closed {
+  background: rgba(245, 158, 11, 0.16);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-weight: 600;
+}
+
+.instances-table tbody tr.inactive-instance-row {
+  background: rgba(255, 255, 255, 0.015);
+  opacity: 0.88;
+}
+
+.instances-table tbody tr.inactive-instance-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  opacity: 1;
+}
+
 .status-badge .dot {
   width: 6px;
   height: 6px;

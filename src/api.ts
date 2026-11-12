@@ -81,9 +81,13 @@ export interface RobloxInstanceProcess {
   avatar_url?: string;
   user_id?: string;
   place_id?: string;
+  place_name?: string;
   is_hidden?: boolean;
   uptime_sec?: number;
+  uptime_str?: string;
   is_muted?: boolean;
+  closed_at?: number;
+  exit_reason?: string;
 }
 
 export interface RunningInstancesResponse {
@@ -92,6 +96,9 @@ export interface RunningInstancesResponse {
   crashHandlers?: RobloxInstanceProcess[];
   otherInstances?: RobloxInstanceProcess[];
   count: number;
+  activeCount?: number;
+  crashedCount?: number;
+  closedCount?: number;
   crashHandlerCount?: number;
   totalCpuPercent?: number;
   systemCpuPercent?: number;
@@ -922,6 +929,10 @@ class ApiService {
 
   async relaunchInstance(params: { pid?: number; username?: string; placeId?: string; serverId?: string; serverMode?: string; version?: string; launchMode?: string; serverPerAccount?: boolean; randomServer?: boolean; preferredRegion?: string }): Promise<{ success: boolean; message?: string; error?: string; status?: string; username?: string }> {
     return this.request<{ success: boolean; message?: string; error?: string; status?: string; username?: string }>('/instances/relaunch', 'POST', params);
+  }
+
+  async dismissInstance(params: { pid?: number; all?: boolean }): Promise<{ success: boolean; message?: string; count?: number; error?: string }> {
+    return this.request<{ success: boolean; message?: string; count?: number; error?: string }>('/instances/dismiss', 'POST', params);
   }
 
   async focusInstance(pid: number): Promise<{ success: boolean; message?: string; error?: string }> {
