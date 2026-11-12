@@ -12170,12 +12170,14 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
                       : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
                     }
                   </button>
-                  <button class="btn btn-secondary btn-sm btn-quick-toggle-mute" data-pid="${inst.pid}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; ${isMuted ? 'color:var(--red); border-color:rgba(239,68,68,0.3);' : ''}" title="${isMuted ? 'Unmute Client Audio' : 'Mute Client Audio'}">
-                    ${isMuted
-                      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`
-                      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
-                    }
-                  </button>
+                  ${isMacOS() ? '' : `
+                    <button class="btn btn-secondary btn-sm btn-quick-toggle-mute" data-pid="${inst.pid}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; ${isMuted ? 'color:var(--red); border-color:rgba(239,68,68,0.3);' : ''}" title="${isMuted ? 'Unmute Client Audio' : 'Mute Client Audio'}">
+                      ${isMuted
+                        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`
+                        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
+                      }
+                    </button>
+                  `}
                   ${isMacOS() ? '' : `
                     <button class="btn btn-secondary btn-sm btn-quick-trim" data-pid="${inst.pid}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="Trim RAM working set">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
@@ -12599,12 +12601,12 @@ function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; usern
         : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg> Hide Client`
       }
     </button>
-    <button data-action="${data.isMuted ? 'unmute' : 'mute'}">
+    ${isMacOS() ? '' : `<button data-action="${data.isMuted ? 'unmute' : 'mute'}">
       ${data.isMuted
         ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg> Unmute Audio`
         : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg> Mute Audio`
       }
-    </button>
+    </button>`}
     ${isMacOS() ? '' : `<button data-action="trim">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
       Trim Memory
@@ -18217,7 +18219,7 @@ function initApp(): void {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
                 Trim Memory
               </button>
-              <button class="btn btn-secondary" id="btn-toggle-mute-all-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Toggle Mute/Unmute for all running Roblox client instances">
+              <button class="btn btn-secondary windows-only" id="btn-toggle-mute-all-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Toggle Mute/Unmute for all running Roblox client instances">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
                 <span id="label-mute-all-instances">Mute Audio</span>
               </button>

@@ -3090,7 +3090,7 @@ def update_auto_relaunch_settings():
             txn.save()
 
         with group_auto_relaunch_lock:
-            interval_min = max(1, int(settings.get('auto_relaunch_interval_minutes', 60)))
+            interval_min = max(1, int(settings.get('auto_relaunch_interval_minutes', settings.get('autoRelaunchIntervalMinutes', 60)) or 60))
             group_auto_relaunch_state['next_run_ts'] = time.time() + (interval_min * 60)
         return get_auto_relaunch_status()
     except Exception as e:
@@ -5181,6 +5181,8 @@ def unmute_instance_endpoint():
 def mute_all_instances_endpoint():
     if request.method == 'OPTIONS':
         return '', 200
+    if platform.system() != "Windows":
+        return jsonify({'success': False, 'error': 'Per-process audio muting is only supported on Windows'}), 400
     try:
         data = get_running_instances()
         if hasattr(data, 'get_json'):
@@ -5190,8 +5192,9 @@ def mute_all_instances_endpoint():
         for inst in instances:
             p = inst.get('pid')
             if p:
-                set_process_audio_mute(p, True)
-                count += 1
+                ok, _ = set_process_audio_mute(p, True)
+                if ok:
+                    count += 1
         invalidate_instances_cache()
         return jsonify({'success': True, 'count': count, 'message': f'Muted audio for {count} instance(s)'})
     except Exception as e:
@@ -5202,6 +5205,8 @@ def mute_all_instances_endpoint():
 def unmute_all_instances_endpoint():
     if request.method == 'OPTIONS':
         return '', 200
+    if platform.system() != "Windows":
+        return jsonify({'success': False, 'error': 'Per-process audio muting is only supported on Windows'}), 400
     try:
         data = get_running_instances()
         if hasattr(data, 'get_json'):
@@ -5211,8 +5216,9 @@ def unmute_all_instances_endpoint():
         for inst in instances:
             p = inst.get('pid')
             if p:
-                set_process_audio_mute(p, False)
-                count += 1
+                ok, _ = set_process_audio_mute(p, False)
+                if ok:
+                    count += 1
         invalidate_instances_cache()
         return jsonify({'success': True, 'count': count, 'message': f'Unmuted audio for {count} instance(s)'})
     except Exception as e:
@@ -6870,8 +6876,9 @@ def start_background_services():
     threading.Thread(target=_parent_process_watchdog, daemon=True, name="parent-watchdog").start()
     threading.Thread(target=background_auto_rejoin_worker, daemon=True, name="auto-rejoin-worker").start()
     threading.Thread(target=background_group_auto_relaunch_worker, daemon=True, name="group-relaunch-worker").start()
-    threading.Thread(target=background_auto_memory_trim_worker, daemon=True, name="memory-trim-worker").start()
-    threading.Thread(target=background_auto_crash_handler_killer_worker, daemon=True, name="crash-killer-worker").start()
+    if platform.system() == "Windows":
+        threading.Thread(target=background_auto_memory_trim_worker, daemon=True, name="memory-trim-worker").start()
+        threading.Thread(target=background_auto_crash_handler_killer_worker, daemon=True, name="crash-killer-worker").start()
     threading.Thread(target=background_instance_tracker_worker, daemon=True, name="instance-exit-tracker").start()
 
 def _signal_handler(signum, frame):
