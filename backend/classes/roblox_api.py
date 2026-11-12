@@ -2744,7 +2744,7 @@ class RobloxAPI:
 
             rel_path = resolved[len(matched_root):].lstrip(os.sep)
             safe_resolved = os.path.abspath(os.path.realpath(os.path.join(matched_root, rel_path)))
-            if safe_resolved != matched_root and not safe_resolved.startswith(matched_root + os.sep):
+            if not safe_resolved.startswith(matched_root + os.sep):
                 return False
 
             base_name = os.path.basename(safe_resolved.lower())
