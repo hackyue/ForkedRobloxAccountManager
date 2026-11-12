@@ -86,6 +86,7 @@ class WebhookManager:
         self._last_screenshot_time = 0.0
         self._last_instance_time = 0.0
         self._recent_log_hashes: Dict[str, float] = {}
+        self._console_log_entries: List[str] = []
         self._recent_status_alerts: Dict[str, float] = {}
         self._recent_exit_alerts: Dict[str, float] = {}
         self._delivery_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=250)
@@ -231,6 +232,7 @@ class WebhookManager:
     def reset_live_board(self) -> Dict[str, Any]:
         with self.lock:
             self.config["live_board_message_ids"] = {}
+            self._console_log_entries.clear()
             return self.save_config()
 
     def canonicalize_webhook_url(self, url: Optional[str] = None) -> Optional[str]:
@@ -2136,14 +2138,40 @@ class WebhookManager:
 
         is_err = level.lower() in ("error", "fatal", "critical")
         color = 0xEF4444 if is_err else 0xF59E0B
+        timestamp_str = datetime.datetime.now().strftime("%H:%M:%S")
+        single_line_msg = " ".join(clean_msg.splitlines()).strip()
+        if len(single_line_msg) > 260:
+            single_line_msg = single_line_msg[:257] + "..."
+        log_entry = f"[{timestamp_str}] [{level.upper()}] {single_line_msg}"
+
+        with self.lock:
+            self._console_log_entries.append(log_entry)
+            if len(self._console_log_entries) > 20:
+                self._console_log_entries = self._console_log_entries[-20:]
+            selected_lines: List[str] = []
+            total_len = 0
+            for entry in reversed(self._console_log_entries):
+                add_len = len(entry) + 1
+                if total_len + add_len > 1850 and selected_lines:
+                    break
+                selected_lines.append(entry)
+                total_len += add_len
+            selected_lines.reverse()
+            log_block = "\n".join(selected_lines)
+            entry_count = len(selected_lines)
+
         self._enqueue(
             self.post_embed,
-            f"Console Alert [{level.upper()}]",
-            f"```\n{clean_msg[:1800]}\n```",
-            None,
+            "Console Logs (Live)",
+            f"```\n{log_block[:1850]}\n```",
+            [
+                {"name": "Latest Level", "value": level.upper(), "inline": True},
+                {"name": "Entries Shown", "value": str(entry_count), "inline": True},
+            ],
             color,
             category="log",
             is_alert=is_err,
+            edit_message_key="console_logs",
         )
 
     def _add_history(
