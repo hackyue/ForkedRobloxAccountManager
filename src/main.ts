@@ -20204,14 +20204,22 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
       </div>
 
       <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px;">
-        <span style="font-size:11px; color:var(--muted);">Primary Channel Events (uncheck events you want rerouted elsewhere)</span>
-        <div style="display:flex; flex-wrap:wrap; gap:4px;">
-          ${WEBHOOK_EVENT_DEFS.map(ev => {
-            const pEvents: string[] = Array.isArray(cfg.primary_events) ? cfg.primary_events : ['all'];
-            const active = pEvents.includes(ev.id) || pEvents.includes('all');
-            return `<button type="button" class="pill btn-primary-event ${active ? 'active' : ''}" data-ev="${ev.id}" style="padding:2px 8px; font-size:11px;">${ev.label}</button>`;
-          }).join('')}
-        </div>
+        ${(() => {
+          const pEvents: string[] = Array.isArray(cfg.primary_events) ? cfg.primary_events : ['all'];
+          const pActiveCount = WEBHOOK_EVENT_DEFS.filter(ev => pEvents.includes(ev.id) || pEvents.includes('all')).length;
+          return `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+              <span style="font-size:11px; color:var(--muted);">Primary Channel Events (disable events you want rerouted elsewhere)</span>
+              <span class="wh-ep-count">${pActiveCount}/${WEBHOOK_EVENT_DEFS.length} enabled</span>
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:4px;">
+              ${WEBHOOK_EVENT_DEFS.map(ev => {
+                const active = pEvents.includes(ev.id) || pEvents.includes('all');
+                return `<button type="button" class="pill wh-ev-pill btn-primary-event ${active ? 'active' : ''}" data-ev="${ev.id}" aria-pressed="${active}"><span class="wh-ev-indicator">${active ? '✓' : '○'}</span><span>${ev.label}</span></button>`;
+              }).join('')}
+            </div>
+          `;
+        })()}
       </div>
     </div>
 
@@ -20335,22 +20343,27 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
         <div style="display:flex; flex-direction:column; gap:8px; margin-top:4px;">
           ${extraEndpoints.map((ep, idx) => {
             const epEvents: string[] = Array.isArray(ep.events) ? ep.events : [];
+            const epActiveCount = WEBHOOK_EVENT_DEFS.filter(ev => epEvents.includes(ev.id) || epEvents.includes('all')).length;
+            const exclusive = Boolean(ep.exclusive);
             return `
               <div class="wh-ep-row">
-                <div style="display:flex; align-items:center; gap:8px; min-width:140px;">
+                <div style="display:flex; align-items:center; gap:8px; min-width:165px;">
                   <button type="button" class="switch ${ep.enabled !== false ? 'on' : ''} sw-ep-toggle" data-idx="${idx}">
                     <div class="knob"></div>
                   </button>
-                  <b style="font-size:12.5px; color:var(--fg);">${escapeHtml(ep.name || `Channel ${idx + 1}`)}</b>
+                  <div style="display:flex; flex-direction:column; gap:1px;">
+                    <b style="font-size:12.5px; color:var(--fg);">${escapeHtml(ep.name || `Channel ${idx + 1}`)}</b>
+                    <span class="wh-ep-count">${epActiveCount}/${WEBHOOK_EVENT_DEFS.length} events</span>
+                  </div>
                 </div>
                 <div style="display:flex; flex-wrap:wrap; gap:4px; flex:1;">
                   ${WEBHOOK_EVENT_DEFS.map(ev => {
                     const active = epEvents.includes(ev.id) || epEvents.includes('all');
-                    return `<button type="button" class="pill btn-ep-event ${active ? 'active' : ''}" data-idx="${idx}" data-ev="${ev.id}" style="padding:2px 8px; font-size:11px;">${ev.label}</button>`;
+                    return `<button type="button" class="pill wh-ev-pill btn-ep-event ${active ? 'active' : ''}" data-idx="${idx}" data-ev="${ev.id}" aria-pressed="${active}"><span class="wh-ev-indicator">${active ? '✓' : '○'}</span><span>${ev.label}</span></button>`;
                   }).join('')}
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">
-                  <button type="button" class="pill btn-ep-exclusive ${ep.exclusive ? 'active' : ''}" data-idx="${idx}" title="When enabled, these events are rerouted here and excluded from the Primary Webhook" style="padding:2px 8px; font-size:11px;">Only Here</button>
+                  <button type="button" class="pill wh-ev-pill btn-ep-exclusive ${exclusive ? 'active' : ''}" data-idx="${idx}" aria-pressed="${exclusive}" title="When enabled, these events are rerouted here and excluded from the Primary Webhook"><span class="wh-ev-indicator">${exclusive ? '✓' : '○'}</span><span>Only Here</span></button>
                   <button class="btn btn-secondary btn-sm btn-ep-test" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Test</button>
                   <button class="btn btn-danger btn-sm btn-ep-delete" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Remove</button>
                 </div>
