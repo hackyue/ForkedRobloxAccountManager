@@ -12223,18 +12223,9 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
             } else if (isInactive) {
               statusHtml = `<span class="status-badge closed" title="${escapeHtml(inst.exit_reason || 'Client closed / disconnected')}"><span class="dot"></span>Closed</span>`;
             } else {
-              statusHtml = `
-                <div style="display:inline-flex; flex-direction:column; align-items:center; gap:3px;">
-                  ${inst.is_hidden
-                  ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:rgb(148,163,184); border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:rgb(148,163,184);"></span>Hidden</span>`
-                  : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
-                }
-                  ${isMuted
-                  ? `<span class="status-badge" style="background:rgba(239,68,68,0.12); color:rgb(239,68,68); border:1px solid rgba(239,68,68,0.25);" title="Client audio is muted">Muted</span>`
-                  : ''
-                }
-                </div>
-              `;
+              statusHtml = inst.is_hidden
+                ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:rgb(148,163,184); border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:rgb(148,163,184);"></span>Hidden</span>`
+                : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`;
             }
 
             const cpuHtml = isInactive
@@ -12284,9 +12275,6 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
                     </button>
                   `}
-                  <button class="btn btn-secondary btn-sm btn-quick-preview" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; color:rgb(139,92,246);" title="Send Discord Window Preview">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-                  </button>
                   <button class="btn btn-secondary btn-sm btn-instance-actions" data-pid="${inst.pid}" data-username="${inst.username || ''}" data-placeid="${inst.place_id || ''}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 8px; font-size:11.5px; display:inline-flex; align-items:center; gap:3px;" title="Instance Actions Menu">
                     More
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:9px;height:9px;"><path d="m6 9 6 6 6-6"/></svg>
@@ -12498,29 +12486,6 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
         });
       });
 
-      container.querySelectorAll('.btn-quick-preview').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const target = e.currentTarget as HTMLElement;
-          const pidAttr = target.getAttribute('data-pid');
-          const username = target.getAttribute('data-username') || undefined;
-          const placeId = target.getAttribute('data-placeid') || undefined;
-          if (!pidAttr) return;
-          const pid = parseInt(pidAttr, 10);
-          try {
-            toast(`Capturing and sending Discord preview for PID ${pid}...`, 'info');
-            const res = await apiService.sendWindowPreview({ pid, username, placeId });
-            if (res.success) {
-              toast(res.message || `Discord window preview sent for PID ${pid}!`, 'success');
-            } else {
-              toast(res.error || 'Failed to send window preview', 'error');
-            }
-          } catch (err: any) {
-            toast(`Preview error: ${err.message || err}`, 'error');
-          }
-        });
-      });
-
       container.querySelectorAll('.btn-instance-actions').forEach(btn => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -12712,8 +12677,8 @@ function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; usern
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
       Trim Memory
     </button>`}
-    <button data-action="preview" style="color:rgb(139,92,246);">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:rgb(139,92,246);"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+    <button data-action="preview">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
       Send Discord Preview
     </button>
     <button data-action="relaunch">
@@ -18319,10 +18284,6 @@ function initApp(): void {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
                 Trim Memory
               </button>
-              <button class="btn btn-secondary windows-only" id="btn-toggle-mute-all-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Toggle Mute/Unmute for all running Roblox client instances">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-                <span id="label-mute-all-instances">Mute Audio</span>
-              </button>
               <button class="btn btn-secondary" id="btn-arrange-instances" style="display:flex; align-items:center; gap:6px; font-size:12px;" title="Auto-arrange active Roblox client windows across your monitors">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>
                 Arrange Clients
@@ -19531,41 +19492,6 @@ function initApp(): void {
   const btnTrimMemoryInstances = document.getElementById('btn-trim-memory-instances');
   if (btnTrimMemoryInstances) {
     btnTrimMemoryInstances.addEventListener('click', () => handleTrimMemoryAction(btnTrimMemoryInstances));
-  }
-
-  let allInstancesMuted = false;
-  const btnToggleMuteAllInstances = document.getElementById('btn-toggle-mute-all-instances');
-  const labelMuteAllInstances = document.getElementById('label-mute-all-instances');
-  if (btnToggleMuteAllInstances) {
-    btnToggleMuteAllInstances.addEventListener('click', async () => {
-      try {
-        if (!allInstancesMuted) {
-          toast('Muting audio for all running instances...', 'info');
-          const res = await apiService.muteAllInstances();
-          if (res.success) {
-            allInstancesMuted = true;
-            if (labelMuteAllInstances) labelMuteAllInstances.textContent = 'Unmute Audio';
-            toast(res.message || 'Muted audio for all instances', 'success');
-            renderInstancesView(true);
-          } else {
-            toast(res.error || 'Failed to mute instances', 'error');
-          }
-        } else {
-          toast('Unmuting audio for all running instances...', 'info');
-          const res = await apiService.unmuteAllInstances();
-          if (res.success) {
-            allInstancesMuted = false;
-            if (labelMuteAllInstances) labelMuteAllInstances.textContent = 'Mute Audio';
-            toast(res.message || 'Unmuted audio for all instances', 'success');
-            renderInstancesView(true);
-          } else {
-            toast(res.error || 'Failed to unmute instances', 'error');
-          }
-        }
-      } catch (err: any) {
-        toast(`Mute all error: ${err.message || err}`, 'error');
-      }
-    });
   }
 
   const btnArrangeInstances = document.getElementById('btn-arrange-instances');
