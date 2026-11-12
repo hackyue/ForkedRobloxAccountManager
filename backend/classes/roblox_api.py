@@ -2711,8 +2711,44 @@ class RobloxAPI:
         try:
             resolved = os.path.realpath(os.path.abspath(candidate_path))
             resolved_lower = resolved.lower()
-            base_name = os.path.basename(resolved_lower)
-            if os.path.isfile(resolved) or ("." in base_name and not os.path.isdir(resolved)):
+
+            system = platform.system()
+            trusted_roots = []
+            if system == "Windows":
+                for env_var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "APPDATA"]:
+                    val = os.environ.get(env_var)
+                    if val:
+                        trusted_roots.append(os.path.realpath(os.path.abspath(val)))
+            elif system == "Darwin":
+                trusted_roots.extend([
+                    os.path.realpath(os.path.abspath("/Applications")),
+                    os.path.realpath(os.path.expanduser("~/Applications")),
+                    os.path.realpath(os.path.expanduser("~/Library/Application Support")),
+                ])
+            else:
+                trusted_roots.extend([
+                    os.path.realpath(os.path.abspath("/usr")),
+                    os.path.realpath(os.path.abspath("/opt")),
+                    os.path.realpath(os.path.expanduser("~")),
+                ])
+
+            matched_root = None
+            for root in trusted_roots:
+                root_lower = root.lower()
+                if resolved_lower == root_lower or resolved_lower.startswith(root_lower + os.sep):
+                    matched_root = root
+                    break
+
+            if not matched_root:
+                return False
+
+            rel_path = resolved[len(matched_root):].lstrip(os.sep)
+            safe_resolved = os.path.abspath(os.path.realpath(os.path.join(matched_root, rel_path)))
+            if safe_resolved != matched_root and not safe_resolved.startswith(matched_root + os.sep):
+                return False
+
+            base_name = os.path.basename(safe_resolved.lower())
+            if os.path.isfile(safe_resolved) or ("." in base_name and not os.path.isdir(safe_resolved)):
                 allowed_exes = {
                     "robloxplayerbeta.exe",
                     "robloxplayerlauncher.exe",
@@ -2728,30 +2764,7 @@ class RobloxAPI:
                 if base_name not in allowed_exes:
                     return False
 
-            system = platform.system()
-            trusted_roots = []
-            if system == "Windows":
-                for env_var in ["LOCALAPPDATA", "ProgramFiles", "ProgramFiles(x86)", "APPDATA"]:
-                    val = os.environ.get(env_var)
-                    if val:
-                        trusted_roots.append(os.path.realpath(os.path.abspath(val)).lower())
-            elif system == "Darwin":
-                trusted_roots.extend([
-                    "/applications",
-                    os.path.realpath(os.path.expanduser("~/applications")).lower(),
-                    os.path.realpath(os.path.expanduser("~/library/application support")).lower(),
-                ])
-            else:
-                trusted_roots.extend([
-                    "/usr",
-                    "/opt",
-                    os.path.realpath(os.path.expanduser("~")).lower(),
-                ])
-
-            return any(
-                resolved_lower == root or resolved_lower.startswith(root + os.sep)
-                for root in trusted_roots
-            )
+            return True
         except Exception:
             return False
 
