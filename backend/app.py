@@ -977,7 +977,12 @@ def sync_startup_registry(enable: bool):
                     os.remove(plist_path)
                 return
 
-            exe_path = "/Applications/Forked Account Manager.app/Contents/MacOS/FRAM"
+            exe_path = "/Applications/FRAM.app/Contents/MacOS/FRAM"
+            for candidate_app in ("/Applications/FRAM.app", os.path.expanduser("~/Applications/FRAM.app"), "/Applications/Forked Account Manager.app"):
+                candidate_bin = os.path.join(candidate_app, "Contents", "MacOS", "FRAM")
+                if os.path.isfile(candidate_bin):
+                    exe_path = candidate_bin
+                    break
             cur = os.path.abspath(sys.executable)
             if ".app/Contents/" in cur:
                 app_bundle = cur.split(".app/Contents/")[0] + ".app"
@@ -3730,6 +3735,9 @@ _MUTED_PIDS = set()
 _MUTED_PIDS_LOCK = threading.Lock()
 
 def set_process_audio_mute(pid: int, mute: bool) -> Tuple[bool, str]:
+    if platform.system() != "Windows":
+        return False, "Per-process audio muting is only supported on Windows"
+
     pid = int(pid)
     with _MUTED_PIDS_LOCK:
         if mute:

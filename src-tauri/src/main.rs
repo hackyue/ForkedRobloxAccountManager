@@ -1465,7 +1465,6 @@ fn shutdown_backend_process(app_handle: &tauri::AppHandle) {
 
     log_launcher(&app_dir, "INFO", "shutdown_backend_process completed");
     let _ = fs::remove_file(app_dir.join("data").join(".app_instance"));
-    let _ = fs::remove_file(app_dir.join("data").join(".fram_instance.lock"));
 }
 
 #[cfg(target_os = "windows")]
@@ -1556,7 +1555,9 @@ mod single_instance {
     unsafe impl Sync for SingleInstanceGuard {}
 
     pub fn acquire_single_instance(app_dir: &Path) -> Option<SingleInstanceGuard> {
-        let lock_path = app_dir.join("data").join(".fram_instance.lock");
+        let data_dir = app_dir.join("data");
+        let _ = std::fs::create_dir_all(&data_dir);
+        let lock_path = data_dir.join(".fram_instance.lock");
         let file = OpenOptions::new()
             .read(true)
             .write(true)

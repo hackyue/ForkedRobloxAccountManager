@@ -127,13 +127,20 @@ class FastFlagsManager:
 
         return sources
     
+    def _get_mac_fram_versions_dir(self):
+        try:
+            from utils.paths import get_root_app_dir
+            return os.path.join(get_root_app_dir(), "RobloxVersions")
+        except Exception:
+            return os.path.join(self.app_data, "Application Support", "Forked Account Manager", "RobloxVersions")
+
     def get_latest_version_path(self):
         """Get the path to the latest Roblox version from all sources"""
         if self.version_path:
             return self.version_path
 
         if self.is_mac:
-            fram_versions_dir = os.path.join(self.app_data, "Forked Account Manager", "RobloxVersions")
+            fram_versions_dir = self._get_mac_fram_versions_dir()
             if os.path.isdir(fram_versions_dir):
                 try:
                     mac_ver_dirs = [
@@ -217,7 +224,7 @@ class FastFlagsManager:
                     app_cs = os.path.join(mac_app, "ClientSettings", "ClientAppSettings.json")
                     if app_cs not in target_files:
                         target_files.append(app_cs)
-            fram_versions_dir = os.path.join(self.app_data, "Forked Account Manager", "RobloxVersions")
+            fram_versions_dir = self._get_mac_fram_versions_dir()
             if os.path.isdir(fram_versions_dir):
                 try:
                     for d in os.listdir(fram_versions_dir):

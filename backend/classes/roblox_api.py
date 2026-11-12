@@ -2403,12 +2403,13 @@ class RobloxAPI:
                     )
                     _log_debug(f"Launching Roblox Home on macOS via open -n -a {mac_app_bundle} --args {url}")
                 elif launcher_id:
-                    _launch_with_launcher(
+                    if not _launch_with_launcher(
                         launcher_id,
                         url,
                         "Roblox Home",
                         working_dir=effective_path,
-                    )
+                    ):
+                        raise RuntimeError(f"Failed to launch Roblox Home via {launcher_id}")
                 elif using_local_install:
                     try:
                         proc = subprocess.Popen(
@@ -2569,12 +2570,13 @@ class RobloxAPI:
                 )
                 _log_debug(f"Launching game on macOS via open -n -a {mac_app_bundle} --args {url}")
             elif launcher_id:
-                _launch_with_launcher(
+                if not _launch_with_launcher(
                     launcher_id,
                     url,
                     "game",
                     working_dir=effective_path,
-                )
+                ):
+                    raise RuntimeError(f"Failed to launch game via {launcher_id}")
             else:
                 if using_local_install:
                     try:
@@ -2708,13 +2710,18 @@ class RobloxAPI:
             resolved = os.path.realpath(os.path.abspath(candidate_path))
             resolved_lower = resolved.lower()
             base_name = os.path.basename(resolved_lower)
-            if "." in base_name:
+            if os.path.isfile(resolved) or ("." in base_name and not os.path.isdir(resolved)):
                 allowed_exes = {
                     "robloxplayerbeta.exe",
                     "robloxplayerlauncher.exe",
                     "robloxplayerinstaller.exe",
                     "robloxplayer",
                     "roblox.app",
+                    "bloxstrap.exe",
+                    "fishstrap.exe",
+                    "voidstrap.exe",
+                    "froststrap.exe",
+                    "exploitstrap.exe",
                 }
                 if base_name not in allowed_exes:
                     return False
