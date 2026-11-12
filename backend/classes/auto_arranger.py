@@ -528,6 +528,8 @@ class AutoArranger:
                     target_height=effective_t_height
                 )
 
+            if platform.system() == "Windows":
+                time.sleep(0.05)
             self.last_signature = self.get_window_signature(sorted_hwnds)
             self.last_arranged_count = len(sorted_hwnds)
             self.last_arranged_time = time.time()

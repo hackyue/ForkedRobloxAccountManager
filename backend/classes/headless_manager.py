@@ -312,6 +312,19 @@ class HeadlessManager:
     def set_process_priority(self, pid: int, priority_class: int) -> Tuple[bool, str]:
         if not pid:
             return False, "invalid pid"
+        if platform.system() == "Darwin":
+            try:
+                flag = "-b" if priority_class == self._IDLE_PRIORITY_CLASS else "-B"
+                res = subprocess.run(["taskpolicy", flag, "-p", str(int(pid))], capture_output=True, text=True, timeout=2)
+                if res.returncode == 0:
+                    return True, "ok"
+                import psutil
+                proc = psutil.Process(int(pid))
+                target_nice = 19 if priority_class == self._IDLE_PRIORITY_CLASS else 0
+                proc.nice(target_nice)
+                return True, "ok"
+            except Exception as exc:
+                return False, str(exc)
         if platform.system() != "Windows":
             try:
                 import psutil

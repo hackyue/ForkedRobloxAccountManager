@@ -4225,12 +4225,12 @@ def auto_arrange_roblox_clients_endpoint():
     if request.method == 'OPTIONS':
         return '', 200
     try:
-        if platform.system() != "Windows":
+        if platform.system() not in ("Windows", "Darwin"):
             return jsonify({
                 'success': False,
                 'count': 0,
                 'monitors': 0,
-                'error': 'Auto-Arrange is only supported on Windows operating systems'
+                'error': 'Auto-Arrange is only supported on Windows and macOS operating systems'
             }), 400
 
         req_data = request.json or {}
