@@ -2576,6 +2576,45 @@ function renderDetail(): void {
     copySection.appendChild(copyUserPassCookieBtn);
     wrap.appendChild(copySection);
 
+    const buildCompactMultiToggle = (
+      label: string,
+      field: 'auto_rejoin_enabled' | 'anti_afk_enabled',
+      activeCount: number
+    ) => {
+      const allActive = activeCount === count;
+      const row = el('div', {
+        style: 'display:flex;align-items:center;justify-content:space-between;gap:8px;'
+      }, [
+        el('div', {
+          class: 'field-label',
+          style: 'margin:0;',
+          title: `${activeCount}/${count} active`
+        }, [document.createTextNode(`${label} (${activeCount}/${count})`)])
+      ]);
+      const toggleBtn = el('button', {
+        class: 'btn btn-sm ' + (allActive ? 'btn-primary' : 'btn-secondary'),
+        style: 'min-width:48px;padding:2px 10px;font-size:11px;' + (allActive ? 'background:var(--emerald);border-color:var(--emerald);color:#ffffff;' : '')
+      }, [document.createTextNode(allActive ? 'On' : 'Off')]);
+      toggleBtn.addEventListener('click', async () => {
+        const nextState = !allActive;
+        selectedAccounts.forEach(acc => { acc[field] = nextState; });
+        await Promise.all(selectedAccounts.map(acc =>
+          apiService.updateAccount(acc.id, { [field]: nextState }).catch(() => { })
+        ));
+        toast(`${nextState ? 'Enabled' : 'Disabled'} ${label} for ${count} account(s)`, 'info');
+        renderAll();
+      });
+      row.appendChild(toggleBtn);
+      return row;
+    };
+
+    const automationSection = el('div', { style: 'display:flex;flex-direction:column;gap:6px;padding-top:6px;border-top:1px solid var(--border-soft);' }, []);
+    const rejoinActiveCount = selectedAccounts.filter(acc => Boolean(acc.auto_rejoin_enabled)).length;
+    const antiAfkActiveCount = selectedAccounts.filter(acc => Boolean(acc.anti_afk_enabled)).length;
+    automationSection.appendChild(buildCompactMultiToggle('Auto-Rejoin', 'auto_rejoin_enabled', rejoinActiveCount));
+    automationSection.appendChild(buildCompactMultiToggle('Anti-AFK', 'anti_afk_enabled', antiAfkActiveCount));
+    wrap.appendChild(automationSection);
+
     const manageSection = el('div', { style: 'display:flex;flex-direction:column;gap:6px;margin-top:auto;' }, []);
     const delAllBtn = el('button', { class: 'btn btn-danger' }, [document.createTextNode(`Delete Selected (${count})`)]);
     delAllBtn.addEventListener('click', bulkDeleteSelected);
@@ -12158,13 +12197,13 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
               statusHtml = `
                 <div style="display:inline-flex; flex-direction:column; align-items:center; gap:3px;">
                   ${inst.is_hidden
-                  ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:rgb(148,163,184); border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:rgb(148,163,184);"></span>Hidden</span>`
-                  : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
-                }
+                    ? `<span class="status-badge" style="background:rgba(148,163,184,0.12); color:rgb(148,163,184); border:1px solid rgba(148,163,184,0.25);" title="Window is hidden in background"><span class="dot" style="background:rgb(148,163,184);"></span>Hidden</span>`
+                    : `<span class="status-badge valid" title="Window is visible"><span class="dot"></span>${inst.status}</span>`
+                  }
                   ${isMuted
-                  ? `<span class="status-badge" style="background:rgba(239,68,68,0.12); color:rgb(239,68,68); border:1px solid rgba(239,68,68,0.25);" title="Client audio is muted">Muted</span>`
-                  : ''
-                }
+                    ? `<span class="status-badge" style="background:rgba(239,68,68,0.12); color:rgb(239,68,68); border:1px solid rgba(239,68,68,0.25);" title="Client audio is muted">Muted</span>`
+                    : ''
+                  }
                 </div>
               `;
             }
@@ -12199,16 +12238,16 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
                   </button>
                   <button class="btn btn-secondary btn-sm btn-quick-toggle-hide" data-pid="${inst.pid}" data-hidden="${inst.is_hidden ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center;" title="${inst.is_hidden ? 'Unhide window' : 'Hide window'}">
                     ${inst.is_hidden
-                  ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`
-                  : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
-                }
+                      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`
+                      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
+                    }
                   </button>
                   ${isMacOS() ? '' : `
                     <button class="btn btn-secondary btn-sm btn-quick-toggle-mute" data-pid="${inst.pid}" data-muted="${isMuted ? 'true' : 'false'}" style="padding:4px 6px; width:26px; height:26px; display:inline-flex; align-items:center; justify-content:center; ${isMuted ? 'color:var(--red); border-color:rgba(239,68,68,0.3);' : ''}" title="${isMuted ? 'Unmute Client Audio' : 'Mute Client Audio'}">
                       ${isMuted
-                    ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`
-                    : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
-                  }
+                        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`
+                        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
+                      }
                     </button>
                   `}
                   ${isMacOS() ? '' : `
@@ -12497,7 +12536,7 @@ async function renderInstancesView(forceRedraw: boolean = false): Promise<void> 
               toast(res.message || `Relaunched instance for @${username}`, 'success');
               addLog(`Relaunched Roblox instance for @${username} (PID: ${pid || 'N/A'}, Place ID: ${placeId || 'None'})`, 'info');
               if (pid) {
-                apiService.dismissInstance({ pid }).catch(() => { });
+                apiService.dismissInstance({ pid }).catch(() => {});
               }
               setTimeout(() => {
                 renderInstancesView();
@@ -12630,9 +12669,9 @@ function openInstanceActionsMenu(anchor: HTMLElement, data: { pid: number; usern
     </button>
     <button data-action="${data.isHidden ? 'unhide' : 'hide'}">
       ${data.isHidden
-      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Unhide Client`
-      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg> Hide Client`
-    }
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg> Unhide Client`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" y1="2" x2="22" y2="22"/></svg> Hide Client`
+      }
     </button>
     ${isMacOS() ? '' : `<button data-action="${data.isMuted ? 'unmute' : 'mute'}">
       ${data.isMuted
@@ -15298,23 +15337,23 @@ function renderAboutView(): void {
         <div class="about-releases-list">
       `;
 
-      function isPackageSupportedRelease(tagOrName: string): boolean {
-        if (!tagOrName) return false;
-        const clean = tagOrName.replace(/^v/i, '').split('-')[0].trim();
-        const parts = clean.split('.').map(p => {
-          const num = parseInt(p, 10);
-          return isNaN(num) ? 0 : num;
-        });
-        while (parts.length < 3) parts.push(0);
-        const cutoff = [2, 5, 4];
-        for (let i = 0; i < 3; i++) {
-          const n = parts[i] || 0;
-          const c = cutoff[i] || 0;
-          if (n > c) return true;
-          if (n < c) return false;
-        }
-        return true;
-      }
+function isPackageSupportedRelease(tagOrName: string): boolean {
+  if (!tagOrName) return false;
+  const clean = tagOrName.replace(/^v/i, '').split('-')[0].trim();
+  const parts = clean.split('.').map(p => {
+    const num = parseInt(p, 10);
+    return isNaN(num) ? 0 : num;
+  });
+  while (parts.length < 3) parts.push(0);
+  const cutoff = [2, 5, 4];
+  for (let i = 0; i < 3; i++) {
+    const n = parts[i] || 0;
+    const c = cutoff[i] || 0;
+    if (n > c) return true;
+    if (n < c) return false;
+  }
+  return true;
+}
 
       cachedGithubReleases.forEach((rel: any, index: number) => {
         const title = rel.name || rel.tag_name || 'Release';
@@ -15352,21 +15391,21 @@ function renderAboutView(): void {
               ${isSupported && installerAssets.length > 0 ? `
                 <div class="about-release-installers">
                   ${installerAssets.map((asset: any) => {
-          const nameLower = (asset.name || '').toLowerCase();
-          const isMsi = nameLower.endsWith('.msi');
-          const isDmg = nameLower.endsWith('.dmg');
-          const isAppTar = nameLower.endsWith('.app.tar.gz');
-          const sizeMb = asset.size ? (asset.size / (1024 * 1024)).toFixed(1) + ' MB' : '';
-          const btnClass = (isMsi || isAppTar) ? 'btn btn-secondary btn-sm about-release-pkg-btn' : 'btn btn-primary btn-sm about-release-pkg-btn';
-          const extLabel = isDmg ? '.dmg' : isAppTar ? '.app.tar.gz' : isMsi ? '.msi' : '.exe';
-          const label = `Update with ${extLabel} ${sizeMb ? `(${sizeMb})` : ''}`;
-          return `
+                    const nameLower = (asset.name || '').toLowerCase();
+                    const isMsi = nameLower.endsWith('.msi');
+                    const isDmg = nameLower.endsWith('.dmg');
+                    const isAppTar = nameLower.endsWith('.app.tar.gz');
+                    const sizeMb = asset.size ? (asset.size / (1024 * 1024)).toFixed(1) + ' MB' : '';
+                    const btnClass = (isMsi || isAppTar) ? 'btn btn-secondary btn-sm about-release-pkg-btn' : 'btn btn-primary btn-sm about-release-pkg-btn';
+                    const extLabel = isDmg ? '.dmg' : isAppTar ? '.app.tar.gz' : isMsi ? '.msi' : '.exe';
+                    const label = `Update with ${extLabel} ${sizeMb ? `(${sizeMb})` : ''}`;
+                    return `
                       <button type="button" class="${btnClass} btn-release-install-pkg" data-rel-idx="${index}" data-asset-name="${asset.name}" data-download-url="${asset.browser_download_url}" data-asset-size="${asset.size || 0}" title="Download and install ${asset.name}">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         <span>${label}</span>
                       </button>
                     `;
-        }).join('')}
+                  }).join('')}
                 </div>
               ` : ''}
 
@@ -17339,10 +17378,6 @@ function openRowMenu(id: number, anchor: HTMLElement | MouseEvent): void {
       <button data-action="browser-multi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Open in browser (${count})</button>
       <button data-action="validate-multi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>Validate Accounts (${count})</button>
       <button data-action="set-group-multi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Set Group (${count})</button>
-      <button data-action="enable-auto-rejoin-multi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>Enable Auto-Rejoin (${count})</button>
-      <button data-action="disable-auto-rejoin-multi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>Disable Auto-Rejoin (${count})</button>
-      <button data-action="enable-anti-afk-multi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/></svg>Enable Anti-AFK (${count})</button>
-      <button data-action="disable-anti-afk-multi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/></svg>Disable Anti-AFK (${count})</button>
       <hr>
       <button data-action="copy-usernames"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>Copy usernames (${count})</button>
       <button data-action="copy-passwords"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Copy passwords (${count})</button>
@@ -18672,42 +18707,6 @@ function initApp(): void {
           toast(`${newState ? 'Enabled' : 'Disabled'} Anti-AFK for @${a.username}`, 'info');
           renderAll();
         });
-      }
-      if (action === 'enable-auto-rejoin-multi') {
-        const accounts = selectedAccounts.length > 0 ? selectedAccounts : (a ? [a] : []);
-        accounts.forEach(acc => {
-          acc.auto_rejoin_enabled = true;
-          apiService.updateAccount(acc.id, { auto_rejoin_enabled: true }).catch(() => { });
-        });
-        toast(`Enabled Auto-Rejoin for ${accounts.length} account(s)`, 'info');
-        renderAll();
-      }
-      if (action === 'disable-auto-rejoin-multi') {
-        const accounts = selectedAccounts.length > 0 ? selectedAccounts : (a ? [a] : []);
-        accounts.forEach(acc => {
-          acc.auto_rejoin_enabled = false;
-          apiService.updateAccount(acc.id, { auto_rejoin_enabled: false }).catch(() => { });
-        });
-        toast(`Disabled Auto-Rejoin for ${accounts.length} account(s)`, 'info');
-        renderAll();
-      }
-      if (action === 'enable-anti-afk-multi') {
-        const accounts = selectedAccounts.length > 0 ? selectedAccounts : (a ? [a] : []);
-        accounts.forEach(acc => {
-          acc.anti_afk_enabled = true;
-          apiService.updateAccount(acc.id, { anti_afk_enabled: true }).catch(() => { });
-        });
-        toast(`Enabled Anti-AFK for ${accounts.length} account(s)`, 'info');
-        renderAll();
-      }
-      if (action === 'disable-anti-afk-multi') {
-        const accounts = selectedAccounts.length > 0 ? selectedAccounts : (a ? [a] : []);
-        accounts.forEach(acc => {
-          acc.anti_afk_enabled = false;
-          apiService.updateAccount(acc.id, { anti_afk_enabled: false }).catch(() => { });
-        });
-        toast(`Disabled Anti-AFK for ${accounts.length} account(s)`, 'info');
-        renderAll();
       }
       if (action === 'delete' && a) { deleteAccount(a.id); }
       if (action === 'delete-multi') { bulkDeleteSelected(); }
@@ -20304,10 +20303,10 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
               <select id="webhook-screenshot-pid-select" class="webhook-select" style="flex:1; min-width:140px;">
                 <option value="">Active Roblox Window</option>
                 ${webhookInstancesState.map(inst => {
-    const pidVal = Number(inst.pid || 0);
-    const label = inst.username ? `@${inst.username} (PID ${pidVal})` : `PID ${pidVal}`;
-    return `<option value="${pidVal}" ${Number(cfg.screenshot_target_pid) === pidVal ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-  }).join('')}
+                  const pidVal = Number(inst.pid || 0);
+                  const label = inst.username ? `@${inst.username} (PID ${pidVal})` : `PID ${pidVal}`;
+                  return `<option value="${pidVal}" ${Number(cfg.screenshot_target_pid) === pidVal ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+                }).join('')}
               </select>
             ` : ''}
             <input type="number" id="webhook-screenshot-interval" class="webhook-input" min="1" max="1440" value="${shotInterval}" style="width:68px;" title="Interval in minutes" />
@@ -20357,9 +20356,9 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
       ${extraEndpoints.length > 0 ? `
         <div style="display:flex; flex-direction:column; gap:8px; margin-top:4px;">
           ${extraEndpoints.map((ep, idx) => {
-    const epEvents: string[] = Array.isArray(ep.events) ? ep.events : [];
-    const epActiveCount = WEBHOOK_EVENT_DEFS.filter(ev => epEvents.includes(ev.id) || epEvents.includes('all')).length;
-    return `
+            const epEvents: string[] = Array.isArray(ep.events) ? ep.events : [];
+            const epActiveCount = WEBHOOK_EVENT_DEFS.filter(ev => epEvents.includes(ev.id) || epEvents.includes('all')).length;
+            return `
               <div class="wh-ep-row">
                 <div style="display:flex; align-items:center; gap:8px; min-width:165px;">
                   <button type="button" class="switch ${ep.enabled !== false ? 'on' : ''} sw-ep-toggle" data-idx="${idx}">
@@ -20372,9 +20371,9 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
                 </div>
                 <div style="display:flex; flex-wrap:wrap; gap:4px; flex:1;">
                   ${WEBHOOK_EVENT_DEFS.map(ev => {
-      const active = epEvents.includes(ev.id) || epEvents.includes('all');
-      return `<button type="button" class="pill wh-ev-pill btn-ep-event ${active ? 'active' : ''}" data-idx="${idx}" data-ev="${ev.id}" aria-pressed="${active}"><span class="wh-ev-indicator">${active ? '✓' : '○'}</span><span>${ev.label}</span></button>`;
-    }).join('')}
+                    const active = epEvents.includes(ev.id) || epEvents.includes('all');
+                    return `<button type="button" class="pill wh-ev-pill btn-ep-event ${active ? 'active' : ''}" data-idx="${idx}" data-ev="${ev.id}" aria-pressed="${active}"><span class="wh-ev-indicator">${active ? '✓' : '○'}</span><span>${ev.label}</span></button>`;
+                  }).join('')}
                 </div>
                 <div style="display:flex; gap:6px; align-items:center;">
                   <button class="btn btn-secondary btn-sm btn-ep-test" data-idx="${idx}" type="button" style="padding:3px 8px; font-size:11px;">Test</button>
@@ -20382,7 +20381,7 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
                 </div>
               </div>
             `;
-  }).join('')}
+          }).join('')}
         </div>
       ` : ''}
     </div>
@@ -20411,8 +20410,8 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
                 <td colspan="5" style="padding:20px; text-align:center; color:var(--muted);">No webhook events sent yet.</td>
               </tr>
             ` : recentItems.map(item => {
-    const isOk = item.ok !== undefined ? Boolean(item.ok) : item.status === 'Success';
-    return `
+              const isOk = item.ok !== undefined ? Boolean(item.ok) : item.status === 'Success';
+              return `
                 <tr>
                   <td style="text-align:left; font-family:monospace; font-size:11.5px; color:var(--muted);">${escapeHtml(item.timestamp || '')}</td>
                   <td><span class="webhook-cat-badge cat-${escapeHtml(String(item.category || 'general').toLowerCase())}">${escapeHtml(String(item.category || 'general'))}</span></td>
@@ -20423,7 +20422,7 @@ async function renderWebhooksView(skipFetch = false): Promise<void> {
                   </td>
                 </tr>
               `;
-  }).join('')}
+            }).join('')}
           </tbody>
         </table>
       </div>

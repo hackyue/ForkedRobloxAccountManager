@@ -1288,7 +1288,7 @@ def update_account(account_id):
     update_data = request.json or {}
     allowed_fields = {'username', 'display_name', 'avatar_url', 'cookie', 'password',
                       'note', 'group', 'vip_server', 'vip_place_id', 'vip_game_name',
-                      'auto_rejoin_enabled', 'user_id', 'status', 'added_date'}
+                      'auto_rejoin_enabled', 'anti_afk_enabled', 'user_id', 'status', 'added_date'}
 
     cookie_info = None
     if 'cookie' in update_data:
