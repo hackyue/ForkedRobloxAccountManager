@@ -172,6 +172,7 @@ export interface Settings {
   confirmBeforeLaunch: boolean;
   autoCloseCrashHandlers?: boolean;
   autoRenameInstances?: boolean;
+  instanceNameFormat?: 'username' | 'display_name' | 'user_id' | 'pid' | 'username_pid' | 'username_userid' | 'username_placeid';
   compactRows: boolean;
   showTableAvatars?: boolean;
   downloadAvatarIcons?: boolean;

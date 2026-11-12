@@ -255,6 +255,7 @@ const state: State = {
     autoKillRobloxOnExit: false,
     autoCloseCrashHandlers: false,
     autoRenameInstances: false,
+    instanceNameFormat: 'username',
     minimizeToTray: false,
     startAtStartup: false,
     streamerMode: false,
@@ -1955,6 +1956,7 @@ async function executeUninstall(): Promise<void> {
 
 const SETTINGS_SUBSETTING_PARENT_KEYS: (keyof Settings)[] = [
   'autoUpdateCheck',
+  'autoRenameInstances',
   'headlessMode',
   'keepClientsArranged',
   'autoArrangeDimensionMode',
@@ -6983,7 +6985,36 @@ function renderSettingsView(): void {
     if (!isMacOS()) {
       launchSetupCard.appendChild(settingsToggleRow('Auto Close RobloxCrashHandlers', 'Automatically detect and terminate unresponsive RobloxCrashHandler processes', 'autoCloseCrashHandlers'));
     }
-    launchSetupCard.appendChild(settingsToggleRow('Auto Name Instances by Username', 'Automatically rename each Roblox instance window to the username of the account tied to it', 'autoRenameInstances'));
+    launchSetupCard.appendChild(settingsToggleRow('Auto Name Instances', 'Automatically rename each Roblox instance window using the selected naming format', 'autoRenameInstances'));
+    if (state.settings.autoRenameInstances) {
+      const nameFmtRow = el('div', { class: 'setting-row', style: 'padding-left: 24px;' }, []);
+      const nameFmtText = el('div', {}, [
+        el('div', { class: 'setting-label' }, [document.createTextNode('Instance Naming Format')]),
+        el('div', { class: 'setting-desc' }, [document.createTextNode('Choose what information is used to name each Roblox window')])
+      ]);
+      nameFmtRow.appendChild(nameFmtText);
+      const nameFmtSel = el('select', { style: 'min-width:190px;' }, []) as HTMLSelectElement;
+      [
+        { value: 'username', label: 'Username' },
+        { value: 'display_name', label: 'Display Name' },
+        { value: 'user_id', label: 'User ID' },
+        { value: 'pid', label: 'PID' },
+        { value: 'username_pid', label: 'Username (PID)' },
+        { value: 'username_userid', label: 'Username (User ID)' },
+        { value: 'username_placeid', label: 'Username - Place ID' }
+      ].forEach(opt => {
+        const o = el('option', { value: opt.value }, []) as HTMLOptionElement;
+        o.textContent = opt.label;
+        if (opt.value === (state.settings.instanceNameFormat || 'username')) o.selected = true;
+        nameFmtSel.appendChild(o);
+      });
+      nameFmtSel.addEventListener('change', (e) => {
+        const val = (e.target as HTMLSelectElement).value as Settings['instanceNameFormat'];
+        updateSetting('instanceNameFormat', val);
+      });
+      nameFmtRow.appendChild(nameFmtSel);
+      launchSetupCard.appendChild(nameFmtRow);
+    }
     const saveDetailsRow = settingsToggleRow('Save Launch Details', 'Automatically save game place IDs and user targets to the Saved Games bar when launching', 'autoSaveLaunchDetails');
     saveDetailsRow.style.borderBottom = 'none';
     launchSetupCard.appendChild(saveDetailsRow);

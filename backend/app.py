@@ -645,6 +645,7 @@ def _load_data_unlocked(force_reload: bool = False) -> Dict[str, Any]:
             'disableSuccessPopups': False,
             'confirmBeforeLaunch': True,
             'autoRenameInstances': False,
+            'instanceNameFormat': 'username',
             'compactRows': False,
             'accentIndex': 0,
             'selectedTheme': 'default-dark',
@@ -2190,7 +2191,9 @@ def update_settings():
             txn.data['settings'][key] = value
         txn.save()
         result_settings = txn.data['settings']
-    if settings_data.get('autoRenameInstances'):
+    if settings_data.get('autoRenameInstances') or (
+        'instanceNameFormat' in settings_data and result_settings.get('autoRenameInstances', False)
+    ):
         threading.Thread(target=sync_roblox_instance_window_titles, daemon=True, name="rename-instances-on-toggle").start()
     return jsonify(result_settings)
 
@@ -4569,8 +4572,34 @@ def _detect_and_update_instance_exits():
         except Exception as e:
             print(f"[WARN] Failed to send webhook for {status} PID {pid}: {e}")
 
+def _format_instance_window_title(name_format: str, pid: int, info: Optional[Dict[str, Any]]) -> str:
+    fmt = str(name_format or 'username').strip().lower()
+    username = str(info.get('username') or '').strip() if isinstance(info, dict) else ''
+    display_name = str(info.get('display_name') or '').strip() if isinstance(info, dict) else ''
+    raw_user_id = info.get('user_id') if isinstance(info, dict) else None
+    user_id = str(raw_user_id).strip() if raw_user_id is not None and str(raw_user_id).strip() else ''
+    place_id = str(info.get('place_id') or '').strip() if isinstance(info, dict) else ''
+
+    if fmt == 'pid':
+        return f"PID {pid}"
+    if fmt == 'user_id':
+        return user_id or username
+    if fmt == 'display_name':
+        return display_name or username
+    if fmt == 'username_pid':
+        return f"{username} ({pid})" if username else f"PID {pid}"
+    if fmt == 'username_userid':
+        if username and user_id:
+            return f"{username} ({user_id})"
+        return username or user_id
+    if fmt == 'username_placeid':
+        if username and place_id:
+            return f"{username} - {place_id}"
+        return username
+    return username
+
 def sync_roblox_instance_window_titles():
-    """Rename Roblox client windows to the username of the account tied to each instance when enabled."""
+    """Rename Roblox client windows according to the configured instance naming format when enabled."""
     if platform.system() != "Windows":
         return
 
@@ -4578,6 +4607,7 @@ def sync_roblox_instance_window_titles():
         settings = load_data().get('settings', {})
         if not settings.get('autoRenameInstances', False):
             return
+        name_format = str(settings.get('instanceNameFormat') or 'username').strip().lower()
     except Exception:
         return
 
@@ -4600,16 +4630,16 @@ def sync_roblox_instance_window_titles():
     try:
         resolved_map = resolve_active_pids_accounts(pid_ctime_list)
     except Exception:
-        return
+        resolved_map = {}
 
-    pid_to_username: Dict[int, str] = {}
-    for pid, info in (resolved_map or {}).items():
-        if isinstance(info, dict):
-            uname = str(info.get('username') or '').strip()
-            if uname:
-                pid_to_username[int(pid)] = uname
+    pid_to_title: Dict[int, str] = {}
+    for pid, _ctime in pid_ctime_list:
+        info = (resolved_map or {}).get(pid)
+        title = _format_instance_window_title(name_format, pid, info)
+        if title:
+            pid_to_title[int(pid)] = title
 
-    if not pid_to_username:
+    if not pid_to_title:
         return
 
     try:
@@ -4621,8 +4651,8 @@ def sync_roblox_instance_window_titles():
             try:
                 pid = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                target_username = pid_to_username.get(int(pid.value))
-                if not target_username:
+                target_title = pid_to_title.get(int(pid.value))
+                if not target_title:
                     return True
 
                 cls_buf = ctypes.create_unicode_buffer(256)
@@ -4646,8 +4676,8 @@ def sync_roblox_instance_window_titles():
                 if any(kw in lower_title for kw in ("bloxstrap", "fishstrap", "voidstrap", "froststrap", "exploitstrap", "installer", "crash handler")):
                     return True
 
-                if current_title != target_username:
-                    user32.SetWindowTextW(hwnd, target_username)
+                if current_title != target_title:
+                    user32.SetWindowTextW(hwnd, target_title)
             except Exception:
                 pass
             return True
@@ -5957,6 +5987,7 @@ def clear_all_data():
         'disableSuccessPopups': False,
         'confirmBeforeLaunch': True,
         'autoRenameInstances': False,
+        'instanceNameFormat': 'username',
         'compactRows': False,
         'accentIndex': 0,
         'selectedTheme': 'default-dark',
