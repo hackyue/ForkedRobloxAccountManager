@@ -7345,10 +7345,12 @@ def test_webhook():
     try:
         data = request.get_json(silent=True) or {}
         custom_url = (data.get('webhook_url') or '').strip() or None
+        if custom_url and not webhook_manager.is_valid_url(custom_url):
+            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         ok, msg = webhook_manager.send_test_webhook(url=custom_url)
         if ok:
             return jsonify({'success': True, 'message': msg})
-        return jsonify({'success': False, 'error': msg}), 400
+        return jsonify({'success': False, 'error': msg or 'Failed to test webhook'}), 400
     except Exception as e:
         log_detailed_error("Failed to test webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to test webhook'}), 500
@@ -7364,6 +7366,8 @@ def send_webhook_custom():
         fields = data.get('fields', [])
         color = data.get('color')
         custom_url = (data.get('webhook_url') or '').strip() or None
+        if custom_url and not webhook_manager.is_valid_url(custom_url):
+            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         ok, msg = webhook_manager.post_embed(
             title=title,
             description=description,
@@ -7374,7 +7378,7 @@ def send_webhook_custom():
         )
         if ok:
             return jsonify({'success': True, 'message': msg})
-        return jsonify({'success': False, 'error': msg}), 400
+        return jsonify({'success': False, 'error': msg or 'Failed to send custom webhook'}), 400
     except Exception as e:
         log_detailed_error("Failed to send custom webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to send custom webhook'}), 500
@@ -7389,10 +7393,12 @@ def test_webhook_screenshot():
         mode = data.get('mode')
         pid = data.get('pid')
         custom_url = (data.get('webhook_url') or '').strip() or None
+        if custom_url and not webhook_manager.is_valid_url(custom_url):
+            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         ok, msg = webhook_manager.post_screenshot(url=custom_url, all_monitors=all_monitors, mode=mode, target_pid=pid)
         if ok:
             return jsonify({'success': True, 'message': msg})
-        return jsonify({'success': False, 'error': msg}), 400
+        return jsonify({'success': False, 'error': msg or 'Failed to send screenshot webhook'}), 400
     except Exception as e:
         log_detailed_error("Failed to send screenshot webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to send screenshot webhook'}), 500
@@ -7404,11 +7410,13 @@ def test_webhook_instances():
     try:
         data = request.get_json(silent=True) or {}
         custom_url = (data.get('webhook_url') or '').strip() or None
+        if custom_url and not webhook_manager.is_valid_url(custom_url):
+            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         force_new = bool(data.get('force_new_message', False))
         ok, msg = webhook_manager.post_instance_summary(url=custom_url, force_new_message=force_new)
         if ok:
             return jsonify({'success': True, 'message': msg})
-        return jsonify({'success': False, 'error': msg}), 400
+        return jsonify({'success': False, 'error': msg or 'Failed to send instances webhook'}), 400
     except Exception as e:
         log_detailed_error("Failed to send instances webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to send instances webhook'}), 500
@@ -7424,6 +7432,8 @@ def send_webhook_window_preview():
         place_id = data.get('place_id')
         place_name = data.get('place_name') or (get_place_name(place_id) if place_id else None)
         custom_url = (data.get('webhook_url') or '').strip() or None
+        if custom_url and not webhook_manager.is_valid_url(custom_url):
+            return jsonify({'success': False, 'error': 'Invalid Discord webhook URL'}), 400
         
         memory_mb = None
         cpu_percent = None
@@ -7457,7 +7467,7 @@ def send_webhook_window_preview():
         )
         if ok:
             return jsonify({'success': True, 'message': msg})
-        return jsonify({'success': False, 'error': msg}), 400
+        return jsonify({'success': False, 'error': msg or 'Failed to send window preview'}), 400
     except Exception as e:
         log_detailed_error("Failed to send window preview webhook", exc=e)
         return jsonify({'success': False, 'error': 'Failed to send window preview webhook'}), 500

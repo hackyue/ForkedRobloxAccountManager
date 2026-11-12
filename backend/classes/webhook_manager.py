@@ -16,16 +16,18 @@ import tempfile
 from typing import Optional, Dict, Any, List, Tuple, Callable
 from utils.error_detector import log_detailed_error
 
+ALLOWED_DISCORD_HOSTS = (
+    "discord.com",
+    "discordapp.com",
+    "canary.discord.com",
+    "ptb.discord.com",
+    "canary.discordapp.com",
+    "ptb.discordapp.com",
+)
+
 
 class WebhookManager:
-    ALLOWED_DISCORD_HOSTS = {
-        "discord.com",
-        "discordapp.com",
-        "canary.discord.com",
-        "ptb.discord.com",
-        "canary.discordapp.com",
-        "ptb.discordapp.com",
-    }
+    ALLOWED_DISCORD_HOSTS = set(ALLOWED_DISCORD_HOSTS)
 
     ALL_EVENT_CATEGORIES = [
         "launch",
@@ -402,6 +404,24 @@ class WebhookManager:
         timeout: int = 15,
         max_retries: int = 3,
     ) -> Tuple[bool, str, int, Optional[Dict[str, Any]]]:
+        if not request_url or not isinstance(request_url, str):
+            return False, "Missing destination URL", 400, None
+
+        parsed = urllib.parse.urlsplit(str(request_url).strip())
+        hostname = (parsed.hostname or "").lower()
+        if (parsed.scheme or "").lower() != "https" or hostname not in ALLOWED_DISCORD_HOSTS:
+            return False, "Invalid or untrusted destination URL", 400, None
+
+        path = parsed.path or ""
+        if not re.fullmatch(r"^/api/webhooks/\d+/[A-Za-z0-9_.-]+(?:/messages/\d+)?$", path):
+            return False, "Invalid webhook endpoint path", 400, None
+
+        query = parsed.query or ""
+        if query and query != "wait=true":
+            return False, "Invalid webhook query parameters", 400, None
+
+        safe_url = f"https://{hostname}{path}" + (f"?{query}" if query else "")
+
         attempt = 0
         last_err = "Delivery failed"
         last_code = 0
@@ -410,7 +430,7 @@ class WebhookManager:
             attempt += 1
             try:
                 req = urllib.request.Request(
-                    request_url,
+                    safe_url,
                     data=body_bytes,
                     headers={
                         "Content-Type": content_type,
@@ -1134,7 +1154,8 @@ class WebhookManager:
                 else:
                     last_msg = msg
             except Exception as e:
-                last_msg = str(e)
+                print(f"[ERROR] Failed delivering instance capture for PID {pid}: {e}")
+                last_msg = "Failed delivering instance capture"
             finally:
                 if os.path.exists(temp_path):
                     try:
