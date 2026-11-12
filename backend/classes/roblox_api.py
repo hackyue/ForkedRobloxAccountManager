@@ -2279,6 +2279,20 @@ class RobloxAPI:
                             allowed_launchers[c_path.lower()] = (c_path, "RobloxPlayerLauncher", False)
                             allowed_launchers[os.path.realpath(c_path).lower()] = (c_path, "RobloxPlayerLauncher", False)
 
+        def _launch_mac_app_bundle(bundle_path, target_url, context):
+            """Launch Roblox.app on macOS via `open -n -a` and verify launch handoff."""
+            res = subprocess.run(
+                ["open", "-n", "-a", bundle_path, "--args", target_url],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                close_fds=True,
+            )
+            if res.returncode != 0:
+                err_detail = (res.stderr or res.stdout or f"exit code {res.returncode}").strip()
+                raise RuntimeError(f"macOS open failed for {bundle_path}: {err_detail}")
+            _log_debug(f"Launching {context} on macOS via open -n -a {bundle_path} --args {target_url}")
+
         def _launch_with_launcher(launcher_id, target_url, context, working_dir=None):
             """Launch via a verified bootstrapper or launcher executable."""
             if launcher_id not in RobloxAPI.BOOTSTRAPPER_EXE_MAP:
@@ -2395,13 +2409,7 @@ class RobloxAPI:
 
             try:
                 if is_mac and using_local_install and mac_app_bundle:
-                    subprocess.Popen(
-                        ["open", "-n", "-a", mac_app_bundle, "--args", url],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        close_fds=True,
-                    )
-                    _log_debug(f"Launching Roblox Home on macOS via open -n -a {mac_app_bundle} --args {url}")
+                    _launch_mac_app_bundle(mac_app_bundle, url, "Roblox Home")
                 elif launcher_id:
                     if not _launch_with_launcher(
                         launcher_id,
@@ -2562,13 +2570,7 @@ class RobloxAPI:
 
         try:
             if is_mac and using_local_install and mac_app_bundle:
-                subprocess.Popen(
-                    ["open", "-n", "-a", mac_app_bundle, "--args", url],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    close_fds=True,
-                )
-                _log_debug(f"Launching game on macOS via open -n -a {mac_app_bundle} --args {url}")
+                _launch_mac_app_bundle(mac_app_bundle, url, "game")
             elif launcher_id:
                 if not _launch_with_launcher(
                     launcher_id,

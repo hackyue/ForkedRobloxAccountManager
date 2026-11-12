@@ -1286,7 +1286,7 @@ class RobloxAccountManager:
                 if result and result.get('username'):
                     username = result.get('username')
                     print(f"[SUCCESS] Username detected from page: {username}")
-            except:
+            except Exception:
                 pass
             
             if not username:
@@ -1305,7 +1305,7 @@ class RobloxAccountManager:
                             if element and element.text.strip():
                                 username = element.text.strip()
                                 break
-                        except:
+                        except Exception:
                             continue
                             
                 except Exception:

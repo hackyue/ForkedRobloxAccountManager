@@ -220,6 +220,50 @@ class AutoArranger:
     def get_monitor_work_areas(self) -> List[Tuple[bool, Tuple[int, int, int, int]]]:
         if platform.system() == "Darwin":
             try:
+                import ctypes.util
+                cg_path = ctypes.util.find_library("CoreGraphics")
+                if cg_path:
+                    cg = ctypes.CDLL(cg_path)
+
+                    class CGPoint(ctypes.Structure):
+                        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+                    class CGSize(ctypes.Structure):
+                        _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+                    class CGRect(ctypes.Structure):
+                        _fields_ = [("origin", CGPoint), ("size", CGSize)]
+
+                    cg.CGGetActiveDisplayList.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
+                    cg.CGGetActiveDisplayList.restype = ctypes.c_int32
+                    cg.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+                    cg.CGDisplayBounds.restype = CGRect
+                    cg.CGMainDisplayID.restype = ctypes.c_uint32
+
+                    main_id = cg.CGMainDisplayID()
+                    displays = (ctypes.c_uint32 * 16)()
+                    count = ctypes.c_uint32()
+                    if cg.CGGetActiveDisplayList(16, displays, ctypes.byref(count)) == 0 and count.value > 0:
+                        mac_monitors: List[Tuple[bool, Tuple[int, int, int, int]]] = []
+                        for i in range(count.value):
+                            did = displays[i]
+                            rect = cg.CGDisplayBounds(did)
+                            left = int(rect.origin.x)
+                            top = int(rect.origin.y)
+                            width = int(rect.size.width)
+                            height = int(rect.size.height)
+                            if width > 100 and height > 100:
+                                is_primary = bool(did == main_id)
+                                if is_primary and top == 0:
+                                    top = 25
+                                mac_monitors.append((is_primary, (left, top, left + width, int(rect.origin.y) + height)))
+                        if mac_monitors:
+                            mac_monitors.sort(key=lambda item: (not item[0], item[1][0], item[1][1]))
+                            return mac_monitors
+            except Exception:
+                pass
+
+            try:
                 res = subprocess.run(
                     ["osascript", "-e", 'tell application "Finder" to get bounds of window of desktop'],
                     capture_output=True,
