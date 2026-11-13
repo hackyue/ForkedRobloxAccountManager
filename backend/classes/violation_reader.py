@@ -222,7 +222,7 @@ def check_hyperion_violations() -> Dict[str, Any]:
 
     try:
         kernel32 = _setup_kernel32()
-    except Exception as exc:
+    except Exception:
         return {
             "success": False,
             "supported": True,
@@ -230,7 +230,7 @@ def check_hyperion_violations() -> Dict[str, Any]:
             "violations": 0,
             "hex": "0x0",
             "processes": [],
-            "error": str(exc),
+            "error": "Failed to initialize Windows API",
         }
 
     results: List[Dict[str, Any]] = []
