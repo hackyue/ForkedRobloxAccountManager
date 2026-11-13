@@ -18094,6 +18094,10 @@ function initApp(): void {
             <div class="pill valid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><b id="stat-valid">0</b> valid</div>
             <div class="pill expired"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m14.5 9.5-5 5"/><path d="m9.5 9.5 5 5"/></svg><b id="stat-expired">0</b> expired</div>
             <div class="pill banned"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg><b id="stat-banned">0</b> banned</div>
+            <div class="pill hyperion-pill idle windows-only" id="hyperion-violation-indicator" title="Hyperion Violations: Waiting for RobloxPlayerBeta.exe">
+              <svg id="hyperion-violation-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <span id="hyperion-violation-text">Hyperion</span>
+            </div>
             <div class="header-spacer"></div>
             <div class="header-tools">
               <button class="header-tool-btn header-tool-btn-wide" id="btn-add-account" title="Add New Roblox Account">
@@ -18953,6 +18957,70 @@ function initApp(): void {
   const btnTrimMemoryHeader = document.getElementById('btn-trim-memory-header');
   if (btnTrimMemoryHeader) {
     btnTrimMemoryHeader.addEventListener('click', () => handleTrimMemoryAction(btnTrimMemoryHeader));
+  }
+
+  let hyperionPollInFlight = false;
+  const refreshHyperionViolationIndicator = async (showManualToast = false) => {
+    if (isMacOS() || hyperionPollInFlight) return;
+    const indicator = document.getElementById('hyperion-violation-indicator');
+    const iconEl = document.getElementById('hyperion-violation-icon');
+    const textEl = document.getElementById('hyperion-violation-text');
+    if (!indicator || !iconEl || !textEl) return;
+
+    hyperionPollInFlight = true;
+    try {
+      const res = await apiService.getHyperionViolations();
+      const status = res.supported ? res.status : 'unavailable';
+      indicator.classList.remove('clean', 'detected', 'idle', 'unavailable');
+      indicator.classList.add(status);
+
+      if (status === 'clean') {
+        iconEl.setAttribute('stroke-width', '2.5');
+        iconEl.innerHTML = '<path d="M20 6 9 17l-5-5"/>';
+        textEl.textContent = 'Hyperion';
+        const pidSummary = res.processes.map(p => `PID ${p.pid}: ${p.hex}`).join(' | ');
+        indicator.title = `Hyperion Violations: Clean (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
+        if (showManualToast) toast(`Hyperion Clean (${res.hex})`, 'success');
+      } else if (status === 'detected') {
+        iconEl.setAttribute('stroke-width', '2.5');
+        iconEl.innerHTML = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
+        textEl.textContent = 'Hyperion';
+        const pidSummary = res.processes.map(p => `PID ${p.pid}: ${p.status} (${p.hex})`).join(' | ');
+        indicator.title = `Hyperion Violations: Detected (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
+        if (showManualToast) toast(`Hyperion Violation Detected (${res.hex})`, 'error');
+      } else if (status === 'idle') {
+        iconEl.setAttribute('stroke-width', '2');
+        iconEl.innerHTML = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>';
+        textEl.textContent = 'Hyperion';
+        indicator.title = 'Hyperion Violations: No RobloxPlayerBeta.exe running';
+        if (showManualToast) toast('No RobloxPlayerBeta.exe process running', 'info');
+      } else {
+        iconEl.setAttribute('stroke-width', '2');
+        iconEl.innerHTML = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>';
+        textEl.textContent = 'Hyperion';
+        const firstErr = res.processes.find(p => p.error)?.error || res.error || 'Unavailable';
+        indicator.title = `Hyperion Violations: ${firstErr}`;
+        if (showManualToast) toast(`Hyperion check: ${firstErr}`, 'info');
+      }
+    } catch {
+      indicator.classList.remove('clean', 'detected', 'idle');
+      indicator.classList.add('unavailable');
+    } finally {
+      hyperionPollInFlight = false;
+    }
+  };
+
+  const hyperionIndicator = document.getElementById('hyperion-violation-indicator');
+  if (hyperionIndicator && !isMacOS()) {
+    hyperionIndicator.addEventListener('click', () => {
+      refreshHyperionViolationIndicator(true);
+    });
+    refreshHyperionViolationIndicator(false);
+    const existingTimer = (window as any).__hyperionPollTimer as ReturnType<typeof setInterval> | undefined;
+    if (existingTimer) clearInterval(existingTimer);
+    (window as any).__hyperionPollTimer = setInterval(() => {
+      refreshHyperionViolationIndicator(false);
+    }, 3000);
   }
 
   const btnAutoArrangeHeader = document.getElementById('btn-auto-arrange-header');

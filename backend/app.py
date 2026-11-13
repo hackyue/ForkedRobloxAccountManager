@@ -46,6 +46,7 @@ from classes.anti_afk import AntiAfkManager
 from classes.browser_extensions import BrowserExtensionManager, BrowserExtensionError
 from classes.roblox_swap import RobloxSwapManager
 from classes.chromium_downloader import chromium_downloader_manager
+from classes.violation_reader import check_hyperion_violations
 from utils.paths import get_data_folder
 from utils.cleanup import cleanup_temp_files
 from utils.error_detector import error_detector, log_detailed_error
@@ -4233,6 +4234,17 @@ def trim_roblox_memory_endpoint():
     except Exception as e:
         log_detailed_error("Memory trim endpoint error", exc=e)
         return jsonify({'success': False, 'error': 'Failed to trim memory'}), 500
+
+@app.route('/api/roblox/hyperion-violations', methods=['GET', 'OPTIONS'])
+def hyperion_violations_endpoint():
+    if request.method == 'OPTIONS':
+        return '', 200
+    try:
+        result = check_hyperion_violations()
+        return jsonify(result)
+    except Exception as e:
+        log_detailed_error("Hyperion violations endpoint error", exc=e)
+        return jsonify({'success': False, 'status': 'unavailable', 'error': 'Failed to read Hyperion violations'}), 500
 
 @app.route('/api/roblox/auto-arrange', methods=['POST', 'OPTIONS'])
 def auto_arrange_roblox_clients_endpoint():

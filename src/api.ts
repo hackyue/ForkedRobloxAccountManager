@@ -635,6 +635,18 @@ class ApiService {
     return this.request<{ success: boolean; trimmed?: number; trimmedCount?: number; savedMb?: number; total_processes?: number; message?: string; error?: string }>('/roblox/trim-memory', 'POST');
   }
 
+  async getHyperionViolations(): Promise<{
+    success: boolean;
+    supported: boolean;
+    status: 'clean' | 'detected' | 'idle' | 'unavailable';
+    violations: number;
+    hex: string;
+    processes: { pid: number; status: 'clean' | 'detected' | 'unavailable'; violations: number; hex: string; error?: string }[];
+    error?: string;
+  }> {
+    return this.request('/roblox/hyperion-violations');
+  }
+
   async validateAllAccounts(): Promise<{ accounts: Account[]; summary: { total: number; valid: number; expired: number; banned: number } }> {
     return this.request<{ accounts: Account[]; summary: { total: number; valid: number; expired: number; banned: number } }>('/accounts/validate-all', 'POST');
   }

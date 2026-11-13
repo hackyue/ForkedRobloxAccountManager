@@ -2478,6 +2478,30 @@ a.rail-social-btn {
   color: var(--red);
 }
 
+.pill.hyperion-pill {
+  user-select: none;
+  gap: 5px;
+}
+
+.pill.hyperion-pill.clean {
+  border-color: rgba(52, 211, 153, .35);
+  background: rgba(52, 211, 153, .08);
+  color: var(--emerald);
+}
+
+.pill.hyperion-pill.detected {
+  border-color: rgba(240, 87, 92, .45);
+  background: rgba(240, 87, 92, .12);
+  color: var(--red);
+  font-weight: 600;
+}
+
+.pill.hyperion-pill.idle,
+.pill.hyperion-pill.unavailable {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
 .pill.multi-instance-pill {
   cursor: pointer;
   transition: all 0.15s ease;
