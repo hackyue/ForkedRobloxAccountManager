@@ -2163,19 +2163,16 @@ class RobloxAPI:
             if enable_debug:
                 print(f"[DEBUG] {msg}")
 
-        print(f"Getting authentication ticket for {username}...")
-        auth_ticket, auth_error = RobloxAPI.get_auth_ticket_detailed(cookie)
-        
-        if not auth_ticket:
-            err = auth_error or f"Failed to get authentication ticket for {username}"
-            print(f"[ERROR] {err}")
-            if return_details:
-                return False, err
-            return False
-        
-        print("[SUCCESS] Got authentication ticket!")
+        def _acquire_auth_ticket():
+            print(f"Getting authentication ticket for {username}...")
+            ticket, auth_err = RobloxAPI.get_auth_ticket_detailed(cookie)
+            if not ticket:
+                err_msg = auth_err or f"Failed to get authentication ticket for {username}"
+                print(f"[ERROR] {err_msg}")
+                return None, None, err_msg
+            print("[SUCCESS] Got authentication ticket!")
+            return ticket, quote(ticket, safe=""), None
 
-        auth_ticket_encoded = quote(auth_ticket, safe="")
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         private_server_text = str(private_server_id or "").strip()
         private_server_share_details = RobloxAPI.extract_private_server_share_details(private_server_text)
@@ -2383,6 +2380,11 @@ class RobloxAPI:
             normalized_launch_mode = "game"
 
         if normalized_launch_mode != "join_user" and (not game_id or game_id == ""):
+            auth_ticket, auth_ticket_encoded, auth_err = _acquire_auth_ticket()
+            if not auth_ticket:
+                if return_details:
+                    return False, auth_err
+                return False
             browser_tracker_id = random.randint(100000000000, 999999999999)
             launch_time = int(time.time() * 1000)
             launch_record_id = RobloxAPI.record_launch_ticket(
@@ -2531,10 +2533,16 @@ class RobloxAPI:
                 return False, err
             return False
 
+        auth_ticket, auth_ticket_encoded, auth_err = _acquire_auth_ticket()
+        if not auth_ticket:
+            if return_details:
+                return False, auth_err
+            return False
+
         url = (
             "roblox-player:1+launchmode:play+gameinfo:" + auth_ticket_encoded +
             "+launchtime:" + str(launch_time) +
-            "+placelauncherurl:" + place_launch_base
+            "+placelauncherurl:" + quote(place_launch_base, safe="")
         )
 
         url += (
