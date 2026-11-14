@@ -19039,22 +19039,34 @@ function initApp(): void {
       indicator.classList.remove('clean', 'detected', 'idle', 'unavailable');
       indicator.classList.add(status);
 
+      const formatProcSummary = () => res.processes.map(p => {
+        const hypLabel = p.hyperion_status === 'detected' ? 'Detected' : (p.hyperion_status === 'clean' ? 'Undetected' : (p.status === 'detected' ? 'Detected' : 'Undetected'));
+        const hypText = `Hyperion ${p.hyperion_hex || p.hex} (${hypLabel})`;
+        const luauText = p.luau_hex
+          ? `Luau ${p.luau_hex} (${p.luau_status === 'clean' ? 'Undetected' : 'Detected'})`
+          : `Luau ${p.luau_error || 'Unavailable'}`;
+        return `PID ${p.pid}: ${hypText}, ${luauText}`;
+      }).join(' | ');
+      const luauSummary = res.luau_hex
+        ? `Luau: ${res.luau_status === 'clean' ? 'Undetected' : 'Detected'} (${res.luau_hex})`
+        : 'Luau: Unavailable';
+
       if (status === 'clean') {
         iconEl.setAttribute('stroke-width', '2.5');
         iconEl.innerHTML = '<path d="M20 6 9 17l-5-5"/>';
         textEl.textContent = 'Undetected';
-        const pidSummary = res.processes.map(p => `PID ${p.pid}: ${p.hex}`).join(' | ');
-        indicator.title = `Hyperion: Undetected (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
-        if (shouldLog) addLog(`[Hyperion] Undetected (${res.hex})${pidSummary ? ` — ${pidSummary}` : ''}`, 'success');
-        if (showManualToast) toast(`Hyperion: Undetected (${res.hex})`, 'success');
+        const pidSummary = formatProcSummary();
+        indicator.title = `Hyperion: Undetected (${res.hex}) | ${luauSummary}${pidSummary ? `\n${pidSummary}` : ''}`;
+        if (shouldLog) addLog(`[Hyperion] Undetected (${res.hex}) | ${luauSummary}${pidSummary ? ` — ${pidSummary}` : ''}`, 'success');
+        if (showManualToast) toast(`Undetected — Hyperion (${res.hex}) | ${luauSummary}`, 'success');
       } else if (status === 'detected') {
         iconEl.setAttribute('stroke-width', '2.5');
         iconEl.innerHTML = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
         textEl.textContent = 'Detected';
-        const pidSummary = res.processes.map(p => `PID ${p.pid}: ${p.status} (${p.hex})`).join(' | ');
-        indicator.title = `Hyperion: Detected (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
-        if (shouldLog) addLog(`[Hyperion] Detected (${res.hex})${pidSummary ? ` — ${pidSummary}` : ''}`, 'error');
-        if (showManualToast) toast(`Hyperion: Detected (${res.hex})`, 'error');
+        const pidSummary = formatProcSummary();
+        indicator.title = `Hyperion: ${res.hex} | ${luauSummary}${pidSummary ? `\n${pidSummary}` : ''}`;
+        if (shouldLog) addLog(`[Hyperion] Detected — Hyperion (${res.hex}) | ${luauSummary}${pidSummary ? ` — ${pidSummary}` : ''}`, 'error');
+        if (showManualToast) toast(`Detected — Hyperion (${res.hex}) | ${luauSummary}`, 'error');
       } else if (status === 'idle') {
         iconEl.setAttribute('stroke-width', '2');
         iconEl.innerHTML = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>';

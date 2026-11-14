@@ -126,6 +126,102 @@ def _read_u8(kernel32: Any, handle: int, address: int) -> Tuple[bool, int]:
     return True, int(buf.value)
 
 
+def _read_u32(kernel32: Any, handle: int, address: int) -> Tuple[bool, int]:
+    buf = ctypes.c_uint32(0)
+    bytes_read = ctypes.c_size_t(0)
+    ok = kernel32.ReadProcessMemory(
+        handle,
+        ctypes.c_void_p(address),
+        ctypes.byref(buf),
+        4,
+        ctypes.byref(bytes_read),
+    )
+    if not ok or bytes_read.value != 4:
+        return False, 0
+    return True, int(buf.value)
+
+
+def _read_ptr(kernel32: Any, handle: int, address: int) -> Tuple[bool, int]:
+    buf = ctypes.c_uint64(0)
+    bytes_read = ctypes.c_size_t(0)
+    ok = kernel32.ReadProcessMemory(
+        handle,
+        ctypes.c_void_p(address),
+        ctypes.byref(buf),
+        8,
+        ctypes.byref(bytes_read),
+    )
+    if not ok or bytes_read.value != 8:
+        return False, 0
+    return True, int(buf.value)
+
+
+def _decrypt_state(kernel32: Any, handle: int, encrypted_state: int) -> Optional[int]:
+    ok_low, raw_low = _read_u32(kernel32, handle, encrypted_state)
+    ok_high, raw_high = _read_u32(kernel32, handle, encrypted_state + 0x4)
+    if not ok_low or not ok_high:
+        return None
+    addr32 = encrypted_state & 0xFFFFFFFF
+    low = (raw_low - addr32) & 0xFFFFFFFF
+    high = (raw_high - addr32) & 0xFFFFFFFF
+    return ((high << 32) | low) & 0xFFFFFFFFFFFFFFFF
+
+
+def _read_luau_violations(kernel32: Any, handle: int, roblox_base: int) -> Dict[str, Any]:
+    if not roblox_base:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "RobloxPlayerBeta.exe not loaded"}
+
+    ok, data_model = _read_ptr(kernel32, handle, roblox_base + HyperionOffsets.DATAMODEL_ARBITER)
+    if not ok or not data_model:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "DataModel not active"}
+
+    data_model += HyperionOffsets.ARBITER_TO_DATAMODEL
+    ok, children_container = _read_ptr(kernel32, handle, data_model + HyperionOffsets.CHILDREN)
+    if not ok or not children_container:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "DataModel children unavailable"}
+
+    ok, children = _read_ptr(kernel32, handle, children_container)
+    if not ok or not children:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "Failed to read DataModel children"}
+
+    ok, script_context = _read_ptr(kernel32, handle, children + HyperionOffsets.SCRIPT_CONTEXT)
+    if not ok or not script_context:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "ScriptContext unavailable"}
+
+    encrypted_l1 = script_context + HyperionOffsets.GLOBAL_STATES + HyperionOffsets.GLOBAL_STATE
+    encrypted_l2 = encrypted_l1 + HyperionOffsets.ACTOR_STATE
+
+    l1 = _decrypt_state(kernel32, handle, encrypted_l1 + HyperionOffsets.ENCRYPTED_STATE)
+    l2 = _decrypt_state(kernel32, handle, encrypted_l2 + HyperionOffsets.ENCRYPTED_STATE)
+    if not l1 or not l2:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "Failed to decrypt Luau states"}
+
+    def _bit(ptr: int, b: int) -> Optional[int]:
+        ok_g, l_global = _read_ptr(kernel32, handle, ptr + HyperionOffsets.L_GLOBAL)
+        if not ok_g or not l_global:
+            return None
+        ok_rf, reg_free = _read_u32(kernel32, handle, l_global + HyperionOffsets.REGISTRY_FREE)
+        if not ok_rf:
+            return None
+        return (reg_free >> b) & 1
+
+    bits: List[int] = []
+    for b in (28, 29, 30):
+        b1 = _bit(l1, b)
+        b2 = _bit(l2, b)
+        if b1 is None or b2 is None:
+            return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "Failed to read Luau registry flags"}
+        bits.append(b1 & b2)
+
+    result = bits[0] | (bits[1] << 1) | (bits[2] << 2)
+    luau_status = "clean" if result == 0x7 else "detected"
+    return {
+        "luau_status": luau_status,
+        "luau_violations": result,
+        "luau_hex": hex(result),
+    }
+
+
 def _read_process_hyperion_violations(kernel32: Any, pid: int) -> Dict[str, Any]:
     hyperion_base = _get_module_base(kernel32, pid, "RobloxPlayerBeta.dll")
     if not hyperion_base:
@@ -175,12 +271,27 @@ def _read_process_hyperion_violations(kernel32: Any, pid: int) -> Dict[str, Any]
             violations |= (value << (i * 8))
 
         violations &= 0xFFFFFFFF
-        status = "clean" if violations == 0 else "detected"
+        hyperion_status = "clean" if violations == 0 else "detected"
+        roblox_base = _get_module_base(kernel32, pid, "RobloxPlayerBeta.exe")
+        luau_info = _read_luau_violations(kernel32, handle, roblox_base or 0)
+        luau_status = luau_info["luau_status"]
+
+        if hyperion_status == "detected" or luau_status == "detected":
+            overall_proc_status = "detected"
+        elif hyperion_status == "clean" or luau_status == "clean":
+            overall_proc_status = "clean"
+        else:
+            overall_proc_status = "unavailable"
+
         return {
             "pid": pid,
-            "status": status,
+            "status": overall_proc_status,
             "violations": violations,
             "hex": hex(violations),
+            "hyperion_status": hyperion_status,
+            "hyperion_violations": violations,
+            "hyperion_hex": hex(violations),
+            **luau_info,
         }
     finally:
         kernel32.CloseHandle(handle)
@@ -237,6 +348,8 @@ def check_hyperion_violations() -> Dict[str, Any]:
     detected_violations = 0
     has_clean = False
     has_detected = False
+    luau_detected_hex: Optional[str] = None
+    luau_clean_hex: Optional[str] = None
 
     for pid in pids:
         res = _read_process_hyperion_violations(kernel32, pid)
@@ -248,6 +361,11 @@ def check_hyperion_violations() -> Dict[str, Any]:
         elif res["status"] == "clean":
             has_clean = True
 
+        if res.get("luau_status") == "detected" and luau_detected_hex is None:
+            luau_detected_hex = res.get("luau_hex")
+        elif res.get("luau_status") == "clean" and luau_clean_hex is None:
+            luau_clean_hex = res.get("luau_hex")
+
     if has_detected:
         overall_status = "detected"
         overall_violations = detected_violations
@@ -258,12 +376,24 @@ def check_hyperion_violations() -> Dict[str, Any]:
         overall_status = "unavailable"
         overall_violations = 0
 
+    if luau_detected_hex is not None:
+        overall_luau_status = "detected"
+        overall_luau_hex = luau_detected_hex
+    elif luau_clean_hex is not None:
+        overall_luau_status = "clean"
+        overall_luau_hex = luau_clean_hex
+    else:
+        overall_luau_status = "unavailable"
+        overall_luau_hex = None
+
     return {
         "success": True,
         "supported": True,
         "status": overall_status,
         "violations": overall_violations,
         "hex": hex(overall_violations),
+        "luau_status": overall_luau_status,
+        "luau_hex": overall_luau_hex,
         "processes": results,
     }
 

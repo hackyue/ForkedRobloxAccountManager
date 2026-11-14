@@ -644,7 +644,21 @@ class ApiService {
     status: 'clean' | 'detected' | 'idle' | 'unavailable';
     violations: number;
     hex: string;
-    processes: { pid: number; status: 'clean' | 'detected' | 'unavailable'; violations: number; hex: string; error?: string }[];
+    luau_status?: 'clean' | 'detected' | 'unavailable';
+    luau_hex?: string | null;
+    processes: {
+      pid: number;
+      status: 'clean' | 'detected' | 'unavailable';
+      violations: number;
+      hex: string;
+      hyperion_status?: 'clean' | 'detected' | 'unavailable';
+      hyperion_hex?: string;
+      luau_status?: 'clean' | 'detected' | 'unavailable';
+      luau_violations?: number | null;
+      luau_hex?: string | null;
+      luau_error?: string;
+      error?: string;
+    }[];
     error?: string;
   }> {
     return this.request('/roblox/hyperion-violations');
