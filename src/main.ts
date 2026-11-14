@@ -19040,7 +19040,12 @@ function initApp(): void {
       indicator.classList.add(status);
 
       const formatProcSummary = () => res.processes.map(p => {
-        const hypLabel = p.hyperion_status === 'detected' ? 'Detected' : (p.hyperion_status === 'clean' ? 'Undetected' : (p.status === 'detected' ? 'Detected' : 'Undetected'));
+        if (p.status === 'unavailable' && !p.hyperion_status) {
+          return `PID ${p.pid}: Unavailable (${p.error || 'Unknown error'})`;
+        }
+        const hypLabel = p.hyperion_status === 'detected'
+          ? 'Detected'
+          : (p.hyperion_status === 'clean' ? 'Undetected' : 'Unavailable');
         const hypText = `Hyperion ${p.hyperion_hex || p.hex} (${hypLabel})`;
         const luauText = p.luau_hex
           ? `Luau ${p.luau_hex} (${p.luau_status === 'clean' ? 'Undetected' : 'Detected'})`

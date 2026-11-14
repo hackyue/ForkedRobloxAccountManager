@@ -1,8 +1,21 @@
 import ctypes
 import ctypes.wintypes as wintypes
 import platform
+import re
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import psutil
+import requests
+
+GETVEXOR_OFFSETS_URL = "https://getvexor.fyi/offsets.hpp"
+GETVEXOR_OFFSETS_JSON_URL = "https://getvexor.fyi/offsets.json"
+_VERSION_CACHE_LOCK = threading.Lock()
+_VERSION_CACHE: Dict[str, Any] = {
+    "version": None,
+    "error": None,
+    "fetched_at": 0.0,
+}
 
 
 class HyperionOffsets:
@@ -196,24 +209,30 @@ def _read_luau_violations(kernel32: Any, handle: int, roblox_base: int) -> Dict[
     if not l1 or not l2:
         return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "Failed to decrypt Luau states"}
 
-    def _bit(ptr: int, b: int) -> Optional[int]:
+    def _read_state_flags(ptr: int, label: str) -> Tuple[Optional[int], Optional[str]]:
         ok_g, l_global = _read_ptr(kernel32, handle, ptr + HyperionOffsets.L_GLOBAL)
-        if not ok_g or not l_global:
-            return None
+        if not ok_g:
+            return None, f"{label} L_GLOBAL read failed at {hex(ptr + HyperionOffsets.L_GLOBAL)} (offsets may be outdated for this Roblox build)"
+        if not l_global:
+            return None, f"{label} L_GLOBAL is null"
         ok_rf, reg_free = _read_u32(kernel32, handle, l_global + HyperionOffsets.REGISTRY_FREE)
         if not ok_rf:
-            return None
-        return (reg_free >> b) & 1
+            return None, f"{label} REGISTRY_FREE read failed at {hex(l_global + HyperionOffsets.REGISTRY_FREE)} (offsets may be outdated for this Roblox build)"
+        return reg_free, None
 
-    bits: List[int] = []
-    for b in (28, 29, 30):
-        b1 = _bit(l1, b)
-        b2 = _bit(l2, b)
-        if b1 is None or b2 is None:
-            return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": "Failed to read Luau registry flags"}
-        bits.append(b1 & b2)
+    reg_free_1, err1 = _read_state_flags(l1, "L1")
+    if reg_free_1 is None:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": err1}
 
-    result = bits[0] | (bits[1] << 1) | (bits[2] << 2)
+    reg_free_2, err2 = _read_state_flags(l2, "L2")
+    if reg_free_2 is None:
+        return {"luau_status": "unavailable", "luau_violations": None, "luau_hex": None, "luau_error": err2}
+
+    result = (
+        (((reg_free_1 >> 28) & 1) & ((reg_free_2 >> 28) & 1))
+        | ((((reg_free_1 >> 29) & 1) & ((reg_free_2 >> 29) & 1)) << 1)
+        | ((((reg_free_1 >> 30) & 1) & ((reg_free_2 >> 30) & 1)) << 2)
+    )
     luau_status = "clean" if result == 0x7 else "detected"
     return {
         "luau_status": luau_status,
@@ -297,6 +316,96 @@ def _read_process_hyperion_violations(kernel32: Any, pid: int) -> Dict[str, Any]
         kernel32.CloseHandle(handle)
 
 
+def _apply_getvexor_json_offsets(data: Dict[str, Any]) -> Optional[str]:
+    """Extract Roblox Version and sync available offsets from getvexor.fyi/offsets.json."""
+    raw_ver = str(data.get("Roblox Version") or "").strip()
+    if not re.fullmatch(r"version-[a-zA-Z0-9]+", raw_ver):
+        return None
+
+    offs = data.get("Offsets")
+    if isinstance(offs, dict):
+        fake_dm = offs.get("FakeDataModel") if isinstance(offs.get("FakeDataModel"), dict) else {}
+        legacy = offs.get("Legacy") if isinstance(offs.get("Legacy"), dict) else {}
+        instance = offs.get("Instance") if isinstance(offs.get("Instance"), dict) else {}
+        data_model = offs.get("DataModel") if isinstance(offs.get("DataModel"), dict) else {}
+
+        dm_ptr = fake_dm.get("Pointer") or legacy.get("FakeDataModelPointer")
+        if isinstance(dm_ptr, int) and dm_ptr > 0:
+            HyperionOffsets.DATAMODEL_ARBITER = dm_ptr
+
+        real_dm = fake_dm.get("RealDataModel")
+        if isinstance(real_dm, int) and real_dm > 0:
+            HyperionOffsets.ARBITER_TO_DATAMODEL = real_dm
+
+        children_start = instance.get("ChildrenStart")
+        if isinstance(children_start, int) and children_start > 0:
+            HyperionOffsets.CHILDREN = children_start
+
+        script_ctx = data_model.get("ScriptContext")
+        if isinstance(script_ctx, int) and script_ctx > 0:
+            HyperionOffsets.SCRIPT_CONTEXT = script_ctx
+
+    return raw_ver
+
+
+def _sync_getvexor_offsets() -> Tuple[Optional[str], Optional[str]]:
+    """Fetch, cache, and apply live Roblox version + offsets from getvexor.fyi."""
+    now = time.time()
+    with _VERSION_CACHE_LOCK:
+        cached_ver = _VERSION_CACHE.get("version")
+        cached_err = _VERSION_CACHE.get("error")
+        age = now - float(_VERSION_CACHE.get("fetched_at") or 0.0)
+        ttl = 300.0 if cached_ver else 30.0
+        if age < ttl and (cached_ver or cached_err):
+            return cached_ver, cached_err
+
+    version: Optional[str] = None
+    err: Optional[str] = None
+
+    try:
+        resp_json = requests.get(GETVEXOR_OFFSETS_JSON_URL, timeout=6)
+        if resp_json.status_code == 200:
+            data = resp_json.json() or {}
+            version = _apply_getvexor_json_offsets(data)
+        else:
+            err = f"getvexor.fyi/offsets.json returned HTTP {resp_json.status_code}"
+    except Exception as exc:
+        err = f"Failed to reach getvexor.fyi: {exc}"
+
+    if not version:
+        try:
+            resp = requests.get(GETVEXOR_OFFSETS_URL, timeout=6)
+            if resp.status_code == 200 and resp.text:
+                match = re.search(r'ClientVersion\s*=\s*"(version-[a-zA-Z0-9]+)"', resp.text)
+                if not match:
+                    match = re.search(r'Roblox Version\s*:\s*(version-[a-zA-Z0-9]+)', resp.text)
+                if match:
+                    version = match.group(1).strip()
+                    err = None
+            elif not err:
+                err = f"getvexor.fyi/offsets.hpp returned HTTP {resp.status_code}"
+        except Exception as exc:
+            if not err:
+                err = f"Failed to reach getvexor.fyi: {exc}"
+
+    if not version and not err:
+        err = "Could not parse Roblox version from getvexor.fyi"
+
+    with _VERSION_CACHE_LOCK:
+        _VERSION_CACHE["version"] = version
+        _VERSION_CACHE["error"] = err
+        _VERSION_CACHE["fetched_at"] = time.time()
+
+    return version, err
+
+
+def _extract_roblox_version_from_exe(exe_path: str) -> Optional[str]:
+    if not exe_path:
+        return None
+    match = re.search(r"(version-[a-zA-Z0-9]+)", exe_path, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def check_hyperion_violations() -> Dict[str, Any]:
     """Read Hyperion violation status from all running RobloxPlayerBeta.exe processes."""
     if platform.system() != "Windows":
@@ -309,19 +418,19 @@ def check_hyperion_violations() -> Dict[str, Any]:
             "processes": [],
         }
 
-    pids: List[int] = []
+    proc_entries: List[Tuple[int, str]] = []
     try:
-        for proc in psutil.process_iter(["pid", "name"]):
+        for proc in psutil.process_iter(["pid", "name", "exe"]):
             try:
                 name = str(proc.info.get("name") or "").lower()
                 if name == "robloxplayerbeta.exe":
-                    pids.append(int(proc.info["pid"]))
+                    proc_entries.append((int(proc.info["pid"]), str(proc.info.get("exe") or "")))
             except Exception:
                 continue
     except Exception:
         pass
 
-    if not pids:
+    if not proc_entries:
         return {
             "success": True,
             "supported": True,
@@ -329,6 +438,18 @@ def check_hyperion_violations() -> Dict[str, Any]:
             "violations": 0,
             "hex": "0x0",
             "processes": [],
+        }
+
+    supported_version, version_err = _sync_getvexor_offsets()
+    if not supported_version:
+        return {
+            "success": True,
+            "supported": True,
+            "status": "unavailable",
+            "violations": 0,
+            "hex": "0x0",
+            "processes": [],
+            "error": version_err or "Failed to verify supported Roblox version on getvexor.fyi",
         }
 
     try:
@@ -351,8 +472,26 @@ def check_hyperion_violations() -> Dict[str, Any]:
     luau_detected_hex: Optional[str] = None
     luau_clean_hex: Optional[str] = None
 
-    for pid in pids:
+    for pid, exe_path in proc_entries:
+        proc_version = _extract_roblox_version_from_exe(exe_path)
+        if not proc_version or proc_version.lower() != supported_version.lower():
+            results.append({
+                "pid": pid,
+                "status": "unavailable",
+                "violations": 0,
+                "hex": "0x0",
+                "version": proc_version,
+                "supported_version": supported_version,
+                "error": (
+                    f"Unsupported Roblox version ({proc_version or 'unknown'}; "
+                    f"getvexor.fyi is {supported_version})"
+                ),
+            })
+            continue
+
         res = _read_process_hyperion_violations(kernel32, pid)
+        res["version"] = proc_version
+        res["supported_version"] = supported_version
         results.append(res)
         if res["status"] == "detected":
             has_detected = True
