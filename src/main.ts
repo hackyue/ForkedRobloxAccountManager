@@ -244,6 +244,9 @@ const state: State = {
     autoUpdateToPreReleases: false,
     autoUpdateToLatestRelease: true,
     autoCheckRobloxUpdates: true,
+    hyperionReaderEnabled: true,
+    hyperionCheckIntervalMs: 3000,
+    hyperionLogEnabled: false,
     encryptionEnabled: false,
     encryptionMethod: "none",
     preferredBrowser: "auto" as const,
@@ -632,6 +635,7 @@ async function loadFromBackend(retries = 5, delay = 600): Promise<void> {
       if (state.settings.enableTopmost) {
         appWindow.setAlwaysOnTop(true).catch(() => { });
       }
+      (window as any).__syncHyperionPolling?.();
 
       state.view = state.settings.defaultStartupView || 'accounts';
 
@@ -1833,6 +1837,9 @@ async function executeDeleteAllData(): Promise<void> {
         autoUpdateToPreReleases: false,
         autoUpdateToLatestRelease: true,
         autoCheckRobloxUpdates: true,
+    hyperionReaderEnabled: true,
+    hyperionCheckIntervalMs: 3000,
+    hyperionLogEnabled: false,
         encryptionEnabled: false,
         encryptionMethod: "none",
         preferredBrowser: "auto",
@@ -2006,6 +2013,9 @@ async function updateSetting<K extends keyof Settings>(key: K, value: Settings[K
       if (key === 'autoRelaunchIntervalMinutes') payload.autoRelaunchIntervalMinutes = Number(value);
       if (key === 'autoRelaunchGroup') payload.autoRelaunchGroup = String(value);
       apiService.updateAutoRelaunchSettings(payload).catch(() => { });
+    }
+    if (key === 'hyperionReaderEnabled' || key === 'hyperionCheckIntervalMs') {
+      (window as any).__syncHyperionPolling?.();
     }
 
     const updated = await apiService.updateSettings({ [key]: value });
@@ -4242,6 +4252,9 @@ const ALL_SETTINGS_ITEMS: SettingItemDefinition[] = [
   { id: 'setting-icon-cache', tab: 'roblox', label: 'Roblox Icon & Thumbnail Cache', desc: 'Inspect disk usage and clear downloaded game and avatar thumbnail images' },
   { id: 'setting-roblox-updates', tab: 'roblox', label: 'Auto-check for Roblox Updates', desc: 'Check whether a newer Roblox client version is available' },
   { id: 'setting-disable-executor-presets', tab: 'roblox', label: 'Disable Executor Presets', desc: 'Hide executor presets in the Roblox Installer modal', isVisible: () => !isMacOS() },
+  { id: 'setting-hyperion-reader-enabled', tab: 'roblox', label: 'Enable Hyperion Reader', desc: 'Monitor running RobloxPlayerBeta.exe processes for Hyperion violations', isVisible: () => !isMacOS() },
+  { id: 'setting-hyperion-check-interval', tab: 'roblox', label: 'Hyperion Check Delay', desc: 'Delay between Hyperion violation checks in milliseconds', isVisible: () => !isMacOS() },
+  { id: 'setting-hyperion-log-enabled', tab: 'roblox', label: 'Log Hyperion Reader Checks', desc: 'Write Hyperion Reader check results to the application logs', isVisible: () => !isMacOS() },
 
   // 3. Launching
   { id: 'setting-multi-instance', tab: 'launching', label: 'Multi-Instance Roblox', desc: 'Allow multiple Roblox accounts to run simultaneously without instance mutex conflicts' },
@@ -7011,6 +7024,56 @@ function renderSettingsView(): void {
     }
     robloxUpdatesSec.appendChild(robloxUpdatesCard);
     inner.appendChild(robloxUpdatesSec);
+
+    if (!isMacOS()) {
+      const hyperionSec = el('div', { class: 'settings-section' }, []);
+      hyperionSec.appendChild(el('div', { class: 'settings-section-title' }, [document.createTextNode('Hyperion Reader')]));
+      const hyperionCard = el('div', { class: 'settings-card' }, []);
+
+      const hyperionEnableRow = settingsToggleRow(
+        'Enable Hyperion Reader',
+        'Monitor running RobloxPlayerBeta.exe processes and show Undetected / Detected status in the header',
+        'hyperionReaderEnabled'
+      );
+      hyperionEnableRow.dataset.settingId = 'setting-hyperion-reader-enabled';
+      hyperionCard.appendChild(hyperionEnableRow);
+
+      const hyperionDelayRow = el('div', { class: 'setting-row' }, []);
+      hyperionDelayRow.dataset.settingId = 'setting-hyperion-check-interval';
+      const hyperionDelayText = el('div', {}, [
+        el('div', { class: 'setting-label' }, [document.createTextNode('Hyperion Check Delay (ms)')]),
+        el('div', { class: 'setting-desc' }, [document.createTextNode('Delay between Hyperion Reader checks in milliseconds (minimum 500 ms, default 3000 ms)')])
+      ]);
+      hyperionDelayRow.appendChild(hyperionDelayText);
+      const hyperionDelayInput = el('input', {
+        type: 'number',
+        min: '500',
+        max: '60000',
+        step: '500',
+        value: String(Math.max(500, Number(state.settings.hyperionCheckIntervalMs) || 3000)),
+        style: 'width:100px; text-align:right;'
+      }, []) as HTMLInputElement;
+      hyperionDelayInput.addEventListener('change', (e) => {
+        const parsed = Number((e.target as HTMLInputElement).value);
+        const val = Math.min(60000, Math.max(500, Number.isFinite(parsed) ? parsed : 3000));
+        hyperionDelayInput.value = String(val);
+        updateSetting('hyperionCheckIntervalMs', val);
+      });
+      hyperionDelayRow.appendChild(hyperionDelayInput);
+      hyperionCard.appendChild(hyperionDelayRow);
+
+      const hyperionLogRow = settingsToggleRow(
+        'Log Hyperion Reader Checks',
+        'Write Hyperion Reader check results and status details to the application logs',
+        'hyperionLogEnabled'
+      );
+      hyperionLogRow.dataset.settingId = 'setting-hyperion-log-enabled';
+      hyperionLogRow.style.borderBottom = 'none';
+      hyperionCard.appendChild(hyperionLogRow);
+
+      hyperionSec.appendChild(hyperionCard);
+      inner.appendChild(hyperionSec);
+    }
   }
 
   if (state.settingsTab === 'launching') {
@@ -18962,11 +19025,13 @@ function initApp(): void {
   let hyperionPollInFlight = false;
   const refreshHyperionViolationIndicator = async (showManualToast = false) => {
     if (isMacOS() || hyperionPollInFlight) return;
+    if (state.settings.hyperionReaderEnabled === false && !showManualToast) return;
     const indicator = document.getElementById('hyperion-violation-indicator');
     const iconEl = document.getElementById('hyperion-violation-icon');
     const textEl = document.getElementById('hyperion-violation-text');
     if (!indicator || !iconEl || !textEl) return;
 
+    const shouldLog = Boolean(state.settings.hyperionLogEnabled);
     hyperionPollInFlight = true;
     try {
       const res = await apiService.getHyperionViolations();
@@ -18977,50 +19042,74 @@ function initApp(): void {
       if (status === 'clean') {
         iconEl.setAttribute('stroke-width', '2.5');
         iconEl.innerHTML = '<path d="M20 6 9 17l-5-5"/>';
-        textEl.textContent = 'Hyperion';
+        textEl.textContent = 'Undetected';
         const pidSummary = res.processes.map(p => `PID ${p.pid}: ${p.hex}`).join(' | ');
-        indicator.title = `Hyperion Violations: Clean (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
-        if (showManualToast) toast(`Hyperion Clean (${res.hex})`, 'success');
+        indicator.title = `Hyperion: Undetected (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
+        if (shouldLog) addLog(`[Hyperion] Undetected (${res.hex})${pidSummary ? ` — ${pidSummary}` : ''}`, 'success');
+        if (showManualToast) toast(`Hyperion: Undetected (${res.hex})`, 'success');
       } else if (status === 'detected') {
         iconEl.setAttribute('stroke-width', '2.5');
         iconEl.innerHTML = '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>';
-        textEl.textContent = 'Hyperion';
+        textEl.textContent = 'Detected';
         const pidSummary = res.processes.map(p => `PID ${p.pid}: ${p.status} (${p.hex})`).join(' | ');
-        indicator.title = `Hyperion Violations: Detected (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
-        if (showManualToast) toast(`Hyperion Violation Detected (${res.hex})`, 'error');
+        indicator.title = `Hyperion: Detected (${res.hex})${pidSummary ? `\n${pidSummary}` : ''}`;
+        if (shouldLog) addLog(`[Hyperion] Detected (${res.hex})${pidSummary ? ` — ${pidSummary}` : ''}`, 'error');
+        if (showManualToast) toast(`Hyperion: Detected (${res.hex})`, 'error');
       } else if (status === 'idle') {
         iconEl.setAttribute('stroke-width', '2');
         iconEl.innerHTML = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>';
         textEl.textContent = 'Hyperion';
-        indicator.title = 'Hyperion Violations: No RobloxPlayerBeta.exe running';
+        indicator.title = 'Hyperion: No RobloxPlayerBeta.exe running';
+        if (shouldLog) addLog('[Hyperion] Idle — no RobloxPlayerBeta.exe running', 'info');
         if (showManualToast) toast('No RobloxPlayerBeta.exe process running', 'info');
       } else {
         iconEl.setAttribute('stroke-width', '2');
         iconEl.innerHTML = '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>';
         textEl.textContent = 'Hyperion';
         const firstErr = res.processes.find(p => p.error)?.error || res.error || 'Unavailable';
-        indicator.title = `Hyperion Violations: ${firstErr}`;
+        indicator.title = `Hyperion: ${firstErr}`;
+        if (shouldLog) addLog(`[Hyperion] Unavailable — ${firstErr}`, 'warning');
         if (showManualToast) toast(`Hyperion check: ${firstErr}`, 'info');
       }
-    } catch {
+    } catch (err) {
       indicator.classList.remove('clean', 'detected', 'idle');
       indicator.classList.add('unavailable');
+      textEl.textContent = 'Hyperion';
+      if (shouldLog) addLog(`[Hyperion] Check failed: ${err}`, 'error');
     } finally {
       hyperionPollInFlight = false;
     }
   };
+
+  const syncHyperionPolling = () => {
+    const existingTimer = (window as any).__hyperionPollTimer as ReturnType<typeof setInterval> | undefined;
+    if (existingTimer) {
+      clearInterval(existingTimer);
+      (window as any).__hyperionPollTimer = undefined;
+    }
+    const indicator = document.getElementById('hyperion-violation-indicator');
+    if (!indicator || isMacOS()) return;
+
+    if (state.settings.hyperionReaderEnabled === false) {
+      indicator.style.display = 'none';
+      return;
+    }
+
+    indicator.style.display = '';
+    refreshHyperionViolationIndicator(false);
+    const delayMs = Math.min(60000, Math.max(500, Number(state.settings.hyperionCheckIntervalMs) || 3000));
+    (window as any).__hyperionPollTimer = setInterval(() => {
+      refreshHyperionViolationIndicator(false);
+    }, delayMs);
+  };
+  (window as any).__syncHyperionPolling = syncHyperionPolling;
 
   const hyperionIndicator = document.getElementById('hyperion-violation-indicator');
   if (hyperionIndicator && !isMacOS()) {
     hyperionIndicator.addEventListener('click', () => {
       refreshHyperionViolationIndicator(true);
     });
-    refreshHyperionViolationIndicator(false);
-    const existingTimer = (window as any).__hyperionPollTimer as ReturnType<typeof setInterval> | undefined;
-    if (existingTimer) clearInterval(existingTimer);
-    (window as any).__hyperionPollTimer = setInterval(() => {
-      refreshHyperionViolationIndicator(false);
-    }, 3000);
+    syncHyperionPolling();
   }
 
   const btnAutoArrangeHeader = document.getElementById('btn-auto-arrange-header');

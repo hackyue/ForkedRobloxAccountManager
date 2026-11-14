@@ -197,6 +197,9 @@ export interface Settings {
   autoUpdateToLatestRelease?: boolean;
   autoCheckRobloxUpdates?: boolean;
   disableExecutorPresets?: boolean;
+  hyperionReaderEnabled?: boolean;
+  hyperionCheckIntervalMs?: number;
+  hyperionLogEnabled?: boolean;
   encryptionEnabled: boolean;
   encryptionMethod: 'none' | 'password' | 'hardware';
   preferredBrowser: 'auto' | 'chrome' | 'edge' | 'firefox' | 'waterfox' | 'chromium';
